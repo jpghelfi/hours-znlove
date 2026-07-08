@@ -94,6 +94,12 @@ day-number makes groups sort Mon→Sun and lets you filter out weekends):
 - Edit the **Hours** cell inline. Optionally **Sub-group → Weekday** for a per-day breakdown,
   or filter `Week is 2026-Www` to review a specific past week.
 
+**See every day, even blank ones.** A grouped table only shows days that have entries. To see
+all of Mon–Fri regardless, add a **Calendar** view instead: **Show as → Week**, **Show weekends
+→ Off** (Mon–Fri), **Calendar by → Date**. Empty days appear as clickable empty cells; click one
+to add an entry for that day. (Notion database views can't show placeholder rows for empty days;
+the calendar's day grid is the native way to always see every weekday.)
+
 ## Daily use (CLI)
 
 The form is the main entry path, but the CLI is handy for backfills and reports:
