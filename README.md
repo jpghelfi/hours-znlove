@@ -11,7 +11,8 @@ automatically (see [Who submitted](#who-submitted) below) — no manual "person"
 - **Two Notion databases** live under a page called **Hours Tracker**:
   - **Projects** — `Name`, `Active`, `Client`
   - **Time Entries** — `Entry` (title), `Project` (relation → Projects), `Date`, `Hours`,
-    `Description`, and **`Logged by`** (auto-filled with the submitter)
+    `Description`, **`Logged by`** (auto-filled with the submitter), and two formula helpers
+    `Week` / `Weekday` (for weekly views — see step 7)
 - **Team members enter hours via a Form view** on Time Entries (Project, Date, Hours,
   Description). Every submission becomes a row.
 - **Python scripts** (this repo) build the schema, bulk-seed projects, and report totals.
@@ -82,6 +83,16 @@ Set **Who can respond → Only members of the workspace**, then **Share** and po
 On Time Entries, add Table views grouped by **Logged by** or **Project**, with the Hours
 column set to **Calculate → Sum**. Add a `Date is within → This week` filter for a live
 weekly timesheet.
+
+**Weekly timesheet (Mon–Fri, by person, editable).** Two helper formula properties support
+this — `Week` (ISO week, e.g. `2026-W28`) and `Weekday` (e.g. `2 Tue`; the leading ISO
+day-number makes groups sort Mon→Sun and lets you filter out weekends):
+- Add a **Table** view → **Group → Logged by**.
+- **Filter:** `Date is within → This week`, plus `Weekday does not contain Sat` and
+  `Weekday does not contain Sun` (leaves Mon–Fri).
+- **Sort:** `Weekday → Ascending`.
+- Edit the **Hours** cell inline. Optionally **Sub-group → Weekday** for a per-day breakdown,
+  or filter `Week is 2026-Www` to review a specific past week.
 
 ## Daily use (CLI)
 
