@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Hours Tracker{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">⏱ Hours Tracker</div>
+    <nav>
+      <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
+      <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="foot">Notion is the source of truth · entries sync to the Time Entries database</footer>
+</body>
+</html>

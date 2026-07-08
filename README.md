@@ -1,7 +1,13 @@
 # hours-znlove — Notion hours tracker
 
-A time tracker backed by Notion. The team logs hours through a **Notion Form**; a Python
-layer creates the schema, seeds projects, and produces reports.
+A time tracker backed by Notion. **Notion is the source of truth / database**; on top of it
+there are two entry paths:
+
+1. **Web app** (`web/`) — a FastAPI + HTMX app with a rich entry form and an editable
+   **Mon–Fri weekly grid** (all weekdays always visible, blank = 0). See [Web app](#web-app).
+2. **Notion Form** — the built-in Notion form, for casual/no-code entry.
+
+A Python CLI (`src/`) creates the schema, seeds projects, and produces reports.
 
 Each entry has a **project, date, hours, and description**. Who logged it is captured
 automatically (see [Who submitted](#who-submitted) below) — no manual "person" field.
@@ -100,6 +106,31 @@ all of Mon–Fri regardless, add a **Calendar** view instead: **Show as → Week
 to add an entry for that day. (Notion database views can't show placeholder rows for empty days;
 the calendar's day grid is the native way to always see every weekday.)
 
+## Web app
+
+A FastAPI app that reads/writes the same Notion databases — a better entry experience than
+Notion's form, plus the editable weekly grid Notion can't natively do.
+
+```bash
+./.venv/bin/uvicorn web.app:app --reload --port 8000
+# then open http://localhost:8000
+```
+
+- **`/` — Log hours:** self-select your name (synced from the workspace), pick a project,
+  date (defaults to today), hours, description → saves an entry to Notion.
+- **`/week` — Weekly grid:** rows are person × project, columns are **Mon–Fri** (every weekday
+  always shown, even blank). Edit any cell to save instantly (upsert); clear a cell to remove
+  that entry. Row/day/grand totals recompute live. Prev / This week / Next navigation. "Add a
+  row" introduces a new person+project combination.
+
+**Identity:** the web form has no Notion session, so it records the chosen person into a
+`Person` (people) property — the app **re-adds that property automatically on startup** if it's
+missing. (Notion-form submissions still use `Logged by`; `report.py` and the grid read either.)
+
+**Notes:** each page makes a few Notion API calls (people + projects + entries), so expect a
+short load on cold requests — fine for a team, cache later if needed. Run locally first; deploy
+(e.g. Render/Fly/a small VM) when you want the team on it.
+
 ## Daily use (CLI)
 
 The form is the main entry path, but the CLI is handy for backfills and reports:
@@ -126,6 +157,10 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 | `src/seed_projects.py` | Bulk-adds projects, dedupe-safe. |
 | `src/log_hours.py` | Logs one time entry from the CLI. |
 | `src/report.py` | Aggregates hours by person (submitter) or project. |
+| `web/app.py` | FastAPI routes: form page, `/entry`, weekly grid, `/api/cell` upsert. |
+| `web/notion_ops.py` | Notion reads/writes for the web app (people, projects, entries, grid). |
+| `web/templates/` | Jinja2 templates (base, form, week). |
+| `web/static/style.css` | App styling (light/dark aware). |
 | `databases.json` | Auto-written database + data source ids (gitignored). |
 | `.env` | Token + parent page (gitignored). |
 

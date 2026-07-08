@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Weekly grid · Hours Tracker{% endblock %}
+{% block nav_week %}active{% endblock %}
+{% block content %}
+<div class="week-head">
+  <div>
+    <h1>Weekly grid</h1>
+    <div class="subtle">{{ iso_week }} · {{ grid.days[0].strftime('%b %d') }} – {{ grid.days[4].strftime('%b %d, %Y') }}</div>
+  </div>
+  <div class="weeknav">
+    <a class="btn" href="/week?monday={{ prev_mon }}">← Prev</a>
+    <a class="btn" href="/week?monday={{ this_mon }}">This week</a>
+    <a class="btn" href="/week?monday={{ next_mon }}">Next →</a>
+  </div>
+</div>
+
+<div class="grid-wrap">
+<table class="grid">
+  <thead>
+    <tr>
+      <th class="col-person">Person</th>
+      <th class="col-project">Project</th>
+      {% for d in grid.days %}<th class="col-day">{{ d.strftime('%a') }}<span class="dnum">{{ d.strftime('%d') }}</span></th>{% endfor %}
+      <th class="col-total">Total</th>
+    </tr>
+  </thead>
+  <tbody id="grid-body">
+    {% for r in grid.rows %}
+    <tr data-person="{{ r.person_id }}" data-project="{{ r.project_id }}">
+      <td class="col-person">{{ r.person_name }}</td>
+      <td class="col-project">{{ r.project_name }}</td>
+      {% for iso in grid.day_isos %}
+      <td class="cell"><input type="number" step="0.25" min="0" value="{{ '%g'|format(r.cells[iso]) if r.cells[iso] else '' }}"
+          data-date="{{ iso }}" onchange="saveCell(this)"></td>
+      {% endfor %}
+      <td class="col-total rowtotal">{{ '%g'|format(r.total) }}</td>
+    </tr>
+    {% endfor %}
+    {% if not grid.rows %}
+    <tr class="empty"><td colspan="{{ 3 + grid.days|length }}">No entries this week. Add a row below to start.</td></tr>
+    {% endif %}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td class="col-person">Daily total</td><td></td>
+      {% for iso in grid.day_isos %}<td class="col-total daytotal" data-date="{{ iso }}">{{ '%g'|format(grid.day_totals[iso]) }}</td>{% endfor %}
+      <td class="col-total grandtotal">{{ '%g'|format(grid.grand_total) }}</td>
+    </tr>
+  </tfoot>
+</table>
+</div>
+
+<div class="addrow card">
+  <strong>Add a row</strong>
+  <div class="row2">
+    <select id="add-person"><option value="" disabled selected>Person…</option>
+      {% for p in people %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <select id="add-project"><option value="" disabled selected>Project…</option>
+      {% for p in projects %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <button class="btn" onclick="addRow()">Add row</button>
+  </div>
+  <div class="subtle">Rows appear once they exist; edit any weekday cell to save. Set a cell to blank to remove that entry.</div>
+</div>
+
+<script>
+const DAY_ISOS = {{ grid.day_isos|tojson }};
+
+async function saveCell(input) {
+  const tr = input.closest('tr');
+  const person_id = tr.dataset.person, project_id = tr.dataset.project;
+  const date = input.dataset.date;
+  const hours = parseFloat(input.value) || 0;
+  input.classList.add('saving');
+  try {
+    const res = await fetch('/api/cell', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({person_id, project_id, date, hours})
+    });
+    const data = await res.json();
+    input.classList.remove('saving');
+    if (!data.ok) { input.classList.add('err'); alert('Save failed: ' + (data.error||'unknown')); return; }
+    input.classList.remove('err'); input.classList.add('saved');
+    setTimeout(() => input.classList.remove('saved'), 800);
+    recalc();
+  } catch (e) { input.classList.remove('saving'); input.classList.add('err'); alert('Network error'); }
+}
+
+function recalc() {
+  let grand = 0;
+  const dayTotals = {}; DAY_ISOS.forEach(d => dayTotals[d] = 0);
+  document.querySelectorAll('#grid-body tr[data-person]').forEach(tr => {
+    let rowTotal = 0;
+    tr.querySelectorAll('input[data-date]').forEach(inp => {
+      const v = parseFloat(inp.value) || 0; rowTotal += v; dayTotals[inp.dataset.date] += v;
+    });
+    tr.querySelector('.rowtotal').textContent = fmt(rowTotal); grand += rowTotal;
+  });
+  DAY_ISOS.forEach(d => { const c = document.querySelector('.daytotal[data-date="'+d+'"]'); if (c) c.textContent = fmt(dayTotals[d]); });
+  document.querySelector('.grandtotal').textContent = fmt(grand);
+}
+function fmt(n) { return n ? (Math.round(n*100)/100).toString() : '0'; }
+
+function addRow() {
+  const ps = document.getElementById('add-person'), pr = document.getElementById('add-project');
+  if (!ps.value || !pr.value) { alert('Pick a person and a project'); return; }
+  const pName = ps.selectedOptions[0].dataset.name, prName = pr.selectedOptions[0].dataset.name;
+  // avoid duplicate row
+  const dup = document.querySelector(`#grid-body tr[data-person="${ps.value}"][data-project="${pr.value}"]`);
+  if (dup) { dup.querySelector('input').focus(); return; }
+  const empty = document.querySelector('#grid-body tr.empty'); if (empty) empty.remove();
+  const tr = document.createElement('tr');
+  tr.dataset.person = ps.value; tr.dataset.project = pr.value;
+  let cells = '';
+  DAY_ISOS.forEach(iso => { cells += `<td class="cell"><input type="number" step="0.25" min="0" data-date="${iso}" onchange="saveCell(this)"></td>`; });
+  tr.innerHTML = `<td class="col-person">${pName}</td><td class="col-project">${prName}</td>${cells}<td class="col-total rowtotal">0</td>`;
+  document.getElementById('grid-body').appendChild(tr);
+  tr.querySelector('input').focus();
+}
+</script>
+{% endblock %}

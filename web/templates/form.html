@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Log hours · Hours Tracker{% endblock %}
+{% block nav_form %}active{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Log hours</h1>
+  {% if ok %}<div class="flash">✓ Entry saved to Notion.</div>{% endif %}
+  <form method="post" action="/entry" class="entry-form">
+    <label>Person
+      <select name="person_id" required>
+        <option value="" disabled selected>Select yourself…</option>
+        {% for p in people %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+
+    <label>Project
+      <select name="project_id" required>
+        <option value="" disabled selected>Select a project…</option>
+        {% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+
+    <div class="row2">
+      <label>Date
+        <input type="date" name="date" value="{{ today }}" required>
+      </label>
+      <label>Hours
+        <input type="number" name="hours" step="0.25" min="0" placeholder="1.5" required>
+      </label>
+    </div>
+
+    <label>Description
+      <textarea name="description" rows="3" placeholder="What did you work on?"></textarea>
+    </label>
+
+    <button type="submit">Save entry</button>
+  </form>
+</div>
+{% endblock %}
