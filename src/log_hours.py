@@ -1,24 +1,17 @@
-"""Log a time entry manually.
+"""Log a time entry manually (backfills, corrections).
 
 Usage:
-    python src/log_hours.py --person "Jane" --project "Mobile App" \
-        --hours 2.5 --date 2026-07-08 --desc "Built the login screen"
+    python src/log_hours.py --project "Mobile App" --hours 2.5 \
+        --date 2026-07-08 --desc "Built the login screen"
 
---date defaults to today. --person matches a Notion workspace member by name
-(case-insensitive substring); omit it to leave Person blank.
+--date defaults to today. Team entry normally happens via the Notion Form, where
+the submitter is captured automatically by the "Logged by" property. CLI entries
+are created by the API integration, so they have no human submitter.
 """
 import argparse
 import datetime as dt
 
 from config import get_client, load_db_ids
-
-
-def find_user_id(notion, name: str):
-    name_l = name.lower()
-    for user in notion.users.list()["results"]:
-        if user.get("type") == "person" and name_l in (user.get("name") or "").lower():
-            return user["id"], user["name"]
-    raise SystemExit(f'No workspace member matches "{name}".')
 
 
 def find_project_page_id(notion, projects_ds_id: str, name: str):
@@ -35,7 +28,6 @@ def find_project_page_id(notion, projects_ds_id: str, name: str):
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Log a time entry to Notion.")
-    p.add_argument("--person")
     p.add_argument("--project", required=True)
     p.add_argument("--hours", type=float, required=True)
     p.add_argument("--date", default=dt.date.today().isoformat())
@@ -55,17 +47,11 @@ def main() -> None:
         "Description": {"rich_text": [{"text": {"content": args.desc}}]},
     }
 
-    if args.person:
-        user_id, user_name = find_user_id(notion, args.person)
-        props["Person"] = {"people": [{"id": user_id}]}
-    else:
-        user_name = "(unassigned)"
-
     notion.pages.create(
         parent={"type": "data_source_id", "data_source_id": ids["time_entries_ds_id"]},
         properties=props,
     )
-    print(f"Logged {args.hours}h on {args.date} — {project_name} — {user_name}")
+    print(f"Logged {args.hours}h on {args.date} — {project_name}")
 
 
 if __name__ == "__main__":

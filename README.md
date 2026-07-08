@@ -98,8 +98,8 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 ./.venv/bin/python src/report.py --since 2026-07-01
 ```
 
-> Note: `log_hours.py --person` targets a `Person` property that the form-based schema
-> doesn't include. Team entry goes through the form; use the CLI without `--person`.
+> Note: CLI entries are created by the API integration, so they have no human submitter
+> in `Logged by`. Team entry goes through the form; use the CLI for backfills/corrections.
 
 ## Files
 | File | Purpose |
