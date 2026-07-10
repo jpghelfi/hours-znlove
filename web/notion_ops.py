@@ -48,6 +48,17 @@ def list_people() -> list[dict]:
     return people
 
 
+def get_user(user_id: str) -> dict:
+    """Resolve a Notion user id to {id, name, email} using the integration token."""
+    u = _notion.users.retrieve(user_id)
+    return {
+        "id": u["id"],
+        "name": u.get("name") or "(unnamed)",
+        "email": (u.get("person") or {}).get("email"),
+        "avatar": u.get("avatar_url"),
+    }
+
+
 def list_projects(active_only: bool = True) -> list[dict]:
     projects = []
     kwargs = {"data_source_id": PROJECTS_DS, "page_size": 100}

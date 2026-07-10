@@ -116,20 +116,44 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
 # then open http://localhost:8000
 ```
 
-- **`/` — Log hours:** self-select your name (synced from the workspace), pick a project,
-  date (defaults to today), hours, description → saves an entry to Notion.
+- **Login:** "Sign in with Notion" (OAuth), gated by an email allowlist — see [Auth](#auth).
+- **`/` — Log hours:** entries are stamped with the logged-in user, so just pick a project,
+  date (defaults to today), hours, description → saves to Notion.
 - **`/week` — Weekly grid:** rows are person × project, columns are **Mon–Fri** (every weekday
   always shown, even blank). Edit any cell to save instantly (upsert); clear a cell to remove
   that entry. Row/day/grand totals recompute live. Prev / This week / Next navigation. "Add a
   row" introduces a new person+project combination.
 
-**Identity:** the web form has no Notion session, so it records the chosen person into a
-`Person` (people) property — the app **re-adds that property automatically on startup** if it's
-missing. (Notion-form submissions still use `Logged by`; `report.py` and the grid read either.)
+The chosen/logged-in person is written to a `Person` (people) property, **re-added on startup**
+if missing. (Notion-form submissions still use `Logged by`; `report.py` and the grid read either.)
+
+### Auth
+
+Login uses **Notion OAuth**: the app reads the authorizing user's identity and checks their
+email against `ALLOWED_EMAILS`. OAuth is only for *identity* — all data access uses the
+integration token. Everyone not on the allowlist is rejected.
+
+One-time setup:
+1. On your integration at <https://www.notion.so/my-integrations> → **Distribution** →
+   make it **public**. Copy the **OAuth client ID** and **secret**.
+2. Add the redirect URI: `https://<your-host>/auth/callback`.
+3. Set env vars: `NOTION_OAUTH_CLIENT_ID`, `NOTION_OAUTH_CLIENT_SECRET`,
+   `NOTION_OAUTH_REDIRECT_URI`, `SESSION_SECRET`, and `ALLOWED_EMAILS` (comma-separated).
+
+Local dev without OAuth: set `AUTH_DISABLED=1` to bypass login (never in production).
+
+### Deploy (Render, free tier)
+
+The repo includes `render.yaml`. In Render: **New + → Blueprint → connect this repo**, then in
+the dashboard set the secret env vars (`NOTION_TOKEN`, `PROJECTS_DS_ID`, `TIME_ENTRIES_DS_ID`,
+the three `NOTION_OAUTH_*`, and `ALLOWED_EMAILS`; `SESSION_SECRET` is auto-generated). Because
+`databases.json` is gitignored, the deploy reads the data-source ids from `PROJECTS_DS_ID` /
+`TIME_ENTRIES_DS_ID` (find them in your local `databases.json`). Free instances sleep when idle
+and wake on the next request (~30–60s) — fine for low traffic. After the first deploy you'll get
+the host URL; set the Notion redirect URI to `https://<that-host>/auth/callback`.
 
 **Notes:** each page makes a few Notion API calls (people + projects + entries), so expect a
-short load on cold requests — fine for a team, cache later if needed. Run locally first; deploy
-(e.g. Render/Fly/a small VM) when you want the team on it.
+short load on cold requests — fine for a team, cache later if needed.
 
 ## Daily use (CLI)
 
@@ -157,8 +181,10 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 | `src/seed_projects.py` | Bulk-adds projects, dedupe-safe. |
 | `src/log_hours.py` | Logs one time entry from the CLI. |
 | `src/report.py` | Aggregates hours by person (submitter) or project. |
-| `web/app.py` | FastAPI routes: form page, `/entry`, weekly grid, `/api/cell` upsert. |
+| `web/app.py` | FastAPI routes: login/OAuth, form page, `/entry`, weekly grid, `/api/cell`. |
+| `web/auth.py` | Notion OAuth flow + email allowlist. |
 | `web/notion_ops.py` | Notion reads/writes for the web app (people, projects, entries, grid). |
+| `render.yaml` | Render deploy blueprint (free tier). |
 | `web/templates/` | Jinja2 templates (base, form, week). |
 | `web/static/style.css` | App styling (light/dark aware). |
 | `databases.json` | Auto-written database + data source ids (gitignored). |

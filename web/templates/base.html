@@ -12,6 +12,7 @@
     <nav>
       <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
       <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
+      {% if user %}<span class="who">{{ user.name }}</span><a href="/logout" class="logout">Log out</a>{% endif %}
     </nav>
   </header>
   <main>

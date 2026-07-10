@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Hours Tracker</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="login-main">
+    <div class="card login-card">
+      <div class="brand big">⏱ Hours Tracker</div>
+      <p class="subtle">Sign in with your Notion account to log hours.</p>
+      {% if denied == 'notallowed' %}
+        <div class="deny">That account isn't on the access list. Ask an admin to add your email.</div>
+      {% elif denied == 'state' %}
+        <div class="deny">Login session expired. Please try again.</div>
+      {% elif denied %}
+        <div class="deny">Sign-in didn't complete. Please try again.</div>
+      {% endif %}
+      <a class="notion-btn" href="/login/start">Sign in with Notion</a>
+      <div class="subtle small">Access is limited to approved team members.</div>
+    </div>
+  </main>
+</body>
+</html>

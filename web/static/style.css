@@ -75,3 +75,19 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 720px; }
 .addrow { max-width: none; margin-top: 18px; }
 .addrow .row2 { grid-template-columns: 1fr 1fr auto; align-items: end; margin: 10px 0; }
 .foot { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
+
+/* nav user */
+.topbar nav .who { margin-left: 16px; color: var(--muted); font-weight: 600; font-size: 13px; }
+.topbar nav a.logout { margin-left: 10px; color: var(--muted); font-size: 13px; }
+
+/* login page */
+.login-main { display: flex; min-height: 70vh; align-items: center; justify-content: center; }
+.login-card { text-align: center; max-width: 380px; }
+.brand.big { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
+.login-card .notion-btn {
+  display: block; margin: 18px 0 10px; padding: 12px 16px; border-radius: 10px;
+  background: var(--ink); color: var(--bg); font-weight: 700; text-decoration: none;
+}
+.login-card .small { font-size: 12px; }
+.deny { background: var(--err); color: #b91c1c; border-radius: 9px; padding: 10px 12px; margin: 12px 0; font-weight: 600; font-size: 13px; }
+@media (prefers-color-scheme: dark) { .deny { color: #fca5a5; } }
