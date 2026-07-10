@@ -34,6 +34,14 @@ def is_allowed(email: str | None) -> bool:
     return email.strip().lower() in allowed_emails()
 
 
+def is_admin(email: str | None) -> bool:
+    """Admins (ADMIN_EMAILS env var) can see team-wide reports and exports."""
+    if not email:
+        return False
+    admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+    return email.strip().lower() in admins
+
+
 def _cfg(key: str) -> str:
     val = os.environ.get(key)
     if not val:

@@ -116,6 +116,38 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .deny { background: var(--err); color: #b91c1c; border-radius: 9px; padding: 10px 12px; margin: 12px 0; font-weight: 600; font-size: 13px; }
 @media (prefers-color-scheme: dark) { .deny { color: #fca5a5; } }
 
+/* reports */
+.range-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 0 0 16px; }
+.range-form label { font-size: 12px; }
+.range-form input[type=date] { padding: 7px 8px; }
+.weeknav .btn.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.statrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { text-align: center; padding: 16px; max-width: none; }
+.stat-n { font-size: 26px; font-weight: 800; }
+.stat-l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.card.wide { max-width: none; margin: 0 0 16px; }
+.card.wide h3 { margin: 0 0 12px; font-size: 15px; }
+.baritem { display: grid; grid-template-columns: minmax(90px, 160px) 1fr 52px; gap: 10px; align-items: center; margin-bottom: 8px; }
+.bar-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { background: var(--head); border-radius: 6px; height: 14px; overflow: hidden; }
+.bar-fill { background: var(--accent); height: 100%; border-radius: 6px; min-width: 2px; }
+.bar-val { font-size: 13px; font-weight: 700; text-align: right; }
+.cols { display: flex; gap: 6px; align-items: flex-end; height: 120px; }
+.col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+.col-v { font-size: 10px; font-weight: 700; color: var(--muted); }
+.col-bar { width: 100%; max-width: 34px; flex: 1; display: flex; align-items: flex-end; background: var(--head); border-radius: 6px; overflow: hidden; }
+.col-fill { width: 100%; background: var(--accent); border-radius: 6px 6px 0 0; }
+.col-l { font-size: 10px; color: var(--muted); margin-top: 4px; text-align: center; }
+.col-l span { display: block; }
+
+/* weekly capacity */
+.capacity { display: flex; align-items: center; gap: 12px; margin: -6px 0 14px; }
+.cap-bar { flex: 1; height: 10px; background: var(--head); border-radius: 6px; overflow: hidden; }
+.cap-fill { height: 100%; background: var(--accent); border-radius: 6px; }
+
+/* timer */
+.timer-row { display: flex; align-items: center; gap: 12px; }
+
 /* ---- mobile ---- */
 @media (max-width: 560px) {
   main { margin: 18px auto; padding: 0 12px; }

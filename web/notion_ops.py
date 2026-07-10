@@ -100,6 +100,37 @@ def _row_person(props) -> tuple[str | None, str]:
     return None, "(unassigned)"
 
 
+def entries_between(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
+    """All entries in [date_from, date_to] (ISO dates), optionally for one person."""
+    pname = _project_name_map()
+    out = []
+    kwargs = {"data_source_id": TIME_DS, "page_size": 100, "filter": {"and": [
+        {"property": "Date", "date": {"on_or_after": date_from}},
+        {"property": "Date", "date": {"on_or_before": date_to}},
+    ]}}
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        for row in res["results"]:
+            props = row["properties"]
+            pid, person = _row_person(props)
+            if person_id and pid != person_id:
+                continue
+            date = props["Date"]["date"]
+            rel = props["Project"]["relation"]
+            desc = props["Description"]["rich_text"]
+            out.append({
+                "person_id": pid, "person": person,
+                "project": pname.get(rel[0]["id"], "(none)") if rel else "(none)",
+                "date": date["start"][:10] if date else None,
+                "hours": props["Hours"]["number"] or 0,
+                "description": desc[0]["plain_text"] if desc else "",
+            })
+        if not res.get("has_more"):
+            break
+        kwargs["start_cursor"] = res["next_cursor"]
+    return [e for e in out if e["date"]]
+
+
 # ---- writes ------------------------------------------------------------
 
 def create_entry(person_id: str | None, project_id: str, date: str, hours: float, description: str = "") -> None:

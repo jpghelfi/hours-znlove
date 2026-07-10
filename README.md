@@ -117,6 +117,15 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
 ```
 
 - **Login:** "Sign in with Notion" (OAuth), gated by an email allowlist — see [Auth](#auth).
+- **`/reports` — Reports:** presets (this/last week/month) or custom range; totals, by-day
+  chart, by-project bars, CSV export. Admins (`ADMIN_EMAILS` env var) get a **Team** scope
+  with by-person totals and a team-wide CSV.
+- **Timer:** start/stop on the Log hours page (Harvest-style); survives reloads, fills the
+  Hours field rounded to the nearest 0.25h on stop.
+- **Weekly extras:** capacity bar (`WEEK_TARGET_HOURS`, default 40) and a one-click
+  "Copy last week's projects" on the grid.
+- **Keep-alive:** a launchd job on the always-on mini pings `/healthz` every 10 min so the
+  free Render instance never cold-starts (`com.jp.hours-keepalive`).
 - **`/` — Log hours:** entries are stamped with the logged-in user, so just pick a project,
   date (defaults to today), hours, description → saves to Notion.
 - **`/week` — Weekly grid:** rows are person × project, columns are **Mon–Fri** (every weekday

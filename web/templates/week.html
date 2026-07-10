@@ -14,6 +14,11 @@
   </div>
 </div>
 
+<div class="capacity">
+  <div class="cap-bar"><div class="cap-fill" style="width: {{ cap_pct }}%"></div></div>
+  <span class="subtle">{{ '%g'|format(grid.grand_total) }} / {{ '%g'|format(target) }}h this week</span>
+</div>
+
 <div class="grid-wrap">
 <table class="grid">
   <thead>
@@ -55,6 +60,7 @@
       {% for p in projects %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
     </select>
     <button class="btn" onclick="addRow()">Add row</button>
+    {% if prev_projects %}<button class="btn" onclick="copyLastWeek()">⧉ Copy last week's projects</button>{% endif %}
   </div>
   <div class="subtle">Edit any weekday cell to save. Set a cell to blank to remove that entry. You only see and edit your own hours.</div>
 </div>
@@ -97,20 +103,24 @@ function recalc() {
 }
 function fmt(n) { return n ? (Math.round(n*100)/100).toString() : '0'; }
 
-function addRow() {
-  const pr = document.getElementById('add-project');
-  if (!pr.value) { alert('Pick a project'); return; }
-  const prName = pr.selectedOptions[0].dataset.name;
-  const dup = document.querySelector(`#grid-body tr[data-project="${pr.value}"]`);
+function addRowWith(pid, prName) {
+  const dup = document.querySelector(`#grid-body tr[data-project="${pid}"]`);
   if (dup) { dup.querySelector('input').focus(); return; }
   const empty = document.querySelector('#grid-body tr.empty'); if (empty) empty.remove();
   const tr = document.createElement('tr');
-  tr.dataset.project = pr.value;
+  tr.dataset.project = pid;
   let cells = '';
   DAY_ISOS.forEach(iso => { cells += `<td class="cell"><input type="number" step="0.25" min="0" data-date="${iso}" onchange="saveCell(this)"></td>`; });
   tr.innerHTML = `<td class="col-project">${prName}</td>${cells}<td class="col-total rowtotal">0</td>`;
   document.getElementById('grid-body').appendChild(tr);
   tr.querySelector('input').focus();
 }
+function addRow() {
+  const pr = document.getElementById('add-project');
+  if (!pr.value) { alert('Pick a project'); return; }
+  addRowWith(pr.value, pr.selectedOptions[0].dataset.name);
+}
+const PREV_PROJECTS = {{ prev_projects|tojson }};
+function copyLastWeek() { PREV_PROJECTS.forEach(p => addRowWith(p.id, p.name)); }
 </script>
 {% endblock %}

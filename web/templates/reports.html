@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Reports · Hours Tracker{% endblock %}
+{% block nav_reports %}active{% endblock %}
+{% block content %}
+{% set qs = '&scope=' ~ scope %}
+<div class="week-head">
+  <div>
+    <h1>Reports</h1>
+    <div class="subtle">{{ r.from }} → {{ r.to }}{% if r.team %} · whole team{% else %} · {{ user.name }}{% endif %}</div>
+  </div>
+  <div class="weeknav">
+    <a class="btn {{ 'active' if r.range == 'this-week' }}" href="/reports?range=this-week{{ qs }}">This week</a>
+    <a class="btn {{ 'active' if r.range == 'last-week' }}" href="/reports?range=last-week{{ qs }}">Last week</a>
+    <a class="btn {{ 'active' if r.range == 'this-month' }}" href="/reports?range=this-month{{ qs }}">This month</a>
+    <a class="btn {{ 'active' if r.range == 'last-month' }}" href="/reports?range=last-month{{ qs }}">Last month</a>
+  </div>
+</div>
+
+<form class="range-form" method="get" action="/reports">
+  <input type="hidden" name="scope" value="{{ scope }}">
+  <label>From <input type="date" name="date_from" value="{{ r.from }}"></label>
+  <label>To <input type="date" name="date_to" value="{{ r.to }}"></label>
+  <button type="submit" class="btn">Apply</button>
+  {% if r.is_admin %}
+    {% if r.team %}<a class="btn" href="/reports?range={{ r.range }}&scope=me">👤 My hours</a>
+    {% else %}<a class="btn" href="/reports?range={{ r.range }}&scope=team">👥 Team</a>{% endif %}
+  {% endif %}
+  <a class="btn" href="/reports.csv?range={{ r.range }}&date_from={{ r.from }}&date_to={{ r.to }}{{ qs }}">⬇ CSV</a>
+</form>
+
+<div class="statrow">
+  <div class="stat card"><div class="stat-n">{{ '%g'|format(r.total) }}</div><div class="stat-l">hours</div></div>
+  <div class="stat card"><div class="stat-n">{{ r.entries|length }}</div><div class="stat-l">entries</div></div>
+  <div class="stat card"><div class="stat-n">{{ r.by_project|length }}</div><div class="stat-l">projects</div></div>
+  {% if r.team %}<div class="stat card"><div class="stat-n">{{ r.people_count }}</div><div class="stat-l">people</div></div>{% endif %}
+</div>
+
+{% if r.days %}
+<div class="card wide">
+  <h3>By day</h3>
+  <div class="cols">
+    {% for d in r.days %}
+    <div class="col" title="{{ d.hours }}h">
+      <div class="col-v">{% if d.hours %}{{ '%g'|format(d.hours) }}{% endif %}</div>
+      <div class="col-bar"><div class="col-fill" style="height: {{ d.pct }}%"></div></div>
+      <div class="col-l">{{ d.dow[0] }}<span>{{ d.label }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card wide">
+  <h3>By project</h3>
+  {% for p in r.by_project %}
+  <div class="baritem">
+    <div class="bar-name">{{ p.name }}</div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{ p.pct }}%"></div></div>
+    <div class="bar-val">{{ '%g'|format(p.hours) }}h</div>
+  </div>
+  {% else %}<div class="subtle">No entries in this range.</div>{% endfor %}
+</div>
+
+{% if r.team %}
+<div class="card wide">
+  <h3>By person</h3>
+  {% for p in r.by_person %}
+  <div class="baritem">
+    <div class="bar-name">{{ p.name }}</div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{ p.pct }}%"></div></div>
+    <div class="bar-val">{{ '%g'|format(p.hours) }}h</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

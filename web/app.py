@@ -138,6 +138,12 @@ def week_page(request: Request, monday: Optional[str] = None):
     base = dt.date.fromisoformat(monday) if monday else None
     mon = ops.monday_of(base)
     grid = ops.week_grid(mon, user.get("id"))
+    # projects logged last week but not yet on this week's grid (for "copy last week")
+    prev_grid = ops.week_grid(mon - dt.timedelta(days=7), user.get("id"))
+    cur_ids = {r["project_id"] for r in grid["rows"]}
+    prev_projects = [{"id": r["project_id"], "name": r["project_name"]}
+                     for r in prev_grid["rows"] if r["project_id"] not in cur_ids]
+    target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
     return templates.TemplateResponse(request, "week.html", {
         "user": user,
         "grid": grid,
@@ -146,7 +152,100 @@ def week_page(request: Request, monday: Optional[str] = None):
         "next_mon": (mon + dt.timedelta(days=7)).isoformat(),
         "this_mon": ops.monday_of().isoformat(),
         "iso_week": mon.strftime("%G-W%V"),
+        "prev_projects": prev_projects,
+        "target": target,
+        "cap_pct": min(100, round(grid["grand_total"] / target * 100)) if target else 0,
     })
+
+
+@app.get("/healthz")
+def healthz():
+    """Cheap liveness endpoint (no auth, no Notion calls) for keep-alive pings."""
+    return {"ok": True}
+
+
+def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: Optional[str]):
+    today = dt.date.today()
+    if date_from and date_to:
+        return date_from, date_to, "custom"
+    mon = ops.monday_of(today)
+    if range_key == "last-week":
+        m = mon - dt.timedelta(days=7)
+        return m.isoformat(), (m + dt.timedelta(days=6)).isoformat(), range_key
+    if range_key == "this-month":
+        return today.replace(day=1).isoformat(), today.isoformat(), range_key
+    if range_key == "last-month":
+        first_this = today.replace(day=1)
+        last_prev = first_this - dt.timedelta(days=1)
+        return last_prev.replace(day=1).isoformat(), last_prev.isoformat(), range_key
+    return mon.isoformat(), (mon + dt.timedelta(days=6)).isoformat(), "this-week"
+
+
+def _report_data(user, scope, range_key, date_from, date_to):
+    f, t, rk = _range_bounds(range_key, date_from, date_to)
+    is_admin = auth.is_admin(user.get("email"))
+    team = scope == "team" and is_admin
+    entries = ops.entries_between(f, t, None if team else user.get("id"))
+    total = round(sum(e["hours"] for e in entries), 2)
+
+    def agg(key):
+        d = {}
+        for e in entries:
+            d[e[key]] = d.get(e[key], 0) + e["hours"]
+        mx = max(d.values(), default=0)
+        return [{"name": k, "hours": round(v, 2), "pct": round(v / mx * 100) if mx else 0}
+                for k, v in sorted(d.items(), key=lambda kv: -kv[1])]
+
+    days = []
+    d0, d1 = dt.date.fromisoformat(f), dt.date.fromisoformat(t)
+    if (d1 - d0).days <= 31:
+        by_day = {}
+        for e in entries:
+            by_day[e["date"]] = by_day.get(e["date"], 0) + e["hours"]
+        mx = max(by_day.values(), default=0)
+        cur = d0
+        while cur <= d1:
+            iso = cur.isoformat()
+            v = by_day.get(iso, 0)
+            days.append({"label": cur.strftime("%d"), "dow": cur.strftime("%a"),
+                         "hours": round(v, 2), "pct": round(v / mx * 100) if mx else 0})
+            cur += dt.timedelta(days=1)
+    return {
+        "from": f, "to": t, "range": rk, "team": team, "is_admin": is_admin,
+        "entries": entries, "total": total,
+        "by_project": agg("project"), "by_person": agg("person") if team else [],
+        "days": days, "people_count": len({e["person"] for e in entries}),
+    }
+
+
+@app.get("/reports", response_class=HTMLResponse)
+def reports_page(request: Request, scope: str = "me", range: Optional[str] = None,
+                 date_from: Optional[str] = None, date_to: Optional[str] = None):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    data = _report_data(user, scope, range, date_from, date_to)
+    return templates.TemplateResponse(request, "reports.html", {"user": user, "r": data, "scope": scope})
+
+
+@app.get("/reports.csv")
+def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None,
+                date_from: Optional[str] = None, date_to: Optional[str] = None):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    data = _report_data(user, scope, range, date_from, date_to)
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["date", "person", "project", "hours", "description"])
+    for e in sorted(data["entries"], key=lambda e: (e["date"], e["person"])):
+        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"]])
+    from fastapi.responses import Response
+    fname = f"hours_{data['from']}_{data['to']}.csv"
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
 class Cell(BaseModel):

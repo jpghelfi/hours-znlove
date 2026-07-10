@@ -14,6 +14,11 @@
       </select>
     </label>
 
+    <div class="timer-row">
+      <button type="button" class="btn" id="timerBtn" onclick="toggleTimer()">▶ Start timer</button>
+      <span class="subtle" id="timerLbl"></span>
+    </div>
+
     <div class="row2">
       <label>Date
         <input type="date" name="date" value="{{ today }}" required>
@@ -30,4 +35,42 @@
     <button type="submit">Save entry</button>
   </form>
 </div>
+
+<script>
+const TKEY = 'hours_timer';
+function tState() { try { return JSON.parse(localStorage.getItem(TKEY)) || null; } catch (e) { return null; } }
+function tFmt(ms) {
+  const s = Math.floor(ms / 1000);
+  const p = n => String(n).padStart(2, '0');
+  return p(Math.floor(s / 3600)) + ':' + p(Math.floor(s / 60) % 60) + ':' + p(s % 60);
+}
+function renderTimer() {
+  const st = tState(), btn = document.getElementById('timerBtn'), lbl = document.getElementById('timerLbl');
+  if (st) {
+    btn.textContent = '⏹ Stop timer';
+    lbl.textContent = tFmt(Date.now() - st.start) + ' — stops fill the Hours field (rounded to 0.25h)';
+  } else {
+    btn.textContent = '▶ Start timer';
+    lbl.textContent = '';
+  }
+}
+function toggleTimer() {
+  const st = tState();
+  const sel = document.querySelector('select[name=project_id]');
+  if (!st) {
+    if (!sel.value) { alert('Pick a project first'); return; }
+    localStorage.setItem(TKEY, JSON.stringify({ start: Date.now(), project: sel.value }));
+  } else {
+    const hrs = Math.max(0.25, Math.round(((Date.now() - st.start) / 3600000) * 4) / 4);
+    document.querySelector('input[name=hours]').value = hrs;
+    if (st.project) sel.value = st.project;
+    localStorage.removeItem(TKEY);
+    document.querySelector('textarea[name=description]').focus();
+  }
+  renderTimer();
+}
+// restore a running timer on page load (survives navigation/reload)
+(function () { const st = tState(); if (st && st.project) { const s = document.querySelector('select[name=project_id]'); if (s) s.value = st.project; } })();
+setInterval(renderTimer, 1000); renderTimer();
+</script>
 {% endblock %}

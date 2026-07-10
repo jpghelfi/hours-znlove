@@ -17,6 +17,7 @@
     <nav>
       <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
       <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
+      <a href="/reports" class="{% block nav_reports %}{% endblock %}">Reports</a>
       {% if user %}<span class="who">{{ user.name }}</span><a href="/logout" class="logout">Log out</a>{% endif %}
       <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙</button>
     </nav>
