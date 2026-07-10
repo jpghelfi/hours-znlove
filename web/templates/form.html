@@ -6,6 +6,7 @@
   <h1>Log hours</h1>
   <div class="subtle">Logging as <strong>{{ user.name }}</strong></div>
   {% if ok %}<div class="flash">✓ Entry saved to Notion.</div>{% endif %}
+  {% if err %}<div class="deny">{{ err }}</div>{% endif %}
   <form method="post" action="/entry" class="entry-form">
     <label>Project
       <select name="project_id" required>

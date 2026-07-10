@@ -17,7 +17,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
@@ -27,12 +27,20 @@ BASE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 
 app = FastAPI(title="Hours Tracker")
+
+# P0: never run with a guessable session secret — forged cookies = forged admins.
+_secret = os.environ.get("SESSION_SECRET")
+if not _secret:
+    if os.environ.get("AUTH_DISABLED") == "1":
+        _secret = "dev-insecure-secret"  # local dev only; login is bypassed anyway
+    else:
+        raise RuntimeError("SESSION_SECRET must be set (refusing to start with a default secret).")
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "dev-insecure-secret"),
+    secret_key=_secret,
     max_age=60 * 60 * 24 * 30,   # 30 days — stay logged in, so the Notion consent
     same_site="lax",              # is only hit on rare re-logins, not every visit
-    https_only=False,             # cookie still travels over the deployed HTTPS site
+    https_only=os.environ.get("AUTH_DISABLED") != "1",  # Secure cookie in production
 )
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
@@ -59,6 +67,29 @@ def current_user(request: Request) -> Optional[dict]:
 def _require_login(request: Request) -> Optional[dict]:
     """Return the user dict, or None if the caller should be redirected to login."""
     return current_user(request)
+
+
+def _same_origin(request: Request) -> bool:
+    """CSRF guard for state-changing POSTs: browser requests must come from us."""
+    from urllib.parse import urlparse
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if not origin:
+        return True  # non-browser clients (curl) send neither
+    return urlparse(origin).netloc == request.headers.get("host")
+
+
+def _parse_date(s: Optional[str]) -> Optional[dt.date]:
+    """Strict ISO date or None — malformed input falls back instead of 500ing."""
+    if not s:
+        return None
+    try:
+        return dt.date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+def _member_project_ids(user_id: Optional[str]) -> set:
+    return {p["id"] for p in ops.list_projects(member_of=user_id)}
 
 
 # ---- auth routes -------------------------------------------------------
@@ -94,8 +125,9 @@ def auth_callback(request: Request, code: Optional[str] = None, state: Optional[
     return RedirectResponse(url="/", status_code=303)
 
 
-@app.get("/logout")
+@app.post("/logout")
 def logout(request: Request):
+    # POST-only: a GET logout is trivially CSRF-able via <img src>.
     request.session.pop("user", None)
     return RedirectResponse(url="/login", status_code=303)
 
@@ -103,7 +135,7 @@ def logout(request: Request):
 # ---- app pages ---------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-def form_page(request: Request, ok: Optional[str] = None):
+def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -111,8 +143,16 @@ def form_page(request: Request, ok: Optional[str] = None):
         "user": user,
         "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
-        "ok": ok,
+        "ok": ok, "err": _ENTRY_ERRORS.get(err) if err else None,
     })
+
+
+_ENTRY_ERRORS = {
+    "date": "That date isn't valid — use the date picker.",
+    "hours": "Hours must be between 0.25 and 24.",
+    "project": "Pick one of your projects.",
+    "save": "Couldn't save the entry — try again.",
+}
 
 
 @app.post("/entry")
@@ -126,7 +166,18 @@ def submit_entry(
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    ops.create_entry(user.get("id"), project_id, date, hours, description)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not _parse_date(date) or len(date) != 10:
+        return RedirectResponse(url="/?err=date", status_code=303)
+    if not (0 < hours <= 24) or hours != hours:  # NaN guard
+        return RedirectResponse(url="/?err=hours", status_code=303)
+    if project_id not in _member_project_ids(user.get("id")):
+        return RedirectResponse(url="/?err=project", status_code=303)
+    try:
+        ops.create_entry(user.get("id"), project_id, date, hours, description)
+    except Exception:
+        return RedirectResponse(url="/?err=save", status_code=303)
     return RedirectResponse(url="/?ok=1", status_code=303)
 
 
@@ -135,8 +186,7 @@ def week_page(request: Request, monday: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    base = dt.date.fromisoformat(monday) if monday else None
-    mon = ops.monday_of(base)
+    mon = ops.monday_of(_parse_date(monday))  # malformed ?monday= falls back to today
     grid = ops.week_grid(mon, user.get("id"))
     # projects logged last week but not yet on this week's grid (for "copy last week")
     prev_grid = ops.week_grid(mon - dt.timedelta(days=7), user.get("id"))
@@ -166,8 +216,9 @@ def healthz():
 
 def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: Optional[str]):
     today = dt.date.today()
-    if date_from and date_to:
-        return date_from, date_to, "custom"
+    f, t = _parse_date(date_from), _parse_date(date_to)
+    if f and t and f <= t:  # both valid or the custom range is ignored
+        return f.isoformat(), t.isoformat(), "custom"
     mon = ops.monday_of(today)
     if range_key == "last-week":
         m = mon - dt.timedelta(days=7)
@@ -272,7 +323,7 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         return RedirectResponse(url="/login", status_code=303)
     is_admin = auth.is_admin(user.get("email"))
     by = by if by in ("person", "project") else "person"
-    mon = ops.monday_of(dt.date.fromisoformat(start) if start else None)
+    mon = ops.monday_of(_parse_date(start))  # malformed ?start= falls back to today
     grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
     rows = grid["rows"]
     if person:
@@ -308,7 +359,7 @@ class Alloc(BaseModel):
     person_id: str
     project_id: str
     week: str
-    hours: float
+    hours: float = Field(ge=0, le=168, allow_inf_nan=False)
 
 
 @app.post("/api/allocation")
@@ -318,16 +369,22 @@ def api_allocation(request: Request, alloc: Alloc):
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
     if not auth.is_admin(user.get("email")):
         return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    week = _parse_date(alloc.week)
+    if not week:
+        return JSONResponse({"ok": False, "error": "invalid week date"}, status_code=400)
+    week = ops.monday_of(week).isoformat()  # normalize: allocations always live on Mondays
     try:
-        return JSONResponse(ops.set_allocation(alloc.person_id, alloc.project_id, alloc.week, alloc.hours))
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse(ops.set_allocation(alloc.person_id, alloc.project_id, week, alloc.hours))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not save allocation"}, status_code=400)
 
 
 class Cell(BaseModel):
     project_id: str
     date: str
-    hours: float
+    hours: float = Field(ge=0, le=24, allow_inf_nan=False)
     person_id: Optional[str] = None  # ignored server-side; kept for client compat
 
 
@@ -336,12 +393,19 @@ def api_cell(request: Request, cell: Cell):
     user = _require_login(request)
     if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
     # Always write as the logged-in user — ignore any client-supplied person_id
     # so nobody can edit someone else's hours.
     person_id = user.get("id")
     if not person_id:
         return JSONResponse({"ok": False, "error": "no user identity"}, status_code=400)
+    if not _parse_date(cell.date) or len(cell.date) != 10:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    # membership is enforced on write, not just in the picker
+    if cell.hours and cell.project_id not in _member_project_ids(person_id):
+        return JSONResponse({"ok": False, "error": "not a member of that project"}, status_code=403)
     try:
         return JSONResponse(ops.set_cell(person_id, cell.project_id, cell.date, cell.hours))
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not save entry"}, status_code=400)

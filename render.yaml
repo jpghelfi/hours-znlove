@@ -18,6 +18,12 @@ services:
         sync: false
       - key: TIME_ENTRIES_DS_ID
         sync: false
+      - key: ALLOCATIONS_DS_ID
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: WEEK_TARGET_HOURS
+        value: "40"
       - key: NOTION_OAUTH_CLIENT_ID
         sync: false
       - key: NOTION_OAUTH_CLIENT_SECRET

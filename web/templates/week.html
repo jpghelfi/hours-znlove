@@ -33,8 +33,9 @@
     <tr data-project="{{ r.project_id }}">
       <td class="col-project">{{ r.project_name }}</td>
       {% for iso in grid.day_isos %}
-      <td class="cell"><input type="number" step="0.25" min="0" value="{{ '%g'|format(r.cells[iso]) if r.cells[iso] else '' }}"
-          data-date="{{ iso }}" onchange="saveCell(this)"></td>
+      <td class="cell"><input type="number" step="0.25" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[iso]) if r.cells[iso] else '' }}"
+          aria-label="{{ r.project_name }} — {{ iso }}" data-date="{{ iso }}"
+          onfocus="this.dataset.prev=this.value" onchange="saveCell(this)"></td>
       {% endfor %}
       <td class="col-total rowtotal">{{ '%g'|format(r.total) }}</td>
     </tr>
@@ -73,6 +74,10 @@ async function saveCell(input) {
   const project_id = tr.dataset.project;
   const date = input.dataset.date;
   const hours = parseFloat(input.value) || 0;
+  // blanking an existing value deletes the entry — confirm, and allow revert
+  if (!hours && parseFloat(input.dataset.prev)) {
+    if (!confirm('Remove this entry?')) { input.value = input.dataset.prev; return; }
+  }
   input.classList.add('saving');
   try {
     const res = await fetch('/api/cell', {
@@ -110,7 +115,7 @@ function addRowWith(pid, prName) {
   const tr = document.createElement('tr');
   tr.dataset.project = pid;
   let cells = '';
-  DAY_ISOS.forEach(iso => { cells += `<td class="cell"><input type="number" step="0.25" min="0" data-date="${iso}" onchange="saveCell(this)"></td>`; });
+  DAY_ISOS.forEach(iso => { cells += `<td class="cell"><input type="number" step="0.25" min="0" inputmode="decimal" aria-label="${prName} — ${iso}" data-date="${iso}" onfocus="this.dataset.prev=this.value" onchange="saveCell(this)"></td>`; });
   tr.innerHTML = `<td class="col-project">${prName}</td>${cells}<td class="col-total rowtotal">0</td>`;
   document.getElementById('grid-body').appendChild(tr);
   tr.querySelector('input').focus();

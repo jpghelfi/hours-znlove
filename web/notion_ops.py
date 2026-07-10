@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+import threading
 from pathlib import Path
 
 # reuse the existing client/config from src/
@@ -268,18 +269,21 @@ def schedule_grid(start_monday: dt.date, n_weeks: int = 6, person_id: str | None
 
 def set_allocation(person_id: str, project_id: str, week: str, hours: float) -> dict:
     """Upsert the (person, project, week) allocation. 0 deletes it."""
-    res = _notion.data_sources.query(
-        data_source_id=ALLOC_DS,
-        filter={"and": [
+    with _write_lock:
+        return _set_allocation_locked(person_id, project_id, week, hours)
+
+
+def _set_allocation_locked(person_id: str, project_id: str, week: str, hours: float) -> dict:
+    matches = _query_all({
+        "data_source_id": ALLOC_DS, "page_size": 100,
+        "filter": {"and": [
             {"property": "Week", "date": {"equals": week}},
             {"property": "Project", "relation": {"contains": project_id}},
-        ]})
-    match = None
-    for row in res["results"]:
-        people = row["properties"]["Person"]["people"]
-        if people and people[0]["id"] == person_id:
-            match = row
-            break
+            {"property": "Person", "people": {"contains": person_id}},
+        ]}})
+    match = matches[0] if matches else None
+    for extra in matches[1:]:
+        _notion.pages.update(extra["id"], archived=True)
     if not hours:
         if match:
             _notion.pages.update(match["id"], archived=True)
@@ -330,32 +334,52 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
     return out
 
 
-def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
-    """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry."""
-    res = _notion.data_sources.query(
-        data_source_id=TIME_DS,
-        filter={"and": [
-            {"property": "Date", "date": {"equals": date}},
-            {"property": "Project", "relation": {"contains": project_id}},
-        ]},
-    )
-    match = None
-    for row in res["results"]:
-        pid, _ = _row_person(row["properties"])
-        if pid == person_id:
-            match = row
+# Serialize upserts: the query-then-create pattern would otherwise race and
+# duplicate rows under overlapping saves (single-instance deploy, so this holds).
+_write_lock = threading.Lock()
+
+
+def _query_all(kwargs: dict) -> list:
+    out = []
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        out.extend(res["results"])
+        if not res.get("has_more"):
             break
+        kwargs["start_cursor"] = res["next_cursor"]
+    return out
 
-    if not hours:  # 0, None -> remove
-        if match:
-            _notion.pages.update(match["id"], archived=True)
-        return {"ok": True, "hours": 0}
 
-    if match:
-        _notion.pages.update(match["id"], properties={
-            "Hours": {"number": hours},
-            "Person": {"people": [{"id": person_id}]},
+def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
+    """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry.
+
+    Filters on Person in the query (not a Python scan), paginates, and
+    consolidates duplicates: the grid shows one summed cell, so a save must
+    leave exactly one row behind (or none for 0).
+    """
+    with _write_lock:
+        matches = _query_all({
+            "data_source_id": TIME_DS, "page_size": 100,
+            "filter": {"and": [
+                {"property": "Date", "date": {"equals": date}},
+                {"property": "Project", "relation": {"contains": project_id}},
+                {"property": "Person", "people": {"contains": person_id}},
+            ]},
         })
-    else:
-        create_entry(person_id, project_id, date, hours)
-    return {"ok": True, "hours": hours}
+        keep = matches[0] if matches else None
+        for extra in matches[1:]:  # duplicates from old races/forms: fold into one
+            _notion.pages.update(extra["id"], archived=True)
+
+        if not hours:  # 0, None -> remove
+            if keep:
+                _notion.pages.update(keep["id"], archived=True)
+            return {"ok": True, "hours": 0}
+
+        if keep:
+            _notion.pages.update(keep["id"], properties={
+                "Hours": {"number": hours},
+                "Person": {"people": [{"id": person_id}]},
+            })
+        else:
+            create_entry(person_id, project_id, date, hours)
+        return {"ok": True, "hours": hours}

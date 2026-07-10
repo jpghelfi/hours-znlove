@@ -55,8 +55,9 @@
     <tr data-person="{{ r.person_id }}" data-project="{{ r.project_id }}">
       <td class="col-project sub">{{ r.project_name if by == 'person' else r.person_name }}</td>
       {% for w in weeks %}
-      <td class="cell"><input type="number" step="1" min="0" value="{{ '%g'|format(r.cells[w]) if r.cells[w] else '' }}"
-          data-week="{{ w }}" onchange="saveAlloc(this)" {% if not is_admin %}disabled{% endif %}></td>
+      <td class="cell"><input type="number" step="1" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[w]) if r.cells[w] else '' }}"
+          aria-label="{{ r.person_name }} · {{ r.project_name }} — week of {{ w }}"
+          data-week="{{ w }}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)" {% if not is_admin %}disabled{% endif %}></td>
       {% endfor %}
       <td class="col-total rowtotal">{{ '%g'|format(r.cells.values()|sum) }}</td>
     </tr>
@@ -108,6 +109,9 @@ const BY = {{ by|tojson }};
 async function saveAlloc(input) {
   const tr = input.closest('tr');
   const hours = parseFloat(input.value) || 0;
+  if (!hours && parseFloat(input.dataset.prev)) {
+    if (!confirm('Remove this allocation?')) { input.value = input.dataset.prev; return; }
+  }
   input.classList.add('saving');
   try {
     const res = await fetch('/api/allocation', {
@@ -128,7 +132,7 @@ function makeRow(personId, projectId, label) {
   const tr = document.createElement('tr');
   tr.dataset.person = personId; tr.dataset.project = projectId;
   let cells = '';
-  WEEKS.forEach(w => { cells += `<td class="cell"><input type="number" step="1" min="0" data-week="${w}" onchange="saveAlloc(this)"></td>`; });
+  WEEKS.forEach(w => { cells += `<td class="cell"><input type="number" step="1" min="0" inputmode="decimal" aria-label="${label} — week of ${w}" data-week="${w}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)"></td>`; });
   tr.innerHTML = `<td class="col-project sub">${label}</td>${cells}<td class="col-total rowtotal">0</td>`;
   return tr;
 }

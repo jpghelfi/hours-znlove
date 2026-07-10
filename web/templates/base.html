@@ -19,7 +19,7 @@
       <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
       <a href="/reports" class="{% block nav_reports %}{% endblock %}">Reports</a>
       <a href="/schedule" class="{% block nav_schedule %}{% endblock %}">Schedule</a>
-      {% if user %}<span class="who">{{ user.name }}</span><a href="/logout" class="logout">Log out</a>{% endif %}
+      {% if user %}<span class="who">{{ user.name }}</span><form method="post" action="/logout" class="logout-form"><button type="submit" class="logout-btn">Log out</button></form>{% endif %}
       <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙</button>
     </nav>
   </header>
@@ -32,6 +32,11 @@
     function setThemeIcon(){var b=document.getElementById('themeBtn');if(b)b.textContent=effectiveTheme()==='dark'?'☀️':'🌙';}
     function toggleTheme(){var next=effectiveTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',next);try{localStorage.setItem('theme',next);}catch(e){}setThemeIcon();}
     setThemeIcon();
+    // scroll-wheel over a focused number cell silently changes + saves values — blur instead
+    document.addEventListener('wheel', function(e){
+      var a = document.activeElement;
+      if (a && a.matches && a.matches('.cell input') && (e.target === a || a.contains(e.target))) a.blur();
+    }, {passive: true});
   </script>
 </body>
 </html>
