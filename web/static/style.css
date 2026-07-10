@@ -191,3 +191,5 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 @media (max-width: 560px) {
   input, select, textarea { font-size: 16px; }
 }
+.pva-over { color: #d9534f; }
+.pva-under { color: var(--muted); }

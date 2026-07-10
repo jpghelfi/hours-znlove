@@ -210,21 +210,27 @@ def _report_data(user, scope, range_key, date_from, date_to):
             days.append({"label": cur.strftime("%d"), "dow": cur.strftime("%a"),
                          "hours": round(v, 2), "pct": round(v / mx * 100) if mx else 0})
             cur += dt.timedelta(days=1)
-    # planned vs actual (Forecast): allocations in range vs logged hours
-    planned = ops.planned_between(f, t, None if team else user.get("id"))
-    by_project = agg("project")
-    seen = {p["name"] for p in by_project}
-    pva = [{"name": p["name"], "actual": p["hours"], "planned": round(planned.get(p["name"], 0), 2)}
-           for p in by_project]
-    pva += [{"name": n, "actual": 0, "planned": round(v, 2)} for n, v in planned.items() if n not in seen]
-    for p in pva:
-        p["pct"] = min(150, round(p["actual"] / p["planned"] * 100)) if p["planned"] else None
+    # planned vs actual (Forecast): allocations in range vs logged hours,
+    # pivotable by project AND by person
+    planned = ops.planned_rows(f, t, None if team else user.get("id"))
+
+    def pva(dim):
+        a, p = {}, {}
+        for e in entries:
+            a[e[dim]] = a.get(e[dim], 0) + e["hours"]
+        for r in planned:
+            p[r[dim]] = p.get(r[dim], 0) + r["hours"]
+        names = sorted(set(a) | set(p), key=lambda n: -(a.get(n, 0) + p.get(n, 0)))
+        return [{"name": n, "actual": round(a.get(n, 0), 2), "planned": round(p.get(n, 0), 2),
+                 "pct": min(150, round(a.get(n, 0) / p[n] * 100)) if p.get(n) else None}
+                for n in names]
+
     return {
         "from": f, "to": t, "range": rk, "team": team, "is_admin": is_admin,
         "entries": entries, "total": total,
-        "by_project": by_project, "by_person": agg("person") if team else [],
+        "by_project": agg("project"), "by_person": agg("person") if team else [],
         "days": days, "people_count": len({e["person"] for e in entries}),
-        "pva": sorted(pva, key=lambda p: -(p["planned"] + p["actual"])),
+        "pva": pva("project"), "pva_person": pva("person"),
     }
 
 

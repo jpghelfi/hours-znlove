@@ -300,10 +300,10 @@ def set_allocation(person_id: str, project_id: str, week: str, hours: float) -> 
     return {"ok": True, "hours": hours}
 
 
-def planned_between(date_from: str, date_to: str, person_id: str | None = None) -> dict:
-    """Planned hours by project for allocations whose Week falls in the range."""
+def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
+    """Allocation rows (person, project, hours) whose Week falls in the range."""
     pname = _project_name_map()
-    out: dict = {}
+    out = []
     kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
         {"property": "Week", "date": {"on_or_after": date_from}},
         {"property": "Week", "date": {"on_or_before": date_to}},
@@ -319,8 +319,11 @@ def planned_between(date_from: str, date_to: str, person_id: str | None = None) 
             rel = props["Project"]["relation"]
             if not rel:
                 continue
-            name = pname.get(rel[0]["id"], "(none)")
-            out[name] = out.get(name, 0) + (props["Hours"]["number"] or 0)
+            out.append({
+                "person": people[0].get("name", "(unassigned)") if people else "(unassigned)",
+                "project": pname.get(rel[0]["id"], "(none)"),
+                "hours": props["Hours"]["number"] or 0,
+            })
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
