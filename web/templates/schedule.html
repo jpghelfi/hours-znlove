@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Schedule · Hours Tracker{% endblock %}
+{% block nav_schedule %}active{% endblock %}
+{% block content %}
+<div class="week-head">
+  <div>
+    <h1>Schedule</h1>
+    <div class="subtle">{% if is_admin %}Plan the team's weeks — allocated hours per project{% else %}Your planned weeks{% endif %}</div>
+  </div>
+  <div class="weeknav">
+    <a class="btn" href="/schedule?start={{ prev_start }}">← Earlier</a>
+    <a class="btn" href="/schedule?start={{ this_start }}">Now</a>
+    <a class="btn" href="/schedule?start={{ next_start }}">Later →</a>
+  </div>
+</div>
+
+<div class="grid-wrap">
+<table class="grid">
+  <thead>
+    <tr>
+      {% if is_admin %}<th class="col-person">Person</th>{% endif %}
+      <th class="col-project">Project</th>
+      {% for w in grid.weeks %}<th class="col-day">W{{ w[5:7] }}/{{ w[8:10] }}<span class="dnum">{{ w[:4] }}</span></th>{% endfor %}
+      <th class="col-total">Total</th>
+    </tr>
+  </thead>
+  <tbody id="sched-body">
+    {% for r in grid.rows %}
+    <tr data-person="{{ r.person_id }}" data-project="{{ r.project_id }}">
+      {% if is_admin %}<td class="col-person">{{ r.person_name }}</td>{% endif %}
+      <td class="col-project">{{ r.project_name }}</td>
+      {% for w in grid.weeks %}
+      <td class="cell"><input type="number" step="1" min="0" value="{{ '%g'|format(r.cells[w]) if r.cells[w] else '' }}"
+          data-week="{{ w }}" onchange="saveAlloc(this)" {% if not is_admin %}disabled{% endif %}></td>
+      {% endfor %}
+      <td class="col-total rowtotal">{{ '%g'|format(r.cells.values()|sum) }}</td>
+    </tr>
+    {% endfor %}
+    {% if not grid.rows %}
+    <tr class="empty"><td colspan="{{ (2 if is_admin else 1) + grid.weeks|length + 1 }}">No allocations yet.{% if is_admin %} Add one below.{% endif %}</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+{% if is_admin %}
+<div class="card wide" style="margin-top:16px">
+  <h3>Capacity — allocated vs {{ '%g'|format(target) }}h/week</h3>
+  <div class="grid-wrap" style="border:none">
+  <table class="grid">
+    <thead><tr><th class="col-person">Person</th>
+      {% for w in grid.weeks %}<th class="col-day">W{{ w[5:7] }}/{{ w[8:10] }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for name, totals in grid.people_totals.items() %}
+      <tr><td class="col-person">{{ name }}</td>
+        {% for w in grid.weeks %}
+        {% set v = totals[w] %}
+        <td class="heat {{ 'heat-over' if v > target else ('heat-full' if v >= target * 0.8 else ('heat-ok' if v else '')) }}">{{ '%g'|format(v) if v else '' }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="addrow card">
+  <strong>Add an allocation row</strong>
+  <div class="row2 row3">
+    <select id="al-person"><option value="" disabled selected>Person…</option>
+      {% for p in people %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <select id="al-project"><option value="" disabled selected>Project…</option>
+      {% for p in projects %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <button class="btn" onclick="addAllocRow()">Add row</button>
+  </div>
+  <div class="subtle">Type planned hours into any week cell to save. Blank a cell to remove that allocation.</div>
+</div>
+{% endif %}
+
+<script>
+const WEEKS = {{ grid.weeks|tojson }};
+const IS_ADMIN = {{ 'true' if is_admin else 'false' }};
+
+async function saveAlloc(input) {
+  const tr = input.closest('tr');
+  const hours = parseFloat(input.value) || 0;
+  input.classList.add('saving');
+  try {
+    const res = await fetch('/api/allocation', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({person_id: tr.dataset.person, project_id: tr.dataset.project, week: input.dataset.week, hours})
+    });
+    const data = await res.json();
+    input.classList.remove('saving');
+    if (!data.ok) { input.classList.add('err'); alert('Save failed: ' + (data.error||'')); return; }
+    input.classList.remove('err'); input.classList.add('saved');
+    setTimeout(() => input.classList.remove('saved'), 800);
+    let t = 0; tr.querySelectorAll('input').forEach(i => t += parseFloat(i.value)||0);
+    tr.querySelector('.rowtotal').textContent = t ? (Math.round(t*100)/100) : '0';
+  } catch (e) { input.classList.remove('saving'); input.classList.add('err'); }
+}
+
+function addAllocRow() {
+  const ps = document.getElementById('al-person'), pr = document.getElementById('al-project');
+  if (!ps.value || !pr.value) { alert('Pick a person and a project'); return; }
+  const dup = document.querySelector(`#sched-body tr[data-person="${ps.value}"][data-project="${pr.value}"]`);
+  if (dup) { dup.querySelector('input').focus(); return; }
+  const empty = document.querySelector('#sched-body tr.empty'); if (empty) empty.remove();
+  const tr = document.createElement('tr');
+  tr.dataset.person = ps.value; tr.dataset.project = pr.value;
+  let cells = '';
+  WEEKS.forEach(w => { cells += `<td class="cell"><input type="number" step="1" min="0" data-week="${w}" onchange="saveAlloc(this)"></td>`; });
+  tr.innerHTML = `<td class="col-person">${ps.selectedOptions[0].dataset.name}</td><td class="col-project">${pr.selectedOptions[0].dataset.name}</td>${cells}<td class="col-total rowtotal">0</td>`;
+  document.getElementById('sched-body').appendChild(tr);
+  tr.querySelector('input').focus();
+}
+</script>
+{% endblock %}

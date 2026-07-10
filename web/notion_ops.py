@@ -215,6 +215,118 @@ def week_grid(monday: dt.date, person_id: str) -> dict:
     }
 
 
+# ---- forecast / allocations ---------------------------------------------
+
+ALLOC_DS = _ids.get("allocations_ds_id")
+
+
+def schedule_grid(start_monday: dt.date, n_weeks: int = 6, person_id: str | None = None) -> dict:
+    """Allocations grid: rows = person × project, columns = n_weeks Mondays."""
+    weeks = [(start_monday + dt.timedelta(weeks=i)).isoformat() for i in range(n_weeks)]
+    pname = _project_name_map()
+    rows: dict = {}
+    kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
+        {"property": "Week", "date": {"on_or_after": weeks[0]}},
+        {"property": "Week", "date": {"on_or_before": weeks[-1]}},
+    ]}}
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        for row in res["results"]:
+            props = row["properties"]
+            people = props["Person"]["people"]
+            pid = people[0]["id"] if people else None
+            pname_person = people[0].get("name", "?") if people else "(unassigned)"
+            if person_id and pid != person_id:
+                continue
+            rel = props["Project"]["relation"]
+            if not rel or not props["Week"]["date"]:
+                continue
+            week = props["Week"]["date"]["start"][:10]
+            if week not in weeks:
+                continue
+            key = (pid, rel[0]["id"])
+            r = rows.setdefault(key, {
+                "person_id": pid, "person_name": pname_person,
+                "project_id": rel[0]["id"], "project_name": pname.get(rel[0]["id"], "(none)"),
+                "cells": {w: 0.0 for w in weeks},
+            })
+            r["cells"][week] += props["Hours"]["number"] or 0
+    # noqa: pagination
+        if not res.get("has_more"):
+            break
+        kwargs["start_cursor"] = res["next_cursor"]
+
+    ordered = sorted(rows.values(), key=lambda r: (r["person_name"].lower(), r["project_name"].lower()))
+    # per-person weekly totals for the capacity heat map
+    people_totals: dict = {}
+    for r in ordered:
+        pt = people_totals.setdefault(r["person_name"], {w: 0.0 for w in weeks})
+        for w in weeks:
+            pt[w] += r["cells"][w]
+    return {"weeks": weeks, "rows": ordered, "people_totals": people_totals}
+
+
+def set_allocation(person_id: str, project_id: str, week: str, hours: float) -> dict:
+    """Upsert the (person, project, week) allocation. 0 deletes it."""
+    res = _notion.data_sources.query(
+        data_source_id=ALLOC_DS,
+        filter={"and": [
+            {"property": "Week", "date": {"equals": week}},
+            {"property": "Project", "relation": {"contains": project_id}},
+        ]})
+    match = None
+    for row in res["results"]:
+        people = row["properties"]["Person"]["people"]
+        if people and people[0]["id"] == person_id:
+            match = row
+            break
+    if not hours:
+        if match:
+            _notion.pages.update(match["id"], archived=True)
+        return {"ok": True, "hours": 0}
+    if match:
+        _notion.pages.update(match["id"], properties={"Hours": {"number": hours}})
+    else:
+        pmap = _project_name_map()
+        _notion.pages.create(
+            parent={"type": "data_source_id", "data_source_id": ALLOC_DS},
+            properties={
+                "Allocation": {"title": [{"text": {"content": f"{pmap.get(project_id,'?')} — {week}"}}]},
+                "Person": {"people": [{"id": person_id}]},
+                "Project": {"relation": [{"id": project_id}]},
+                "Week": {"date": {"start": week}},
+                "Hours": {"number": hours},
+            })
+    return {"ok": True, "hours": hours}
+
+
+def planned_between(date_from: str, date_to: str, person_id: str | None = None) -> dict:
+    """Planned hours by project for allocations whose Week falls in the range."""
+    pname = _project_name_map()
+    out: dict = {}
+    kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
+        {"property": "Week", "date": {"on_or_after": date_from}},
+        {"property": "Week", "date": {"on_or_before": date_to}},
+    ]}}
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        for row in res["results"]:
+            props = row["properties"]
+            people = props["Person"]["people"]
+            pid = people[0]["id"] if people else None
+            if person_id and pid != person_id:
+                continue
+            rel = props["Project"]["relation"]
+            if not rel:
+                continue
+            name = pname.get(rel[0]["id"], "(none)")
+            out[name] = out.get(name, 0) + (props["Hours"]["number"] or 0)
+        if not res.get("has_more"):
+            break
+        kwargs["start_cursor"] = res["next_cursor"]
+    return out
+
+
 def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
     """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry."""
     res = _notion.data_sources.query(

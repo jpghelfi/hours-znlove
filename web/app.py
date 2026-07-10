@@ -210,11 +210,21 @@ def _report_data(user, scope, range_key, date_from, date_to):
             days.append({"label": cur.strftime("%d"), "dow": cur.strftime("%a"),
                          "hours": round(v, 2), "pct": round(v / mx * 100) if mx else 0})
             cur += dt.timedelta(days=1)
+    # planned vs actual (Forecast): allocations in range vs logged hours
+    planned = ops.planned_between(f, t, None if team else user.get("id"))
+    by_project = agg("project")
+    seen = {p["name"] for p in by_project}
+    pva = [{"name": p["name"], "actual": p["hours"], "planned": round(planned.get(p["name"], 0), 2)}
+           for p in by_project]
+    pva += [{"name": n, "actual": 0, "planned": round(v, 2)} for n, v in planned.items() if n not in seen]
+    for p in pva:
+        p["pct"] = min(150, round(p["actual"] / p["planned"] * 100)) if p["planned"] else None
     return {
         "from": f, "to": t, "range": rk, "team": team, "is_admin": is_admin,
         "entries": entries, "total": total,
-        "by_project": agg("project"), "by_person": agg("person") if team else [],
+        "by_project": by_project, "by_person": agg("person") if team else [],
         "days": days, "people_count": len({e["person"] for e in entries}),
+        "pva": sorted(pva, key=lambda p: -(p["planned"] + p["actual"])),
     }
 
 
@@ -246,6 +256,45 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
     fname = f"hours_{data['from']}_{data['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+@app.get("/schedule", response_class=HTMLResponse)
+def schedule_page(request: Request, start: Optional[str] = None):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    is_admin = auth.is_admin(user.get("email"))
+    mon = ops.monday_of(dt.date.fromisoformat(start) if start else None)
+    grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
+    target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
+    return templates.TemplateResponse(request, "schedule.html", {
+        "user": user, "grid": grid, "is_admin": is_admin, "target": target,
+        "people": ops.list_people() if is_admin else [],
+        "projects": ops.list_projects(),
+        "prev_start": (mon - dt.timedelta(weeks=6)).isoformat(),
+        "next_start": (mon + dt.timedelta(weeks=6)).isoformat(),
+        "this_start": ops.monday_of().isoformat(),
+    })
+
+
+class Alloc(BaseModel):
+    person_id: str
+    project_id: str
+    week: str
+    hours: float
+
+
+@app.post("/api/allocation")
+def api_allocation(request: Request, alloc: Alloc):
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user.get("email")):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    try:
+        return JSONResponse(ops.set_allocation(alloc.person_id, alloc.project_id, alloc.week, alloc.hours))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 class Cell(BaseModel):

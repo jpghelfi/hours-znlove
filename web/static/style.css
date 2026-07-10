@@ -148,6 +148,17 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 /* timer */
 .timer-row { display: flex; align-items: center; gap: 12px; }
 
+/* schedule / forecast */
+.heat { text-align: center; font-weight: 700; }
+.heat-ok { background: var(--okbg); color: var(--ok); }
+.heat-full { background: var(--saving); }
+.heat-over { background: var(--err); color: #b91c1c; }
+:root[data-theme="dark"] .heat-over { color: #fca5a5; }
+.row3 { grid-template-columns: 1fr 1fr auto !important; }
+.bar-fill.over { background: #d9534f; }
+.pva-val { min-width: 84px; }
+.cell input:disabled { color: var(--ink); opacity: 1; -webkit-text-fill-color: var(--ink); }
+
 /* ---- mobile ---- */
 @media (max-width: 560px) {
   main { margin: 18px auto; padding: 0 12px; }

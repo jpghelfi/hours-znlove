@@ -61,6 +61,20 @@
   {% else %}<div class="subtle">No entries in this range.</div>{% endfor %}
 </div>
 
+{% if r.pva %}
+<div class="card wide">
+  <h3>Planned vs actual</h3>
+  {% for p in r.pva %}
+  <div class="baritem">
+    <div class="bar-name">{{ p.name }}</div>
+    <div class="bar-track">{% if p.pct is not none %}<div class="bar-fill {{ 'over' if p.actual > p.planned }}" style="width: {{ [p.pct, 100]|min }}%"></div>{% endif %}</div>
+    <div class="bar-val pva-val">{{ '%g'|format(p.actual) }} / {{ '%g'|format(p.planned) }}h</div>
+  </div>
+  {% endfor %}
+  <div class="subtle">actual / planned — from the Schedule's weekly allocations</div>
+</div>
+{% endif %}
+
 {% if r.team %}
 <div class="card wide">
   <h3>By person</h3>

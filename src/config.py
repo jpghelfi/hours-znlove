@@ -45,6 +45,8 @@ _ENV_ID_KEYS = {
     "projects_ds_id": "PROJECTS_DS_ID",
     "time_entries_db_id": "TIME_ENTRIES_DB_ID",
     "time_entries_ds_id": "TIME_ENTRIES_DS_ID",
+    "allocations_db_id": "ALLOCATIONS_DB_ID",
+    "allocations_ds_id": "ALLOCATIONS_DS_ID",
 }
 
 
