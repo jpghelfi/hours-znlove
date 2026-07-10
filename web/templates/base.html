@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Hours Tracker{% endblock %}</title>
+  <script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -13,11 +14,18 @@
       <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
       <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
       {% if user %}<span class="who">{{ user.name }}</span><a href="/logout" class="logout">Log out</a>{% endif %}
+      <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙</button>
     </nav>
   </header>
   <main>
     {% block content %}{% endblock %}
   </main>
   <footer class="foot">Notion is the source of truth · entries sync to the Time Entries database</footer>
+  <script>
+    function effectiveTheme(){var t=document.documentElement.getAttribute('data-theme');return t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
+    function setThemeIcon(){var b=document.getElementById('themeBtn');if(b)b.textContent=effectiveTheme()==='dark'?'☀️':'🌙';}
+    function toggleTheme(){var next=effectiveTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',next);try{localStorage.setItem('theme',next);}catch(e){}setThemeIcon();}
+    setThemeIcon();
+  </script>
 </body>
 </html>

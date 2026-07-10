@@ -4,9 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · Hours Tracker</title>
+  <script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <button class="theme-btn theme-fixed" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙</button>
   <main class="login-main">
     <div class="card login-card">
       <div class="brand big">⏱ Hours Tracker</div>
@@ -22,5 +24,11 @@
       <div class="subtle small">Access is limited to approved team members.</div>
     </div>
   </main>
+  <script>
+    function effectiveTheme(){var t=document.documentElement.getAttribute('data-theme');return t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
+    function setThemeIcon(){var b=document.getElementById('themeBtn');if(b)b.textContent=effectiveTheme()==='dark'?'☀️':'🌙';}
+    function toggleTheme(){var next=effectiveTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',next);try{localStorage.setItem('theme',next);}catch(e){}setThemeIcon();}
+    setThemeIcon();
+  </script>
 </body>
 </html>
