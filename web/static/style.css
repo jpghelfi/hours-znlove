@@ -4,6 +4,9 @@
   --line: #e2e8f2; --accent: #000528; --accent-ink: #ffffff;
   --active-bg: #dceeff; --active-ink: #000528; --ring: #7cc0ff;
   --ok: #00745c; --okbg: #d6f7ee; --saving: #fff3c4; --err: #fde2e2; --err-ink: #b91c1c;
+  --chart: #2E6FBE; --chart-soft: #9CCAF0; --chart-track: #DCE6F3; --over: #C93B54;
+  --heat-ok-bg: #DDF3EC; --heat-ok-ink: #045F4B; --heat-full-bg: #D9E9FB; --heat-full-ink: #1A4E8A;
+  --heat-over-bg: #FBE2E6; --heat-over-ink: #9E2038;
   --head: #eef3fb;
 }
 :root[data-theme="dark"] {
@@ -11,6 +14,9 @@
   --line: #1b2a5c; --accent: #a1d4ff; --accent-ink: #001133;
   --active-bg: rgba(161,212,255,.16); --active-ink: #a1d4ff; --ring: #a1d4ff;
   --ok: #2fd4ac; --okbg: #06301f; --saving: #3a340f; --err: #3d1620; --err-ink: #fca5a5;
+    --chart: #7FB8F0; --chart-soft: #46699F; --chart-track: #202F66; --over: #E85D70;
+    --heat-ok-bg: #0D3B31; --heat-ok-ink: #6FE0C4; --heat-full-bg: #14305F; --heat-full-ink: #A1D4FF;
+    --heat-over-bg: #46141F; --heat-over-ink: #FFA7B4;
   --head: #0d1a4a;
 }
 @media (prefers-color-scheme: dark) {
@@ -19,6 +25,9 @@
     --line: #1b2a5c; --accent: #a1d4ff; --accent-ink: #001133;
     --active-bg: rgba(161,212,255,.16); --active-ink: #a1d4ff; --ring: #a1d4ff;
     --ok: #2fd4ac; --okbg: #06301f; --saving: #3a340f; --err: #3d1620; --err-ink: #fca5a5;
+    --chart: #7FB8F0; --chart-soft: #46699F; --chart-track: #202F66; --over: #E85D70;
+    --heat-ok-bg: #0D3B31; --heat-ok-ink: #6FE0C4; --heat-full-bg: #14305F; --heat-full-ink: #A1D4FF;
+    --heat-over-bg: #46141F; --heat-over-ink: #FFA7B4;
     --head: #0d1a4a;
   }
 }
@@ -129,30 +138,30 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .card.wide h3 { margin: 0 0 12px; font-size: 15px; }
 .baritem { display: grid; grid-template-columns: minmax(120px, 220px) 1fr 64px; gap: 12px; align-items: center; margin-bottom: 10px; }
 .bar-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-track { background: var(--head); border-radius: 7px; height: 18px; overflow: hidden; }
-.bar-fill { background: var(--accent); height: 100%; border-radius: 6px; min-width: 2px; }
+.bar-track { background: var(--chart-track); border-radius: 7px; height: 18px; overflow: hidden; }
+.bar-fill { background: var(--chart); height: 100%; border-radius: 6px; min-width: 2px; }
 .bar-val { font-size: 14px; font-weight: 700; text-align: right; }
 .cols { display: flex; gap: 8px; align-items: flex-end; height: 150px; }
 .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
 .col-v { font-size: 12px; font-weight: 700; color: var(--muted); }
-.col-bar { width: 100%; max-width: 44px; flex: 1; display: flex; align-items: flex-end; background: var(--head); border-radius: 6px; overflow: hidden; }
-.col-fill { width: 100%; background: var(--accent); border-radius: 6px 6px 0 0; }
+.col-bar { width: 100%; max-width: 44px; flex: 1; display: flex; align-items: flex-end; background: var(--chart-track); border-radius: 6px; overflow: hidden; }
+.col-fill { width: 100%; background: var(--chart); border-radius: 6px 6px 0 0; }
 .col-l { font-size: 12px; color: var(--muted); margin-top: 4px; text-align: center; }
 .col-l span { display: block; }
 
 /* weekly capacity */
 .capacity { display: flex; align-items: center; gap: 12px; margin: -6px 0 14px; }
-.cap-bar { flex: 1; height: 10px; background: var(--head); border-radius: 6px; overflow: hidden; }
-.cap-fill { height: 100%; background: var(--accent); border-radius: 6px; }
+.cap-bar { flex: 1; height: 10px; background: var(--chart-track); border-radius: 6px; overflow: hidden; }
+.cap-fill { height: 100%; background: var(--chart); border-radius: 6px; }
 
 /* timer */
 .timer-row { display: flex; align-items: center; gap: 12px; }
 
 /* schedule / forecast */
 .heat { text-align: center; font-weight: 700; }
-.heat-ok { background: var(--okbg); color: var(--ok); }
-.heat-full { background: var(--saving); }
-.heat-over { background: var(--err); color: var(--err-ink); }
+.heat-ok { background: var(--heat-ok-bg); color: var(--heat-ok-ink); }
+.heat-full { background: var(--heat-full-bg); color: var(--heat-full-ink); }
+.heat-over { background: var(--heat-over-bg); color: var(--heat-over-ink); }
 .row3 { grid-template-columns: 1fr 1fr auto !important; }
 .cell input:disabled { color: var(--ink); opacity: 1; -webkit-text-fill-color: var(--ink); }
 .group-row td { background: var(--head); font-weight: 800; }
@@ -197,9 +206,9 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 /* scheduled vs tracked */
 .pva-legend { display: flex; gap: 18px; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
 .pva-legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
-.dot-sched { background: var(--head); border: 1px solid var(--line); }
-.dot-track { background: var(--accent); }
-.dot-over { background: #d9534f; }
+.dot-sched { background: var(--chart-soft); }
+.dot-track { background: var(--chart); }
+.dot-over { background: var(--over); }
 .pva-item { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .pva-item:last-child { border-bottom: none; }
 .pva-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -211,11 +220,11 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .chip-none { background: var(--head); color: var(--muted); font-weight: 600; }
 .pva-row { display: grid; grid-template-columns: 76px 1fr 56px; gap: 10px; align-items: center; margin: 4px 0; }
 .pva-lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.pva-track { background: var(--head); border-radius: 7px; height: 16px; overflow: hidden; }
+.pva-track { background: var(--chart-track); border-radius: 7px; height: 16px; overflow: hidden; }
 .pva-bar { height: 100%; border-radius: 7px; min-width: 3px; }
-.pva-bar.sched { background: color-mix(in srgb, var(--accent) 32%, var(--head)); }
-.pva-bar.track { background: var(--accent); }
-.pva-bar.track.over { background: #d9534f; }
+.pva-bar.sched { background: var(--chart-soft); }
+.pva-bar.track { background: var(--chart); }
+.pva-bar.track.over { background: var(--over); }
 .pva-h { font-size: 14px; font-weight: 700; text-align: right; }
 
 /* mobile refinements */
