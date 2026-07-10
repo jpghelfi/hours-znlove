@@ -109,7 +109,7 @@ def form_page(request: Request, ok: Optional[str] = None):
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "form.html", {
         "user": user,
-        "projects": ops.list_projects(),
+        "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
         "ok": ok,
     })
@@ -141,7 +141,7 @@ def week_page(request: Request, monday: Optional[str] = None):
     return templates.TemplateResponse(request, "week.html", {
         "user": user,
         "grid": grid,
-        "projects": ops.list_projects(),
+        "projects": ops.list_projects(member_of=user.get("id")),
         "prev_mon": (mon - dt.timedelta(days=7)).isoformat(),
         "next_mon": (mon + dt.timedelta(days=7)).isoformat(),
         "this_mon": ops.monday_of().isoformat(),

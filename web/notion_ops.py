@@ -59,17 +59,24 @@ def get_user(user_id: str) -> dict:
     }
 
 
-def list_projects(active_only: bool = True) -> list[dict]:
+def list_projects(active_only: bool = True, member_of: str | None = None) -> list[dict]:
+    """List projects. If member_of (a Notion user id) is given, return only
+    projects that user is a member of (the People property includes them)."""
     projects = []
     kwargs = {"data_source_id": PROJECTS_DS, "page_size": 100}
     while True:
         res = _notion.data_sources.query(**kwargs)
         for row in res["results"]:
-            title = row["properties"]["Name"]["title"]
+            props = row["properties"]
+            title = props["Name"]["title"]
             name = title[0]["plain_text"] if title else "(untitled)"
-            active = row["properties"].get("Active", {}).get("checkbox", True)
+            active = props.get("Active", {}).get("checkbox", True)
             if active_only and not active:
                 continue
+            if member_of is not None:
+                members = [p["id"] for p in props.get("People", {}).get("people", [])]
+                if member_of not in members:
+                    continue
             projects.append({"id": row["id"], "name": name})
         if not res.get("has_more"):
             break
