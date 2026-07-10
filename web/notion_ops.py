@@ -120,8 +120,8 @@ def week_days(monday: dt.date) -> list[dt.date]:
     return [monday + dt.timedelta(days=i) for i in range(5)]  # Mon..Fri
 
 
-def week_grid(monday: dt.date) -> dict:
-    """Build the Mon–Fri grid: rows keyed by (person, project), each with per-day hours."""
+def week_grid(monday: dt.date, person_id: str) -> dict:
+    """Build the Mon–Fri grid for a single person: rows keyed by project."""
     days = week_days(monday)
     day_isos = [d.isoformat() for d in days]
     pname_map = _project_name_map()
@@ -148,22 +148,22 @@ def week_grid(monday: dt.date) -> dict:
         rel = props["Project"]["relation"]
         if not rel:
             continue
+        pid, _ = _row_person(props)
+        if pid != person_id:  # each person sees only their own hours
+            continue
         project_id = rel[0]["id"]
-        person_id, person_name = _row_person(props)
         date = props["Date"]["date"]["start"][:10] if props["Date"]["date"] else None
         hours = props["Hours"]["number"] or 0
         if date not in day_isos:
             continue
-        key = (person_id or "none", project_id)
-        row = rows.setdefault(key, {
-            "person_id": person_id, "person_name": person_name,
-            "project_id": project_id, "project_name": pname_map.get(project_id, "(none)"),
+        row = rows.setdefault(project_id, {
+            "project_id": project_id,
+            "project_name": pname_map.get(project_id, "(none)"),
             "cells": {iso: 0.0 for iso in day_isos},
         })
         row["cells"][date] += hours
 
-    # order rows by person then project
-    ordered = sorted(rows.values(), key=lambda r: (r["person_name"].lower(), r["project_name"].lower()))
+    ordered = sorted(rows.values(), key=lambda r: r["project_name"].lower())
     for r in ordered:
         r["total"] = round(sum(r["cells"].values()), 2)
     day_totals = {iso: round(sum(r["cells"][iso] for r in ordered), 2) for iso in day_isos}

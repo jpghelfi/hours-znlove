@@ -40,7 +40,13 @@ def _startup() -> None:
 
 def current_user(request: Request) -> Optional[dict]:
     if auth.auth_disabled():
-        return {"id": None, "name": "Dev User", "email": "dev@local"}
+        # Local dev: act as a real person so per-user filtering works. Set
+        # DEV_USER_ID (a Notion user id) in .env to see that person's hours.
+        return {
+            "id": os.environ.get("DEV_USER_ID") or None,
+            "name": os.environ.get("DEV_USER_NAME", "Dev User"),
+            "email": os.environ.get("DEV_USER_EMAIL", "dev@local"),
+        }
     return request.session.get("user")
 
 
@@ -126,12 +132,11 @@ def week_page(request: Request, monday: Optional[str] = None):
         return RedirectResponse(url="/login", status_code=303)
     base = dt.date.fromisoformat(monday) if monday else None
     mon = ops.monday_of(base)
-    grid = ops.week_grid(mon)
+    grid = ops.week_grid(mon, user.get("id"))
     return templates.TemplateResponse("week.html", {
         "request": request,
         "user": user,
         "grid": grid,
-        "people": ops.list_people(),
         "projects": ops.list_projects(),
         "prev_mon": (mon - dt.timedelta(days=7)).isoformat(),
         "next_mon": (mon + dt.timedelta(days=7)).isoformat(),
@@ -141,17 +146,23 @@ def week_page(request: Request, monday: Optional[str] = None):
 
 
 class Cell(BaseModel):
-    person_id: str
     project_id: str
     date: str
     hours: float
+    person_id: Optional[str] = None  # ignored server-side; kept for client compat
 
 
 @app.post("/api/cell")
 def api_cell(request: Request, cell: Cell):
-    if not _require_login(request):
+    user = _require_login(request)
+    if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    # Always write as the logged-in user — ignore any client-supplied person_id
+    # so nobody can edit someone else's hours.
+    person_id = user.get("id")
+    if not person_id:
+        return JSONResponse({"ok": False, "error": "no user identity"}, status_code=400)
     try:
-        return JSONResponse(ops.set_cell(cell.person_id, cell.project_id, cell.date, cell.hours))
+        return JSONResponse(ops.set_cell(person_id, cell.project_id, cell.date, cell.hours))
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
