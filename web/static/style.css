@@ -19,13 +19,15 @@ body {
 }
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 22px; background: var(--card); border-bottom: 1px solid var(--line);
+  gap: 8px 14px; flex-wrap: wrap;
+  padding: 12px 18px; background: var(--card); border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 5;
 }
-.brand { font-weight: 700; }
+.brand { font-weight: 700; white-space: nowrap; }
+.topbar nav { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
 .topbar nav a {
-  margin-left: 16px; text-decoration: none; color: var(--muted); font-weight: 600;
-  padding: 6px 10px; border-radius: 8px;
+  text-decoration: none; color: var(--muted); font-weight: 600;
+  padding: 6px 10px; border-radius: 8px; white-space: nowrap;
 }
 .topbar nav a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 main { max-width: 1000px; margin: 28px auto; padding: 0 18px; }
@@ -55,11 +57,14 @@ button, .btn {
 /* weekly grid */
 .week-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 16px; }
 .weeknav { display: flex; gap: 8px; }
-.grid-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
-table.grid { border-collapse: collapse; width: 100%; min-width: 720px; }
+.grid-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .grid th, .grid td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: center; }
 .grid thead th { background: var(--head); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
 .col-person, .col-project { text-align: left; }
+/* keep the Project column visible while day columns scroll horizontally */
+.grid .col-project { position: sticky; left: 0; background: var(--card); z-index: 1; }
+.grid thead .col-project, .grid tfoot .col-project { background: var(--head); z-index: 2; }
 .grid .col-person { font-weight: 600; }
 .dnum { display: block; font-size: 11px; color: var(--muted); }
 .cell { padding: 4px; }
@@ -77,8 +82,8 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 720px; }
 .foot { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
 
 /* nav user */
-.topbar nav .who { margin-left: 16px; color: var(--muted); font-weight: 600; font-size: 13px; }
-.topbar nav a.logout { margin-left: 10px; color: var(--muted); font-size: 13px; }
+.topbar nav .who { color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
+.topbar nav a.logout { color: var(--muted); font-size: 13px; }
 
 /* login page */
 .login-main { display: flex; min-height: 70vh; align-items: center; justify-content: center; }
@@ -91,3 +96,31 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 720px; }
 .login-card .small { font-size: 12px; }
 .deny { background: var(--err); color: #b91c1c; border-radius: 9px; padding: 10px 12px; margin: 12px 0; font-weight: 600; font-size: 13px; }
 @media (prefers-color-scheme: dark) { .deny { color: #fca5a5; } }
+
+/* ---- mobile ---- */
+@media (max-width: 560px) {
+  main { margin: 18px auto; padding: 0 12px; }
+  .topbar { padding: 10px 14px; }
+  .brand { font-size: 15px; }
+  .card { padding: 18px; border-radius: 12px; }
+  .row2 { grid-template-columns: 1fr 1fr; gap: 10px; }
+  h1 { font-size: 20px; }
+
+  /* week header: stack title and controls */
+  .week-head { flex-direction: column; align-items: stretch; gap: 12px; }
+  .weeknav { justify-content: space-between; }
+  .weeknav .btn { flex: 1; text-align: center; padding: 9px 8px; }
+
+  /* grid: tighter so more days fit before scrolling */
+  .grid th, .grid td { padding: 7px 6px; }
+  .cell input { padding: 7px 2px; font-size: 15px; }  /* 16px+ avoids iOS zoom-on-focus */
+  .col-project { max-width: 96px; }
+
+  /* add-row: stack the picker and button */
+  .addrow .row2 { grid-template-columns: 1fr; gap: 10px; }
+  .addrow .row2 .btn { width: 100%; }
+}
+/* prevent iOS auto-zoom when focusing inputs (needs >=16px) */
+@media (max-width: 560px) {
+  input, select, textarea { font-size: 16px; }
+}
