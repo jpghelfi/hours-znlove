@@ -61,7 +61,7 @@ def _require_login(request: Request) -> Optional[dict]:
 def login_landing(request: Request):
     if current_user(request):
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "denied": request.query_params.get("denied")})
+    return templates.TemplateResponse(request, "login.html", {"denied": request.query_params.get("denied")})
 
 
 @app.get("/login/start")
@@ -101,8 +101,7 @@ def form_page(request: Request, ok: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("form.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "form.html", {
         "user": user,
         "projects": ops.list_projects(),
         "today": dt.date.today().isoformat(),
@@ -133,8 +132,7 @@ def week_page(request: Request, monday: Optional[str] = None):
     base = dt.date.fromisoformat(monday) if monday else None
     mon = ops.monday_of(base)
     grid = ops.week_grid(mon, user.get("id"))
-    return templates.TemplateResponse("week.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "week.html", {
         "user": user,
         "grid": grid,
         "projects": ops.list_projects(),
