@@ -27,7 +27,13 @@ BASE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 
 app = FastAPI(title="Hours Tracker")
-app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET", "dev-insecure-secret"))
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET", "dev-insecure-secret"),
+    max_age=60 * 60 * 24 * 30,   # 30 days — stay logged in, so the Notion consent
+    same_site="lax",              # is only hit on rare re-logins, not every visit
+    https_only=False,             # cookie still travels over the deployed HTTPS site
+)
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
 
