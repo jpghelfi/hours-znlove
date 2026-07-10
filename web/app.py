@@ -259,21 +259,42 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
 
 
 @app.get("/schedule", response_class=HTMLResponse)
-def schedule_page(request: Request, start: Optional[str] = None):
+def schedule_page(request: Request, start: Optional[str] = None, by: str = "person",
+                  person: Optional[str] = None, project: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     is_admin = auth.is_admin(user.get("email"))
+    by = by if by in ("person", "project") else "person"
     mon = ops.monday_of(dt.date.fromisoformat(start) if start else None)
     grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
+    rows = grid["rows"]
+    if person:
+        rows = [r for r in rows if r["person_id"] == person]
+    if project:
+        rows = [r for r in rows if r["project_id"] == project]
+    # group rows by the chosen pivot, with per-group weekly totals
+    groups: dict = {}
+    for r in rows:
+        gid = r["person_id"] if by == "person" else r["project_id"]
+        gname = r["person_name"] if by == "person" else r["project_name"]
+        g = groups.setdefault(gid, {"id": gid, "name": gname, "rows": [],
+                                    "totals": {w: 0.0 for w in grid["weeks"]}})
+        g["rows"].append(r)
+        for w in grid["weeks"]:
+            g["totals"][w] += r["cells"][w]
     target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
     return templates.TemplateResponse(request, "schedule.html", {
-        "user": user, "grid": grid, "is_admin": is_admin, "target": target,
+        "user": user, "weeks": grid["weeks"], "by": by,
+        "groups": sorted(groups.values(), key=lambda g: g["name"].lower()),
+        "focus_person": person or "", "focus_project": project or "",
+        "is_admin": is_admin, "target": target,
         "people": ops.list_people() if is_admin else [],
         "projects": ops.list_projects(),
         "prev_start": (mon - dt.timedelta(weeks=6)).isoformat(),
         "next_start": (mon + dt.timedelta(weeks=6)).isoformat(),
         "this_start": ops.monday_of().isoformat(),
+        "start_iso": mon.isoformat(),
     })
 
 

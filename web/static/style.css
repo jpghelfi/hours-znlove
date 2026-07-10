@@ -158,6 +158,11 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .bar-fill.over { background: #d9534f; }
 .pva-val { min-width: 84px; }
 .cell input:disabled { color: var(--ink); opacity: 1; -webkit-text-fill-color: var(--ink); }
+.group-row td { background: var(--head); font-weight: 800; }
+.col-project.sub { padding-left: 22px; font-weight: 500; color: var(--muted); }
+.group-add td { padding: 4px 10px 10px; }
+.group-add select { max-width: 320px; font-size: 13px; padding: 6px 8px; background: transparent; border-style: dashed; color: var(--muted); }
+.range-form select { max-width: 200px; }
 
 /* ---- mobile ---- */
 @media (max-width: 560px) {
