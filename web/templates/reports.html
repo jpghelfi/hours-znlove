@@ -65,14 +65,33 @@
 {% if items %}
 <div class="card wide">
   <h3>{{ title }}</h3>
+  <div class="pva-legend">
+    <span><i class="dot dot-sched"></i> Scheduled</span>
+    <span><i class="dot dot-track"></i> Tracked</span>
+    <span><i class="dot dot-over"></i> Over schedule</span>
+  </div>
   {% for p in items %}
-  <div class="baritem">
-    <div class="bar-name">{{ p.name }}</div>
-    <div class="bar-track">{% if p.pct is not none %}<div class="bar-fill {{ 'over' if p.actual > p.planned }}" style="width: {{ [p.pct, 100]|min }}%"></div>{% endif %}</div>
-    <div class="bar-val pva-val {{ 'pva-over' if p.actual > p.planned else ('pva-under' if p.planned and p.actual < p.planned) }}">{{ '%g'|format(p.actual) }} / {{ '%g'|format(p.planned) }}h</div>
+  <div class="pva-item">
+    <div class="pva-head">
+      <span class="pva-name">{{ p.name }}</span>
+      <span class="pva-nums">
+        {% if p.done is not none %}
+        <span class="chip {{ 'chip-over' if p.delta > 0 else ('chip-ok' if p.done >= 90 else 'chip-under') }}">
+          {{ p.done }}% {{ '· +' ~ '%g'|format(p.delta) ~ 'h over' if p.delta > 0 else ('· ' ~ '%g'|format(-p.delta) ~ 'h left' if p.delta < 0 else '· on plan') }}
+        </span>
+        {% else %}
+        <span class="chip chip-none">not scheduled</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="pva-row"><span class="pva-lbl">Scheduled</span>
+      <div class="pva-track">{% if p.planned %}<div class="pva-bar sched" style="width: {{ p.pct_p }}%"></div>{% endif %}</div>
+      <span class="pva-h">{{ '%g'|format(p.planned) }}h</span></div>
+    <div class="pva-row"><span class="pva-lbl">Tracked</span>
+      <div class="pva-track">{% if p.actual %}<div class="pva-bar track {{ 'over' if p.delta > 0 and p.planned }}" style="width: {{ p.pct_a }}%"></div>{% endif %}</div>
+      <span class="pva-h">{{ '%g'|format(p.actual) }}h</span></div>
   </div>
   {% endfor %}
-  <div class="subtle">tracked / scheduled — from the Schedule's weekly allocations</div>
 </div>
 {% endif %}
 {% endmacro %}

@@ -272,9 +272,18 @@ def _report_data(user, scope, range_key, date_from, date_to):
         for r in planned:
             p[r[dim]] = p.get(r[dim], 0) + r["hours"]
         names = sorted(set(a) | set(p), key=lambda n: -(a.get(n, 0) + p.get(n, 0)))
-        return [{"name": n, "actual": round(a.get(n, 0), 2), "planned": round(p.get(n, 0), 2),
-                 "pct": min(150, round(a.get(n, 0) / p[n] * 100)) if p.get(n) else None}
-                for n in names]
+        scale = max([max(a.get(n, 0), p.get(n, 0)) for n in names], default=0) or 1
+        out = []
+        for n in names:
+            av, pv = round(a.get(n, 0), 2), round(p.get(n, 0), 2)
+            out.append({
+                "name": n, "actual": av, "planned": pv,
+                # both bars share one scale so lengths are comparable across rows
+                "pct_a": round(av / scale * 100), "pct_p": round(pv / scale * 100),
+                "delta": round(av - pv, 2),
+                "done": round(av / pv * 100) if pv else None,
+            })
+        return out
 
     return {
         "from": f, "to": t, "range": rk, "team": team, "is_admin": is_admin,
