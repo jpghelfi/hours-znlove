@@ -10,7 +10,6 @@ from __future__ import annotations
 import datetime as dt
 import os
 import secrets
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -49,36 +48,11 @@ app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 @app.on_event("startup")
 def _startup() -> None:
     ops.ensure_person_property()
-    _start_keepalive()
 
 
 @app.get("/healthz")
 def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
-
-
-# Render's free tier spins the instance down after 15 min without inbound
-# traffic; requesting our own public URL counts as traffic, so a 10-minute
-# self-ping keeps it awake. Render sets RENDER_EXTERNAL_URL automatically —
-# absent locally, so dev servers don't ping. KEEPALIVE_MINUTES=0 disables.
-def _start_keepalive() -> None:
-    base_url = os.environ.get("RENDER_EXTERNAL_URL")
-    minutes = float(os.environ.get("KEEPALIVE_MINUTES", "10"))
-    if not base_url or minutes <= 0:
-        return
-
-    def _ping_forever() -> None:
-        import time
-        import urllib.request
-        url = base_url.rstrip("/") + "/healthz"
-        while True:
-            time.sleep(minutes * 60)
-            try:
-                urllib.request.urlopen(url, timeout=30).read()
-            except Exception:
-                pass  # transient failure — the next ping is 10 min away anyway
-
-    threading.Thread(target=_ping_forever, name="keepalive", daemon=True).start()
 
 
 # ---- auth helpers ------------------------------------------------------
