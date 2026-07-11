@@ -8,7 +8,7 @@
     <h1>Reports</h1>
     <div class="subtle">{{ r.from }} → {{ r.to }}{% if r.team %} · whole team{% else %} · {{ user.name }}{% endif %}</div>
   </div>
-  <div class="weeknav">
+  <div class="weeknav weeknav-4">
     <a class="btn {{ 'active' if r.range == 'this-week' }}" href="/reports?range=this-week{{ qs }}">This week</a>
     <a class="btn {{ 'active' if r.range == 'last-week' }}" href="/reports?range=last-week{{ qs }}">Last week</a>
     <a class="btn {{ 'active' if r.range == 'this-month' }}" href="/reports?range=this-month{{ qs }}">This month</a>
@@ -18,14 +18,18 @@
 
 <form class="range-form" method="get" action="/reports">
   <input type="hidden" name="scope" value="{{ scope }}">
-  <label>From <input type="date" name="date_from" value="{{ r.from }}"></label>
-  <label>To <input type="date" name="date_to" value="{{ r.to }}"></label>
-  <button type="submit" class="btn">Apply</button>
-  {% if r.is_admin %}
-    {% if r.team %}<a class="btn" href="/reports?range={{ r.range }}&scope=me">👤 My hours</a>
-    {% else %}<a class="btn" href="/reports?range={{ r.range }}&scope=team">👥 Team</a>{% endif %}
-  {% endif %}
-  <a class="btn" href="/reports.csv?range={{ r.range }}&date_from={{ r.from }}&date_to={{ r.to }}{{ qs }}">⬇ CSV</a>
+  <div class="range-dates">
+    <label>From <input type="date" name="date_from" value="{{ r.from }}"></label>
+    <label>To <input type="date" name="date_to" value="{{ r.to }}"></label>
+  </div>
+  <div class="range-actions">
+    <button type="submit" class="btn">Apply</button>
+    {% if r.is_admin %}
+      {% if r.team %}<a class="btn" href="/reports?range={{ r.range }}&scope=me">👤 My hours</a>
+      {% else %}<a class="btn" href="/reports?range={{ r.range }}&scope=team">👥 Team</a>{% endif %}
+    {% endif %}
+    <a class="btn" href="/reports.csv?range={{ r.range }}&date_from={{ r.from }}&date_to={{ r.to }}{{ qs }}">⬇ CSV</a>
+  </div>
 </form>
 
 <div class="statrow">

@@ -46,6 +46,7 @@ h1 { letter-spacing: -0.015em; }
 }
 .brand { font-weight: 700; white-space: nowrap; }
 .topbar nav { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.nav-links, .nav-user { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
 .topbar nav a {
   text-decoration: none; color: var(--muted); font-weight: 600;
   padding: 6px 10px; border-radius: 8px; white-space: nowrap;
@@ -69,9 +70,13 @@ h1 { font-size: 26px; margin: 0 0 4px; }
 .entry-form { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 13px; color: var(--muted); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.row2 > label { min-width: 0; } /* grid blowout guard: lets date/number inputs shrink instead of overlapping */
 input, select, textarea {
   font: inherit; color: var(--ink); background: var(--bg);
   border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; width: 100%;
+}
+input[type="date"] {
+  -webkit-appearance: none; appearance: none; min-width: 0; text-align: left;
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--ring); border-color: var(--ring); }
 button, .btn {
@@ -129,6 +134,7 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .range-form label { display: flex; flex-direction: row; align-items: center; gap: 8px; }
 .range-form label { font-size: 12px; }
 .range-form input[type=date] { padding: 7px 8px; }
+.range-dates, .range-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .weeknav .btn.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .statrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .stat { text-align: center; padding: 16px; max-width: none; }
@@ -178,25 +184,56 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .brand { font-size: 15px; }
   .card { padding: 18px; border-radius: 12px; }
   .row2 { grid-template-columns: 1fr 1fr; gap: 10px; }
-  h1 { font-size: 20px; }
+  h1 { font-size: 21px; }
+  /* prevent iOS auto-zoom on focus (needs >=16px) */
+  input, select, textarea { font-size: 16px; }
+  /* consistent, tap-friendly height so Date/Hours (and other paired fields) align */
+  .row2 input, .row2 select, .range-form input, .range-form select { min-height: 44px; }
 
   /* week header: stack title and controls */
   .week-head { flex-direction: column; align-items: stretch; gap: 12px; }
-  .weeknav { justify-content: space-between; }
+  .weeknav { justify-content: space-between; width: 100%; }
   .weeknav .btn { flex: 1; text-align: center; padding: 9px 8px; }
+  /* reports' 4-item range nav: tidy 2x2 grid instead of squeezed, wrapping chips.
+     Scoped to .weeknav-4 so the 3-item Prev/This week/Next nav (week/schedule) is untouched. */
+  .weeknav-4 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .weeknav-4 .btn { flex: none; padding: 10px 6px; white-space: nowrap; }
 
   /* grid: tighter so more days fit before scrolling */
   .grid th, .grid td { padding: 7px 6px; }
-  .cell input { padding: 7px 2px; font-size: 15px; }  /* 16px+ avoids iOS zoom-on-focus */
+  .cell input { padding: 7px 2px; font-size: 15px; border-color: var(--line); background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .col-project { max-width: 96px; }
 
   /* add-row: stack the picker and button */
   .addrow .row2 { grid-template-columns: 1fr; gap: 10px; }
   .addrow .row2 .btn { width: 100%; }
-}
-/* prevent iOS auto-zoom when focusing inputs (needs >=16px) */
-@media (max-width: 560px) {
-  input, select, textarea { font-size: 16px; }
+
+  /* reports range-form: From/To share a row, actions share the next row evenly */
+  .range-dates, .range-actions { width: 100%; }
+  .range-dates label { flex: 1; }
+  .range-form input[type=date] { width: 100%; }
+  .range-actions .btn { flex: 1; text-align: center; padding: 10px 6px; white-space: nowrap; }
+  .range-form select { flex: 1; min-width: 130px; }
+
+  /* stat tiles: one row of three; 2x2 once a 4th (people) tile shows up in team scope */
+  .statrow { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .statrow:has(> :nth-child(4)) { grid-template-columns: 1fr 1fr; }
+  .stat { padding: 12px 8px; }
+  .stat-n { font-size: 23px; }
+
+  /* project/person bars: name+value on one line, bar full-width below, instead of truncating */
+  .baritem {
+    grid-template-columns: 1fr auto; grid-template-areas: "name val" "bar bar";
+    row-gap: 6px; column-gap: 8px;
+  }
+  .bar-name { grid-area: name; }
+  .bar-track { grid-area: bar; }
+  .bar-val { grid-area: val; }
+  .card.wide { padding: 16px; }
+
+  .pva-row { grid-template-columns: 64px 1fr 48px; gap: 8px; }
+  .pva-lbl { font-size: 10px; }
+  .cols { height: 110px; }
 }
 
 .logout-form { display: inline; }
@@ -227,21 +264,6 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .pva-bar.track.over { background: var(--over); }
 .pva-h { font-size: 14px; font-weight: 700; text-align: right; }
 
-/* mobile refinements */
-@media (max-width: 560px) {
-  h1 { font-size: 21px; }
-  main { padding: 0 12px; }
-  .statrow { grid-template-columns: 1fr 1fr; }
-  .stat-n { font-size: 26px; }
-  .baritem { grid-template-columns: 92px 1fr 54px; gap: 8px; }
-  .pva-row { grid-template-columns: 64px 1fr 48px; gap: 8px; }
-  .pva-lbl { font-size: 10px; }
-  .range-form select, .range-form input[type=date] { flex: 1; min-width: 130px; }
-  .cols { height: 110px; }
-  .cell input { border-color: var(--line); background: color-mix(in srgb, var(--bg) 55%, transparent); }
-  .weeknav { width: 100%; }
-}
-
 /* segmented "Group by" control (Schedule) */
 .seg { display: inline-flex; align-items: center; }
 .seg-label { font-size: 12px; font-weight: 600; color: var(--muted);
@@ -254,4 +276,21 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .seg-opt:hover { color: var(--ink); background: var(--active-bg); }
 .seg-opt.is-on { background: var(--accent); color: var(--accent-ink); }
 .seg-opt:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-@media (max-width: 720px) { .filters-label { display: none; } .seg-opts { flex: 1; } .seg-opt { flex: 1; text-align: center; } }
+@media (max-width: 720px) {
+  .filters-label { display: none; } .seg-opts { flex: 1; } .seg-opt { flex: 1; text-align: center; }
+
+  /* topbar: two tidy rows instead of ragged wrapping — row 1 is brand + user
+     cluster, row 2 is the nav links spanning full width. `nav` becomes a
+     transparent wrapper (display:contents) so its two children act as direct
+     flex items of .topbar, which is what lets them land on different rows. */
+  .topbar { flex-wrap: wrap; row-gap: 8px; }
+  .topbar nav { display: contents; }
+  .nav-user { order: 2; }
+  .nav-links {
+    order: 3; flex: 1 1 100%; width: 100%;
+    display: flex; gap: 4px;
+  }
+  .nav-links a { flex: 1; text-align: center; font-size: 13px; padding: 7px 4px; white-space: nowrap; }
+  /* the page body already shows who's logged in — drop the name to save space */
+  .who { display: none; }
+}
