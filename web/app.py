@@ -324,6 +324,53 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
+def _schedule_placeholder_rows(existing_rows: list[dict], weeks: list[str], projects: list[dict],
+                               project_filter: Optional[str], person_scope: Optional[str],
+                               name_map: dict) -> list[dict]:
+    """Assignment rows schedule_grid wouldn't otherwise surface: a person is on
+    a project's People property but has logged no allocation for it yet.
+    Shaped exactly like schedule_grid's rows (same keys, all-zero cells) so
+    the template renders them as ordinary, empty-input rows.
+
+    project_filter: the selected ?project=, if any.
+    person_scope: the person to scope to — the admin's ?person= pick, or the
+    viewer's own id for non-admins. When both project_filter and person_scope
+    are set, only their intersection (that one person/project pair) is added.
+    """
+    seen = {(r["person_id"], r["project_id"]) for r in existing_rows}
+    empty_cells = {w: 0.0 for w in weeks}
+    placeholders: list[dict] = []
+
+    def add(pid, pname, prid, prname):
+        key = (pid, prid)
+        if key in seen:
+            return
+        seen.add(key)
+        placeholders.append({
+            "person_id": pid, "person_name": pname,
+            "project_id": prid, "project_name": prname,
+            "cells": dict(empty_cells),
+        })
+
+    if project_filter:
+        proj = next((p for p in projects if p["id"] == project_filter), None)
+        if proj:
+            for mid in proj.get("member_ids", []):
+                if person_scope and mid != person_scope:
+                    continue  # a person filter is also active — only that intersection
+                add(mid, name_map.get(mid, "(unnamed)"), proj["id"], proj["name"])
+
+    if person_scope:
+        pname = name_map.get(person_scope, "(unnamed)")
+        for proj in projects:
+            if project_filter and proj["id"] != project_filter:
+                continue  # a project filter is also active — only that intersection
+            if person_scope in proj.get("member_ids", []):
+                add(person_scope, pname, proj["id"], proj["name"])
+
+    return placeholders
+
+
 @app.get("/schedule", response_class=HTMLResponse)
 def schedule_page(request: Request, start: Optional[str] = None, by: str = "person",
                   person: Optional[str] = None, project: Optional[str] = None):
@@ -339,6 +386,22 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         rows = [r for r in rows if r["person_id"] == person]
     if project:
         rows = [r for r in rows if r["project_id"] == project]
+
+    people = ops.list_people() if is_admin else []
+    projects = ops.list_projects(include_members=True)
+
+    # Fill in assignments with no logged allocation: a project filter should
+    # list every person on that project, a person filter (or a non-admin's
+    # implicit self-scope) should list every project they're on. The
+    # unfiltered admin view (person_scope and project_filter both unset)
+    # is left untouched — allocation rows only, as today.
+    person_scope = person if is_admin else user.get("id")
+    if project or person_scope:
+        name_map = {p["id"]: p["name"] for p in people} if is_admin else {person_scope: user.get("name")}
+        placeholders = _schedule_placeholder_rows(rows, grid["weeks"], projects, project, person_scope, name_map)
+        if placeholders:
+            rows = sorted(rows + placeholders, key=lambda r: (r["person_name"].lower(), r["project_name"].lower()))
+
     # group rows by the chosen pivot, with per-group weekly totals
     groups: dict = {}
     for r in rows:
@@ -355,8 +418,8 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         "groups": sorted(groups.values(), key=lambda g: g["name"].lower()),
         "focus_person": person or "", "focus_project": project or "",
         "is_admin": is_admin, "target": target,
-        "people": ops.list_people() if is_admin else [],
-        "projects": ops.list_projects(),
+        "people": people,
+        "projects": projects,
         "prev_start": (mon - dt.timedelta(weeks=6)).isoformat(),
         "next_start": (mon + dt.timedelta(weeks=6)).isoformat(),
         "this_start": ops.monday_of().isoformat(),

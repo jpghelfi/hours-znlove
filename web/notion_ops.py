@@ -60,9 +60,12 @@ def get_user(user_id: str) -> dict:
     }
 
 
-def list_projects(active_only: bool = True, member_of: str | None = None) -> list[dict]:
+def list_projects(active_only: bool = True, member_of: str | None = None,
+                  include_members: bool = False) -> list[dict]:
     """List projects. If member_of (a Notion user id) is given, return only
-    projects that user is a member of (the People property includes them)."""
+    projects that user is a member of (the People property includes them).
+    If include_members, each project dict also carries "member_ids" (every
+    id in the People property), for the schedule page's assignment view."""
     projects = []
     kwargs = {"data_source_id": PROJECTS_DS, "page_size": 100}
     while True:
@@ -74,11 +77,13 @@ def list_projects(active_only: bool = True, member_of: str | None = None) -> lis
             active = props.get("Active", {}).get("checkbox", True)
             if active_only and not active:
                 continue
-            if member_of is not None:
-                members = [p["id"] for p in props.get("People", {}).get("people", [])]
-                if member_of not in members:
-                    continue
-            projects.append({"id": row["id"], "name": name})
+            members = [p["id"] for p in props.get("People", {}).get("people", [])]
+            if member_of is not None and member_of not in members:
+                continue
+            project = {"id": row["id"], "name": name}
+            if include_members:
+                project["member_ids"] = members
+            projects.append(project)
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
