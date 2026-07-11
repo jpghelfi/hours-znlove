@@ -1,7 +1,9 @@
 # Render Blueprint — deploy the hours-tracker web app on the free tier.
 # In Render: New + → Blueprint → connect this repo. Then set the secret env vars
-# (marked sync:false) in the dashboard. Free instances sleep when idle and wake
-# on the next request (~30–60s cold start) — fine for low traffic.
+# (marked sync:false) in the dashboard. Free instances normally sleep when idle,
+# but the app self-pings /healthz every 10 min (see _start_keepalive in
+# web/app.py) so it stays awake. Note this spends ~744 of the free tier's 750
+# monthly instance-hours; set KEEPALIVE_MINUTES=0 to allow sleeping instead.
 services:
   - type: web
     name: hours-znlove
@@ -9,6 +11,7 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.6"
