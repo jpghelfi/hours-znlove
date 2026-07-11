@@ -272,6 +272,22 @@ def schedule_grid(start_monday: dt.date, n_weeks: int = 6, person_id: str | None
     return {"weeks": weeks, "rows": ordered, "people_totals": people_totals}
 
 
+def set_project_member(project_id: str, person_id: str, add: bool) -> None:
+    """Add or remove person_id from a project's People property. Idempotent:
+    adding an existing member or removing a non-member is a no-op write."""
+    page = _notion.pages.retrieve(page_id=project_id)
+    members = [p["id"] for p in page["properties"].get("People", {}).get("people", [])]
+    if add:
+        if person_id in members:
+            return
+        members.append(person_id)
+    else:
+        if person_id not in members:
+            return
+        members.remove(person_id)
+    _notion.pages.update(page_id=project_id, properties={"People": {"people": [{"id": m} for m in members]}})
+
+
 def set_allocation(person_id: str, project_id: str, week: str, hours: float) -> dict:
     """Upsert the (person, project, week) allocation. 0 deletes it."""
     with _write_lock:

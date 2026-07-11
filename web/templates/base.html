@@ -18,8 +18,11 @@
       <div class="nav-links">
         <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
         <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
+        {% if is_admin %}
         <a href="/reports" class="{% block nav_reports %}{% endblock %}">Reports</a>
         <a href="/schedule" class="{% block nav_schedule %}{% endblock %}">Schedule</a>
+        <a href="/assignments" class="{% block nav_assignments %}{% endblock %}">Assignments</a>
+        {% endif %}
       </div>
       <div class="nav-user">
         {% if user %}<span class="who">{{ user.name }}</span><form method="post" action="/logout" class="logout-form"><button type="submit" class="logout-btn">Log out</button></form>{% endif %}

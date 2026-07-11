@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Assignments · Hours Tracker{% endblock %}
+{% block nav_assignments %}active{% endblock %}
+{% block content %}
+<div class="week-head">
+  <div>
+    <h1>Assignments</h1>
+    <div class="subtle">Tick a box to assign a project — assignments control which projects a person can log hours to and who appears on the schedule.</div>
+  </div>
+</div>
+
+<div class="grid-wrap">
+<table class="grid assign-grid">
+  <thead>
+    <tr>
+      <th class="col-project">Project</th>
+      {% for p in people %}
+      {% set parts = p.name.split(' ') %}
+      <th class="col-day" title="{{ p.name }}">{{ parts[0] }}{% if parts|length > 1 and p.name|length > 12 %}<span class="dnum">{{ parts[-1][0] }}.</span>{% endif %}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for proj in projects %}
+    <tr>
+      <td class="col-project">{{ proj.name }}</td>
+      {% for p in people %}
+      <td class="assign-cell">
+        <input type="checkbox" data-project="{{ proj.id }}" data-person="{{ p.id }}"
+               {{ 'checked' if p.id in proj.member_ids }}
+               aria-label="{{ proj.name }} · {{ p.name }}"
+               onchange="saveAssignment(this)">
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+    {% if not projects %}
+    <tr class="empty"><td colspan="{{ (people|length) + 1 }}">No projects yet.</td></tr>
+    {% endif %}
+    {% if projects and not people %}
+    <tr class="empty"><td colspan="{{ (people|length) + 1 }}">No people found in the workspace.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+<script>
+async function saveAssignment(cb) {
+  const td = cb.closest('td');
+  const project_id = cb.dataset.project, person_id = cb.dataset.person, on = cb.checked;
+  td.classList.remove('saved', 'err');
+  td.classList.add('saving');
+  try {
+    const res = await fetch('/api/assignment', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_id, person_id, on})
+    });
+    const data = await res.json();
+    td.classList.remove('saving');
+    if (!data.ok) { cb.checked = !on; td.classList.add('err'); alert('Save failed: ' + (data.error||'')); return; }
+    td.classList.add('saved');
+    setTimeout(() => td.classList.remove('saved'), 800);
+  } catch (e) {
+    cb.checked = !on;
+    td.classList.remove('saving'); td.classList.add('err');
+  }
+}
+</script>
+{% endblock %}

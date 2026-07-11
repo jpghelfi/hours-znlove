@@ -204,6 +204,10 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .cell input { padding: 7px 2px; font-size: 15px; border-color: var(--line); background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .col-project { max-width: 96px; }
 
+  /* assignments: roomier tap target for checkboxes on touch screens */
+  .assign-cell { padding: 10px 8px; }
+  .assign-cell input[type="checkbox"] { width: 24px; height: 24px; }
+
   /* add-row: stack the picker and button */
   .addrow .row2 { grid-template-columns: 1fr; gap: 10px; }
   .addrow .row2 .btn { width: 100%; }
@@ -263,6 +267,16 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .pva-bar.track { background: var(--chart); }
 .pva-bar.track.over { background: var(--over); }
 .pva-h { font-size: 14px; font-weight: 700; text-align: right; }
+
+/* assignments matrix */
+.assign-grid .col-day { white-space: nowrap; }
+.assign-cell { padding: 8px 10px; }
+.assign-cell input[type="checkbox"] {
+  width: 22px; height: 22px; cursor: pointer; accent-color: var(--accent);
+}
+.assign-cell.saving { background: var(--saving); }
+.assign-cell.saved { background: var(--okbg); }
+.assign-cell.err { background: var(--err); }
 
 /* segmented "Group by" control (Schedule) */
 .seg { display: inline-flex; align-items: center; }

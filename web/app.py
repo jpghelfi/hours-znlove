@@ -103,7 +103,7 @@ def _member_project_ids(user_id: Optional[str]) -> set:
 def login_landing(request: Request):
     if current_user(request):
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse(request, "login.html", {"denied": request.query_params.get("denied")})
+    return templates.TemplateResponse(request, "login.html", {"denied": request.query_params.get("denied"), "is_admin": False})
 
 
 @app.get("/login/start")
@@ -146,6 +146,7 @@ def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = N
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "form.html", {
         "user": user,
+        "is_admin": auth.is_admin(user.get("email")),
         "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
         "ok": ok, "err": _ENTRY_ERRORS.get(err) if err else None,
@@ -201,6 +202,7 @@ def week_page(request: Request, monday: Optional[str] = None):
     target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
     return templates.TemplateResponse(request, "week.html", {
         "user": user,
+        "is_admin": auth.is_admin(user.get("email")),
         "grid": grid,
         "projects": ops.list_projects(member_of=user.get("id")),
         "prev_mon": (mon - dt.timedelta(days=7)).isoformat(),
@@ -305,8 +307,10 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user.get("email")):
+        return RedirectResponse(url="/", status_code=303)
     data = _report_data(user, scope, range, date_from, date_to)
-    return templates.TemplateResponse(request, "reports.html", {"user": user, "r": data, "scope": scope})
+    return templates.TemplateResponse(request, "reports.html", {"user": user, "r": data, "scope": scope, "is_admin": True})
 
 
 @app.get("/reports.csv")
@@ -315,6 +319,8 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user.get("email")):
+        return RedirectResponse(url="/", status_code=303)
     data = _report_data(user, scope, range, date_from, date_to)
     import csv
     import io
@@ -383,6 +389,8 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     is_admin = auth.is_admin(user.get("email"))
+    if not is_admin:
+        return RedirectResponse(url="/", status_code=303)
     by = by if by in ("person", "project") else "person"
     mon = ops.monday_of(_parse_date(start))  # malformed ?start= falls back to today
     grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
@@ -430,6 +438,41 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         "this_start": ops.monday_of().isoformat(),
         "start_iso": mon.isoformat(),
     })
+
+
+@app.get("/assignments", response_class=HTMLResponse)
+def assignments_page(request: Request):
+    user = _require_login(request)
+    if not user or not auth.is_admin(user.get("email")):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request, "assignments.html", {
+        "user": user,
+        "is_admin": True,
+        "projects": ops.list_projects(include_members=True),
+        "people": ops.list_people(),
+    })
+
+
+class Assignment(BaseModel):
+    project_id: str
+    person_id: str
+    on: bool
+
+
+@app.post("/api/assignment")
+def api_assignment(request: Request, a: Assignment):
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user.get("email")):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        ops.set_project_member(a.project_id, a.person_id, a.on)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not save assignment"}, status_code=400)
+    return JSONResponse({"ok": True})
 
 
 class Alloc(BaseModel):
