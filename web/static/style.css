@@ -241,3 +241,17 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .cell input { border-color: var(--line); background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .weeknav { width: 100%; }
 }
+
+/* segmented "Group by" control (Schedule) */
+.seg { display: inline-flex; align-items: center; }
+.seg-label { font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em; margin-right: 8px; }
+.filters-label { margin-left: auto; }
+.seg-opts { display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.seg-opt { padding: 6px 16px; border-radius: 7px; font-weight: 600; font-size: 13.5px;
+  color: var(--muted); text-decoration: none; line-height: 1.3; }
+.seg-opt:hover { color: var(--ink); background: var(--active-bg); }
+.seg-opt.is-on { background: var(--accent); color: var(--accent-ink); }
+.seg-opt:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+@media (max-width: 720px) { .filters-label { display: none; } .seg-opts { flex: 1; } .seg-opt { flex: 1; text-align: center; } }

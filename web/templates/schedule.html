@@ -5,7 +5,7 @@
 <div class="week-head">
   <div>
     <h1>Schedule</h1>
-    <div class="subtle">{% if is_admin %}Plan by {{ by }} — type hours into week cells{% else %}Your planned weeks{% endif %}</div>
+    <div class="subtle">{% if is_admin %}{{ 'One section per person, their projects nested' if by == 'person' else 'One section per project, its people nested' }} — type hours into week cells{% else %}Your planned weeks{% endif %}</div>
   </div>
   <div class="weeknav">
     <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}">← Earlier</a>
@@ -16,12 +16,20 @@
 
 <form class="range-form" method="get" action="/schedule">
   <input type="hidden" name="start" value="{{ start_iso }}">
-  <a class="btn {{ 'active' if by == 'person' }}" href="/schedule?start={{ start_iso }}&by=person">👤 By person</a>
-  <a class="btn {{ 'active' if by == 'project' }}" href="/schedule?start={{ start_iso }}&by=project">📁 By project</a>
+  <div class="seg" role="group" aria-label="Group rows by">
+    <span class="seg-label">Group by</span>
+    <div class="seg-opts">
+      <a class="seg-opt{{ ' is-on' if by == 'person' }}" {% if by == 'person' %}aria-current="page"{% endif %}
+         href="/schedule?start={{ start_iso }}&by=person{% if focus_project %}&project={{ focus_project }}{% endif %}">Person</a>
+      <a class="seg-opt{{ ' is-on' if by == 'project' }}" {% if by == 'project' %}aria-current="page"{% endif %}
+         href="/schedule?start={{ start_iso }}&by=project{% if focus_project %}&project={{ focus_project }}{% endif %}">Project</a>
+    </div>
+  </div>
+  <span class="seg-label filters-label">Show</span>
   <input type="hidden" name="by" value="{{ by }}">
   {% if is_admin %}
   <select name="person" onchange="this.form.submit()">
-    <option value="">All people</option>
+    <option value="">Everyone</option>
     {% for p in people %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_person }}>{{ p.name }}</option>{% endfor %}
   </select>
   {% endif %}
@@ -35,7 +43,7 @@
 <table class="grid">
   <thead>
     <tr>
-      <th class="col-project">{{ 'Person / project' if by == 'person' else 'Project / person' }}</th>
+      <th class="col-project">{{ 'Person ▸ projects' if by == 'person' else 'Project ▸ people' }}</th>
       {% for w in weeks %}<th class="col-day">W{{ w[5:7] }}/{{ w[8:10] }}<span class="dnum">{{ w[:4] }}</span></th>{% endfor %}
       <th class="col-total">Total</th>
     </tr>
