@@ -9,21 +9,39 @@
   </div>
 </div>
 
-<div class="grid-wrap">
+<div id="assign-notice" class="assign-notice" role="alert" hidden></div>
+
+<div class="assign-wrap">
+<div class="grid-wrap assign-scroll">
 <table class="grid assign-grid">
   <thead>
     <tr>
       <th class="col-project">Project</th>
       {% for p in people %}
       {% set parts = p.name.split(' ') %}
-      <th class="col-day" title="{{ p.name }}">{{ parts[0] }}{% if parts|length > 1 and p.name|length > 12 %}<span class="dnum">{{ parts[-1][0] }}.</span>{% endif %}</th>
+      {% set initials = ((parts[0][0] ~ parts[-1][0]) if parts|length > 1 else parts[0][:2]) | upper %}
+      {% set ns = namespace(count=0) %}
+      {% for proj in projects %}
+      {% if p.id in proj.member_ids %}{% set ns.count = ns.count + 1 %}{% endif %}
+      {% endfor %}
+      <th class="col-day" title="{{ p.name }}">
+        <div class="p-avatar" data-avatar="{{ loop.index0 % 6 }}">{{ initials }}</div>
+        <div class="p-fname">{{ parts[0] }}</div>
+        <div class="p-count" data-person-count="{{ p.id }}" data-count="{{ ns.count }}" title="{{ ns.count }} project{{ '' if ns.count == 1 else 's' }} assigned">{{ ns.count }} proj</div>
+      </th>
       {% endfor %}
     </tr>
   </thead>
   <tbody>
     {% for proj in projects %}
     <tr>
-      <td class="col-project">{{ proj.name }}</td>
+      <td class="col-project">
+        <div class="proj-row">
+          <span class="proj-name">{{ proj.name }}</span>
+          <span class="chip chip-assign" data-project-chip="{{ proj.id }}" data-count="{{ proj.member_ids|length }}" data-total="{{ people|length }}"
+                title="{{ proj.member_ids|length }} of {{ people|length }} people assigned">{{ proj.member_ids|length }}/{{ people|length }}</span>
+        </div>
+      </td>
       {% for p in people %}
       <td class="assign-cell">
         <input type="checkbox" data-project="{{ proj.id }}" data-person="{{ p.id }}"
@@ -43,6 +61,7 @@
   </tbody>
 </table>
 </div>
+</div>
 
 <script>
 async function saveAssignment(cb) {
@@ -57,13 +76,108 @@ async function saveAssignment(cb) {
     });
     const data = await res.json();
     td.classList.remove('saving');
-    if (!data.ok) { cb.checked = !on; td.classList.add('err'); alert('Save failed: ' + (data.error||'')); return; }
+    if (!data.ok) {
+      cb.checked = !on; td.classList.add('err');
+      showAssignNotice("Couldn't save — check your connection.");
+      return;
+    }
     td.classList.add('saved');
+    bumpProjectChip(project_id, on ? 1 : -1);
+    bumpPersonCount(person_id, on ? 1 : -1);
     setTimeout(() => td.classList.remove('saved'), 800);
   } catch (e) {
     cb.checked = !on;
     td.classList.remove('saving'); td.classList.add('err');
+    showAssignNotice("Couldn't save — check your connection.");
   }
 }
+
+function bumpProjectChip(projectId, delta) {
+  const chip = document.querySelector('.chip-assign[data-project-chip="' + projectId + '"]');
+  if (!chip) return;
+  const n = Math.max(0, parseInt(chip.dataset.count, 10) + delta);
+  chip.dataset.count = n;
+  chip.textContent = n + '/' + chip.dataset.total;
+  chip.title = n + ' of ' + chip.dataset.total + ' people assigned';
+}
+
+function bumpPersonCount(personId, delta) {
+  const el = document.querySelector('.p-count[data-person-count="' + personId + '"]');
+  if (!el) return;
+  const n = Math.max(0, parseInt(el.dataset.count, 10) + delta);
+  el.dataset.count = n;
+  el.textContent = n + ' proj';
+  el.title = n + (n === 1 ? ' project assigned' : ' projects assigned');
+}
+
+let assignNoticeTimer = null;
+function showAssignNotice(msg) {
+  const el = document.getElementById('assign-notice');
+  if (!el) return;
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(assignNoticeTimer);
+  assignNoticeTimer = setTimeout(() => { el.hidden = true; }, 4000);
+}
+
+(function initAssignGrid() {
+  const table = document.querySelector('.assign-grid');
+  const wrap = document.querySelector('.assign-wrap');
+  if (!table) return;
+
+  // whole-cell click toggles the checkbox (guard: a direct click on the
+  // input already toggles + fires change natively, so skip it there)
+  const tbody = table.querySelector('tbody');
+  if (tbody) {
+    tbody.addEventListener('click', (e) => {
+      const td = e.target.closest('.assign-cell');
+      if (!td || e.target.tagName === 'INPUT') return;
+      const cb = td.querySelector('input[type="checkbox"]');
+      if (!cb) return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  // crosshair column highlight; row highlight is plain CSS (:hover / :focus-within)
+  function setCol(idx, on) {
+    for (const row of table.rows) {
+      const cell = row.cells[idx];
+      if (cell) cell.classList.toggle('col-hover', on);
+    }
+  }
+  table.addEventListener('mouseover', (e) => {
+    const cell = e.target.closest('td.assign-cell, th.col-day');
+    if (cell) setCol(cell.cellIndex, true);
+  });
+  table.addEventListener('mouseout', (e) => {
+    const cell = e.target.closest('td.assign-cell, th.col-day');
+    if (cell) setCol(cell.cellIndex, false);
+  });
+  table.addEventListener('focusin', (e) => {
+    const cell = e.target.closest('td.assign-cell');
+    if (cell) setCol(cell.cellIndex, true);
+  });
+  table.addEventListener('focusout', (e) => {
+    const cell = e.target.closest('td.assign-cell');
+    if (cell) setCol(cell.cellIndex, false);
+  });
+
+  // mobile/desktop scroll-edge fade affordance: the fade overlays live on
+  // the non-scrolling .assign-wrap, but scroll position is read from the
+  // inner .assign-scroll (the actual overflow-x:auto element) so the fade
+  // stays pinned to the viewport edges instead of drifting with the scroll.
+  const scroller = document.querySelector('.assign-scroll');
+  if (wrap && scroller) {
+    const updateFade = () => {
+      const max = scroller.scrollWidth - scroller.clientWidth;
+      wrap.classList.toggle('can-scroll-left', scroller.scrollLeft > 2);
+      wrap.classList.toggle('can-scroll-right', scroller.scrollLeft < max - 2);
+    };
+    scroller.addEventListener('scroll', updateFade, { passive: true });
+    window.addEventListener('resize', updateFade);
+    updateFade();
+  }
+})();
 </script>
 {% endblock %}

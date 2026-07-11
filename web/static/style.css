@@ -1,5 +1,6 @@
 /* ZNLove brand: navy #000528, sky-blue #A1D4FF, teal #00c79e */
 :root {
+  color-scheme: light;  /* native widgets (checkboxes, date pickers) follow the theme */
   --bg: #f3f7fc; --card: #ffffff; --ink: #000528; --muted: #5b6472;
   --line: #e2e8f2; --accent: #000528; --accent-ink: #ffffff;
   --active-bg: #dceeff; --active-ink: #000528; --ring: #7cc0ff;
@@ -10,6 +11,7 @@
   --head: #eef3fb;
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #000528; --card: #0a1440; --ink: #e9f1ff; --muted: #93a2c8;
   --line: #1b2a5c; --accent: #a1d4ff; --accent-ink: #001133;
   --active-bg: rgba(161,212,255,.16); --active-ink: #a1d4ff; --ring: #a1d4ff;
@@ -21,6 +23,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #000528; --card: #0a1440; --ink: #e9f1ff; --muted: #93a2c8;
     --line: #1b2a5c; --accent: #a1d4ff; --accent-ink: #001133;
     --active-bg: rgba(161,212,255,.16); --active-ink: #a1d4ff; --ring: #a1d4ff;
@@ -204,9 +207,13 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .cell input { padding: 7px 2px; font-size: 15px; border-color: var(--line); background: color-mix(in srgb, var(--bg) 55%, transparent); }
   .col-project { max-width: 96px; }
 
-  /* assignments: roomier tap target for checkboxes on touch screens */
+  /* assignments: roomier tap target for checkboxes on touch screens, and
+     compact person columns so more people fit before scrolling */
   .assign-cell { padding: 10px 8px; }
-  .assign-cell input[type="checkbox"] { width: 24px; height: 24px; }
+  .assign-cell input[type="checkbox"] { width: 26px; height: 26px; }
+  .assign-grid .col-day { width: 64px; padding: 6px 4px; }
+  .assign-grid .col-project { max-width: 136px; }
+  .p-avatar { width: 30px; height: 30px; font-size: 11px; }
 
   /* add-row: stack the picker and button */
   .addrow .row2 { grid-template-columns: 1fr; gap: 10px; }
@@ -269,14 +276,73 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .pva-h { font-size: 14px; font-weight: 700; text-align: right; }
 
 /* assignments matrix */
-.assign-grid .col-day { white-space: nowrap; }
-.assign-cell { padding: 8px 10px; }
+.assign-notice { background: var(--err); color: var(--err-ink); border-radius: 9px; padding: 10px 12px; margin: 0 0 12px; font-weight: 600; font-size: 13px; }
+
+/* right/left edge fade telling you the matrix scrolls further. .assign-wrap
+   is a non-scrolling outer shell around the existing .grid-wrap scroller
+   (kept untouched, class="grid-wrap assign-scroll") so the fade overlays
+   stay pinned to the viewport edges instead of drifting with the horizontal
+   scroll, and so week/schedule grids (plain .grid-wrap) are unaffected. */
+.assign-wrap { position: relative; }
+.assign-wrap::before, .assign-wrap::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 26px;
+  pointer-events: none; opacity: 0; transition: opacity .15s ease; z-index: 3;
+}
+.assign-wrap::before { left: 0; background: linear-gradient(to right, color-mix(in srgb, var(--card) 85%, var(--ink)), transparent); }
+.assign-wrap::after { right: 0; background: linear-gradient(to left, color-mix(in srgb, var(--card) 85%, var(--ink)), transparent); }
+.assign-wrap.can-scroll-left::before { opacity: 1; }
+.assign-wrap.can-scroll-right::after { opacity: 1; }
+
+.assign-grid .col-day { white-space: nowrap; width: 72px; padding: 8px 6px; }
+.assign-grid .proj-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.assign-grid .proj-name { overflow: hidden; text-overflow: ellipsis; }
+.chip-assign { background: var(--head); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* identity avatars in the person headers; deterministic soft-tint palette
+   built from existing theme vars so it adapts to dark mode automatically */
+.p-avatar {
+  width: 34px; height: 34px; margin: 0 auto 4px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--ink); text-transform: none;
+}
+.p-avatar[data-avatar="0"] { background: color-mix(in srgb, var(--chart) 32%, var(--card)); }
+.p-avatar[data-avatar="1"] { background: color-mix(in srgb, var(--ok) 30%, var(--card)); }
+.p-avatar[data-avatar="2"] { background: color-mix(in srgb, var(--over) 28%, var(--card)); }
+.p-avatar[data-avatar="3"] { background: color-mix(in srgb, var(--ring) 34%, var(--card)); }
+.p-avatar[data-avatar="4"] { background: color-mix(in srgb, var(--chart-soft) 42%, var(--card)); }
+.p-avatar[data-avatar="5"] { background: color-mix(in srgb, var(--accent) 24%, var(--card)); }
+.p-fname { font-size: 12px; font-weight: 600; text-transform: none; overflow: hidden; text-overflow: ellipsis; }
+.p-count { font-size: 10.5px; font-weight: 600; text-transform: none; color: var(--muted); margin-top: 2px; }
+
+.assign-cell { padding: 8px 10px; cursor: pointer; }
 .assign-cell input[type="checkbox"] {
   width: 22px; height: 22px; cursor: pointer; accent-color: var(--accent);
+}
+.assign-cell input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px;
 }
 .assign-cell.saving { background: var(--saving); }
 .assign-cell.saved { background: var(--okbg); }
 .assign-cell.err { background: var(--err); }
+
+/* zebra striping + row/column crosshair; the :not() guards make sure the
+   saving/saved/err states always win over these purely cosmetic tints */
+.assign-grid tbody tr:nth-child(even) > td.assign-cell:not(.saving):not(.saved):not(.err) {
+  background: color-mix(in srgb, var(--head) 45%, var(--card));
+}
+.assign-grid tbody tr:nth-child(even) > td.col-project {
+  background: color-mix(in srgb, var(--head) 45%, var(--card));
+}
+.assign-grid tbody tr:hover > td.assign-cell:not(.saving):not(.saved):not(.err),
+.assign-grid tbody tr:focus-within > td.assign-cell:not(.saving):not(.saved):not(.err) {
+  background: var(--active-bg);
+}
+.assign-grid tbody tr:hover > td.col-project,
+.assign-grid tbody tr:focus-within > td.col-project {
+  background: color-mix(in srgb, var(--active-bg) 65%, var(--card));
+}
+.assign-grid td.assign-cell.col-hover:not(.saving):not(.saved):not(.err) { background: var(--active-bg); }
+.assign-grid th.col-day.col-hover { background: color-mix(in srgb, var(--active-bg) 55%, var(--head)); }
 
 /* segmented "Group by" control (Schedule) */
 .seg { display: inline-flex; align-items: center; }
