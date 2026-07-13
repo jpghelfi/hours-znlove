@@ -279,13 +279,37 @@ ALLOC_DS = _ids.get("allocations_ds_id")
 
 
 def schedule_grid(start_monday: dt.date, n_weeks: int = 6, person_id: str | None = None) -> dict:
-    """Allocations grid: rows = person × project, columns = n_weeks Mondays."""
+    """Allocations grid: rows = person × project, columns = n_weeks Mondays.
+
+    Allocation rows may carry any weekday date (day view writes exact days);
+    each row is bucketed into its week's Monday column, so week cells show the
+    week's sum regardless of how granular the underlying plan is.
+    """
     weeks = [(start_monday + dt.timedelta(weeks=i)).isoformat() for i in range(n_weeks)]
+    last_day = (start_monday + dt.timedelta(weeks=n_weeks - 1, days=6)).isoformat()
+    return _alloc_grid(weeks, weeks[0], last_day,
+                       lambda iso: monday_of(dt.date.fromisoformat(iso)).isoformat(),
+                       person_id)
+
+
+def schedule_day_grid(monday: dt.date, person_id: str | None = None) -> dict:
+    """One week of allocations at day granularity: columns = Mon–Fri.
+
+    Week-view edits consolidate a pair's plan onto the Monday, so hours
+    planned per-week show up in Monday's cell until they're spread out here.
+    """
+    days = [(monday + dt.timedelta(days=i)).isoformat() for i in range(5)]
+    return _alloc_grid(days, days[0], days[-1], lambda iso: iso, person_id)
+
+
+def _alloc_grid(cols: list[str], range_from: str, range_to: str, bucket, person_id: str | None) -> dict:
+    """Shared allocations grid: rows = person × project, columns = cols.
+    bucket maps a row's date iso to its column iso (unknown columns are dropped)."""
     pname = _project_name_map()
     rows: dict = {}
     kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
-        {"property": "Week", "date": {"on_or_after": weeks[0]}},
-        {"property": "Week", "date": {"on_or_before": weeks[-1]}},
+        {"property": "Week", "date": {"on_or_after": range_from}},
+        {"property": "Week", "date": {"on_or_before": range_to}},
     ]}}
     while True:
         res = _notion.data_sources.query(**kwargs)
@@ -299,29 +323,28 @@ def schedule_grid(start_monday: dt.date, n_weeks: int = 6, person_id: str | None
             rel = props["Project"]["relation"]
             if not rel or not props["Week"]["date"]:
                 continue
-            week = props["Week"]["date"]["start"][:10]
-            if week not in weeks:
+            col = bucket(props["Week"]["date"]["start"][:10])
+            if col not in cols:
                 continue
             key = (pid, rel[0]["id"])
             r = rows.setdefault(key, {
                 "person_id": pid, "person_name": pname_person,
                 "project_id": rel[0]["id"], "project_name": pname.get(rel[0]["id"], "(none)"),
-                "cells": {w: 0.0 for w in weeks},
+                "cells": {c: 0.0 for c in cols},
             })
-            r["cells"][week] += props["Hours"]["number"] or 0
-    # noqa: pagination
+            r["cells"][col] += props["Hours"]["number"] or 0
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
 
     ordered = sorted(rows.values(), key=lambda r: (r["person_name"].lower(), r["project_name"].lower()))
-    # per-person weekly totals for the capacity heat map
+    # per-person totals per column for the capacity heat map
     people_totals: dict = {}
     for r in ordered:
-        pt = people_totals.setdefault(r["person_name"], {w: 0.0 for w in weeks})
-        for w in weeks:
-            pt[w] += r["cells"][w]
-    return {"weeks": weeks, "rows": ordered, "people_totals": people_totals}
+        pt = people_totals.setdefault(r["person_name"], {c: 0.0 for c in cols})
+        for c in cols:
+            pt[c] += r["cells"][c]
+    return {"weeks": cols, "rows": ordered, "people_totals": people_totals}
 
 
 def set_project_member(project_id: str, person_id: str, add: bool) -> None:
@@ -340,17 +363,31 @@ def set_project_member(project_id: str, person_id: str, add: bool) -> None:
     _notion.pages.update(page_id=project_id, properties={"People": {"people": [{"id": m} for m in members]}})
 
 
-def set_allocation(person_id: str, project_id: str, week: str, hours: float) -> dict:
-    """Upsert the (person, project, week) allocation. 0 deletes it."""
+def set_allocation(person_id: str, project_id: str, date_iso: str, hours: float,
+                   scope: str = "week") -> dict:
+    """Upsert the (person, project) allocation for a week or a single day.
+    0 deletes it.
+
+    scope="week": date_iso is the Monday; the pair's whole week (any day-dated
+    rows included) is replaced by one Monday-dated row, so a week-cell edit is
+    authoritative for that week.
+    scope="day": exact-date upsert; other days of the week are untouched.
+    """
     with _write_lock:
-        return _set_allocation_locked(person_id, project_id, week, hours)
+        return _set_allocation_locked(person_id, project_id, date_iso, hours, scope)
 
 
-def _set_allocation_locked(person_id: str, project_id: str, week: str, hours: float) -> dict:
+def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float,
+                           scope: str) -> dict:
+    if scope == "week":
+        sunday = (dt.date.fromisoformat(date_iso) + dt.timedelta(days=6)).isoformat()
+        date_filter = [{"property": "Week", "date": {"on_or_after": date_iso}},
+                       {"property": "Week", "date": {"on_or_before": sunday}}]
+    else:
+        date_filter = [{"property": "Week", "date": {"equals": date_iso}}]
     matches = _query_all({
         "data_source_id": ALLOC_DS, "page_size": 100,
-        "filter": {"and": [
-            {"property": "Week", "date": {"equals": week}},
+        "filter": {"and": date_filter + [
             {"property": "Project", "relation": {"contains": project_id}},
             {"property": "Person", "people": {"contains": person_id}},
         ]}})
@@ -362,16 +399,20 @@ def _set_allocation_locked(person_id: str, project_id: str, week: str, hours: fl
             _notion.pages.update(match["id"], archived=True)
         return {"ok": True, "hours": 0}
     if match:
-        _notion.pages.update(match["id"], properties={"Hours": {"number": hours}})
+        # week scope may keep a day-dated row — re-date it to the Monday too
+        _notion.pages.update(match["id"], properties={
+            "Hours": {"number": hours},
+            "Week": {"date": {"start": date_iso}},
+        })
     else:
         pmap = _project_name_map()
         _notion.pages.create(
             parent={"type": "data_source_id", "data_source_id": ALLOC_DS},
             properties={
-                "Allocation": {"title": [{"text": {"content": f"{pmap.get(project_id,'?')} — {week}"}}]},
+                "Allocation": {"title": [{"text": {"content": f"{pmap.get(project_id,'?')} — {date_iso}"}}]},
                 "Person": {"people": [{"id": person_id}]},
                 "Project": {"relation": [{"id": project_id}]},
-                "Week": {"date": {"start": week}},
+                "Week": {"date": {"start": date_iso}},
                 "Hours": {"number": hours},
             })
     return {"ok": True, "hours": hours}

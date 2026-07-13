@@ -384,7 +384,8 @@ def _schedule_placeholder_rows(existing_rows: list[dict], weeks: list[str], proj
 
 @app.get("/schedule", response_class=HTMLResponse)
 def schedule_page(request: Request, start: Optional[str] = None, by: str = "person",
-                  person: Optional[str] = None, project: Optional[str] = None):
+                  person: Optional[str] = None, project: Optional[str] = None,
+                  view: str = "weeks"):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -392,8 +393,12 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     if not is_admin:
         return RedirectResponse(url="/", status_code=303)
     by = by if by in ("person", "project") else "person"
+    view = view if view in ("weeks", "days") else "weeks"
     mon = ops.monday_of(_parse_date(start))  # malformed ?start= falls back to today
-    grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
+    if view == "days":
+        grid = ops.schedule_day_grid(mon, None if is_admin else user.get("id"))
+    else:
+        grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
     rows = grid["rows"]
     if person:
         rows = [r for r in rows if r["person_id"] == person]
@@ -426,15 +431,30 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         for w in grid["weeks"]:
             g["totals"][w] += r["cells"][w]
     target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
+    # column headers: weeks link into that week's day view; days show the weekday
+    if view == "days":
+        cols = [{"iso": c, "top": dt.date.fromisoformat(c).strftime("%a"), "sub": f"{c[5:7]}/{c[8:10]}", "href": ""}
+                for c in grid["weeks"]]
+        cap = target / 5  # per-day capacity for the heat map
+        step = dt.timedelta(weeks=1)
+    else:
+        cols = [{"iso": c, "top": f"W{c[5:7]}/{c[8:10]}", "sub": c[:4],
+                 "href": f"/schedule?view=days&start={c}&by={by}"
+                         + (f"&person={person}" if person else "") + (f"&project={project}" if project else "")}
+                for c in grid["weeks"]]
+        cap = target
+        step = dt.timedelta(weeks=6)
     return templates.TemplateResponse(request, "schedule.html", {
-        "user": user, "weeks": grid["weeks"], "by": by,
+        "user": user, "weeks": grid["weeks"], "by": by, "view": view,
+        "scope": "day" if view == "days" else "week",
+        "cols": cols, "cap": cap,
         "groups": sorted(groups.values(), key=lambda g: g["name"].lower()),
         "focus_person": person or "", "focus_project": project or "",
         "is_admin": is_admin, "target": target,
         "people": people,
         "projects": projects,
-        "prev_start": (mon - dt.timedelta(weeks=6)).isoformat(),
-        "next_start": (mon + dt.timedelta(weeks=6)).isoformat(),
+        "prev_start": (mon - step).isoformat(),
+        "next_start": (mon + step).isoformat(),
         "this_start": ops.monday_of().isoformat(),
         "start_iso": mon.isoformat(),
     })
@@ -478,8 +498,9 @@ def api_assignment(request: Request, a: Assignment):
 class Alloc(BaseModel):
     person_id: str
     project_id: str
-    week: str
+    week: str  # the column date: a Monday (scope=week) or any weekday (scope=day)
     hours: float = Field(ge=0, le=168, allow_inf_nan=False)
+    scope: str = "week"
 
 
 @app.post("/api/allocation")
@@ -491,12 +512,18 @@ def api_allocation(request: Request, alloc: Alloc):
         return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
-    week = _parse_date(alloc.week)
-    if not week:
-        return JSONResponse({"ok": False, "error": "invalid week date"}, status_code=400)
-    week = ops.monday_of(week).isoformat()  # normalize: allocations always live on Mondays
+    day = _parse_date(alloc.week)
+    if not day:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    if alloc.scope == "day":
+        if day.weekday() >= 5:
+            return JSONResponse({"ok": False, "error": "weekday required"}, status_code=400)
+        date_iso, scope = day.isoformat(), "day"
+    else:
+        # normalize: week-scope allocations always live on Mondays
+        date_iso, scope = ops.monday_of(day).isoformat(), "week"
     try:
-        return JSONResponse(ops.set_allocation(alloc.person_id, alloc.project_id, week, alloc.hours))
+        return JSONResponse(ops.set_allocation(alloc.person_id, alloc.project_id, date_iso, alloc.hours, scope))
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save allocation"}, status_code=400)
 

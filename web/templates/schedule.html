@@ -5,28 +5,38 @@
 <div class="week-head">
   <div>
     <h1>Schedule</h1>
-    <div class="subtle">{% if is_admin %}{{ 'One section per person, their projects nested' if by == 'person' else 'One section per project, its people nested' }} — type hours into week cells{% else %}Your planned weeks{% endif %}</div>
+    <div class="subtle">{% if view == 'days' %}Week of {{ start_iso }} — type hours into day cells{% elif is_admin %}{{ 'One section per person, their projects nested' if by == 'person' else 'One section per project, its people nested' }} — type hours into week cells, or click a week header to plan its days{% else %}Your planned weeks{% endif %}</div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}">← Earlier</a>
-    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}">Now</a>
-    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}">Later →</a>
+    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}">← Earlier</a>
+    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}">Now</a>
+    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}">Later →</a>
   </div>
 </div>
 
 <form class="range-form" method="get" action="/schedule">
   <input type="hidden" name="start" value="{{ start_iso }}">
+  <div class="seg" role="group" aria-label="View">
+    <span class="seg-label">View</span>
+    <div class="seg-opts">
+      <a class="seg-opt{{ ' is-on' if view == 'weeks' }}" {% if view == 'weeks' %}aria-current="page"{% endif %}
+         href="/schedule?start={{ start_iso }}&by={{ by }}&view=weeks{% if focus_person %}&person={{ focus_person }}{% endif %}{% if focus_project %}&project={{ focus_project }}{% endif %}">Weeks</a>
+      <a class="seg-opt{{ ' is-on' if view == 'days' }}" {% if view == 'days' %}aria-current="page"{% endif %}
+         href="/schedule?start={{ start_iso }}&by={{ by }}&view=days{% if focus_person %}&person={{ focus_person }}{% endif %}{% if focus_project %}&project={{ focus_project }}{% endif %}">Days</a>
+    </div>
+  </div>
   <div class="seg" role="group" aria-label="Group rows by">
     <span class="seg-label">Group by</span>
     <div class="seg-opts">
       <a class="seg-opt{{ ' is-on' if by == 'person' }}" {% if by == 'person' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by=person{% if focus_project %}&project={{ focus_project }}{% endif %}">Person</a>
+         href="/schedule?start={{ start_iso }}&by=person&view={{ view }}{% if focus_project %}&project={{ focus_project }}{% endif %}">Person</a>
       <a class="seg-opt{{ ' is-on' if by == 'project' }}" {% if by == 'project' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by=project{% if focus_project %}&project={{ focus_project }}{% endif %}">Project</a>
+         href="/schedule?start={{ start_iso }}&by=project&view={{ view }}{% if focus_project %}&project={{ focus_project }}{% endif %}">Project</a>
     </div>
   </div>
   <span class="seg-label filters-label">Show</span>
   <input type="hidden" name="by" value="{{ by }}">
+  <input type="hidden" name="view" value="{{ view }}">
   {% if is_admin %}
   <select name="person" onchange="this.form.submit()">
     <option value="">Everyone</option>
@@ -44,7 +54,9 @@
   <thead>
     <tr>
       <th class="col-project">{{ 'Person ▸ projects' if by == 'person' else 'Project ▸ people' }}</th>
-      {% for w in weeks %}<th class="col-day">W{{ w[5:7] }}/{{ w[8:10] }}<span class="dnum">{{ w[:4] }}</span></th>{% endfor %}
+      {% for c in cols %}
+      <th class="col-day">{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span></th>
+      {% endfor %}
       <th class="col-total">Total</th>
     </tr>
   </thead>
@@ -52,9 +64,9 @@
   <tbody data-group="{{ g.id }}">
     <tr class="group-row">
       <td class="col-project">{{ g.name }}</td>
-      {% for w in weeks %}
-      {% set v = g.totals[w] %}
-      <td class="{{ ('heat ' ~ ('heat-over' if v > target else ('heat-full' if v >= target * 0.8 else 'heat-ok'))) if by == 'person' and v else '' }}">
+      {% for c in cols %}
+      {% set v = g.totals[c.iso] %}
+      <td class="{{ ('heat ' ~ ('heat-over' if v > cap else ('heat-full' if v >= cap * 0.8 else 'heat-ok'))) if by == 'person' and v else '' }}">
         {{ '%g'|format(v) if v else '' }}</td>
       {% endfor %}
       <td class="col-total">{{ '%g'|format(g.totals.values()|sum) }}</td>
@@ -62,17 +74,17 @@
     {% for r in g.rows %}
     <tr data-person="{{ r.person_id }}" data-project="{{ r.project_id }}">
       <td class="col-project sub">{{ r.project_name if by == 'person' else r.person_name }}</td>
-      {% for w in weeks %}
-      <td class="cell"><input type="number" step="1" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[w]) if r.cells[w] else '' }}"
-          aria-label="{{ r.person_name }} · {{ r.project_name }} — week of {{ w }}"
-          data-week="{{ w }}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)" {% if not is_admin %}disabled{% endif %}></td>
+      {% for c in cols %}
+      <td class="cell"><input type="number" step="1" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[c.iso]) if r.cells[c.iso] else '' }}"
+          aria-label="{{ r.person_name }} · {{ r.project_name }} — {{ 'on' if view == 'days' else 'week of' }} {{ c.iso }}"
+          data-week="{{ c.iso }}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)" {% if not is_admin %}disabled{% endif %}></td>
       {% endfor %}
       <td class="col-total rowtotal">{{ '%g'|format(r.cells.values()|sum) }}</td>
     </tr>
     {% endfor %}
     {% if is_admin %}
     <tr class="group-add">
-      <td class="col-project" colspan="{{ weeks|length + 2 }}">
+      <td class="col-project" colspan="{{ cols|length + 2 }}">
         <select onchange="addToGroup(this, '{{ g.id }}')">
           <option value="" disabled selected>+ Add {{ 'project to ' ~ g.name if by == 'person' else 'person to ' ~ g.name }}…</option>
           {% if by == 'person' %}
@@ -87,7 +99,7 @@
   </tbody>
   {% endfor %}
   {% if not groups %}
-  <tbody><tr class="empty"><td colspan="{{ weeks|length + 2 }}">No allocations here yet.{% if is_admin %} Start one below.{% endif %}</td></tr></tbody>
+  <tbody><tr class="empty"><td colspan="{{ cols|length + 2 }}">No allocations here yet.{% if is_admin %} Start one below.{% endif %}</td></tr></tbody>
   {% endif %}
 </table>
 </div>
@@ -106,13 +118,17 @@
     </select>
     <button class="btn" onclick="newPair()">Add</button>
   </div>
-  <div class="subtle">Blank a cell to remove that allocation. Group rows show weekly totals{% if by == 'person' %} colored against {{ '%g'|format(target) }}h capacity{% endif %}.</div>
+  <div class="subtle">Blank a cell to remove that allocation.
+    {% if view == 'days' %}Editing a week cell (in the Weeks view) replaces the whole week; hours planned by week sit in Monday's cell until spread across days here. Group rows show daily totals{% if by == 'person' %} colored against {{ '%g'|format(cap) }}h/day capacity{% endif %}.
+    {% else %}Group rows show weekly totals{% if by == 'person' %} colored against {{ '%g'|format(target) }}h capacity{% endif %}.{% endif %}</div>
 </div>
 {% endif %}
 
 <script>
-const WEEKS = {{ weeks|tojson }};
+const COLS = {{ cols|map(attribute='iso')|list|tojson }};
 const BY = {{ by|tojson }};
+const SCOPE = {{ scope|tojson }};
+const CELL_WORD = SCOPE === 'day' ? 'on' : 'week of';
 
 async function saveAlloc(input) {
   const tr = input.closest('tr');
@@ -124,7 +140,7 @@ async function saveAlloc(input) {
   try {
     const res = await fetch('/api/allocation', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({person_id: tr.dataset.person, project_id: tr.dataset.project, week: input.dataset.week, hours})
+      body: JSON.stringify({person_id: tr.dataset.person, project_id: tr.dataset.project, week: input.dataset.week, hours, scope: SCOPE})
     });
     const data = await res.json();
     input.classList.remove('saving');
@@ -140,7 +156,7 @@ function makeRow(personId, projectId, label) {
   const tr = document.createElement('tr');
   tr.dataset.person = personId; tr.dataset.project = projectId;
   let cells = '';
-  WEEKS.forEach(w => { cells += `<td class="cell"><input type="number" step="1" min="0" inputmode="decimal" aria-label="${label} — week of ${w}" data-week="${w}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)"></td>`; });
+  COLS.forEach(c => { cells += `<td class="cell"><input type="number" step="1" min="0" inputmode="decimal" aria-label="${label} — ${CELL_WORD} ${c}" data-week="${c}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)"></td>`; });
   tr.innerHTML = `<td class="col-project sub">${label}</td>${cells}<td class="col-total rowtotal">0</td>`;
   return tr;
 }
@@ -175,7 +191,7 @@ function newPair() {
     const tb = document.createElement('tbody');
     tb.dataset.group = a.value;
     const head = document.createElement('tr'); head.className = 'group-row';
-    head.innerHTML = `<td class="col-project">${a.selectedOptions[0].dataset.name}</td>` + WEEKS.map(() => '<td></td>').join('') + '<td class="col-total">0</td>';
+    head.innerHTML = `<td class="col-project">${a.selectedOptions[0].dataset.name}</td>` + COLS.map(() => '<td></td>').join('') + '<td class="col-total">0</td>';
     tb.appendChild(head); tb.appendChild(tr); table.appendChild(tb);
     const empty = document.querySelector('tr.empty'); if (empty) empty.closest('tbody').remove();
   }

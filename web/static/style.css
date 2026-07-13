@@ -97,6 +97,8 @@ button, .btn {
 table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .grid th, .grid td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: center; font-size: 15px; }
 .grid thead th { background: var(--head); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
+.grid thead .col-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.grid thead .col-link:hover { color: var(--accent); }
 .col-person, .col-project { text-align: left; overflow-wrap: anywhere; }  /* long one-word names wrap instead of painting over cells */
 /* keep the Project column visible while day columns scroll horizontally;
    min-width stops wide tables (Assignments) from starving it under

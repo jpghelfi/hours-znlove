@@ -150,6 +150,12 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
   always shown, even blank). Edit any cell to save instantly (upsert); clear a cell to remove
   that entry. Row/day/grand totals recompute live. Prev / This week / Next navigation. "Add a
   row" introduces a new person+project combination.
+- **`/schedule` — Schedule (admins):** plan hours ahead in an Allocations database. Two zoom
+  levels — **Weeks** (6 week columns; capacity heat map against `WEEK_TARGET_HOURS`) and
+  **Days** (one week, Mon–Fri, heat against a fifth of that). Click a week header to plan
+  that week day by day. Allocation rows carry real dates: day-cell edits save the exact day,
+  a week-cell edit replaces the pair's whole week with one Monday-dated row (so week-planned
+  hours appear in Monday's cell in the day view until spread out).
 
 The chosen/logged-in person is written to a `Person` (people) property, **re-added on startup**
 if missing. (Notion-form submissions still use `Logged by`; `report.py` and the grid read either.)
