@@ -23,6 +23,22 @@ automatically (see [Who submitted](#who-submitted) below) — no manual "person"
   Description). Every submission becomes a row.
 - **Python scripts** (this repo) build the schema, bulk-seed projects, and report totals.
 
+### The People roster
+
+The web app's list of people (assignments columns, schedule rows, person dropdowns) comes
+from a third database, **People** (`Name`, `Person` (people link), `Active`), created and
+seeded from the current workspace members by:
+
+```bash
+./.venv/bin/python src/setup_people_db.py   # idempotent; re-run to pick up new members
+```
+
+Curate it in Notion: **delete a row or untick `Active`** to hide someone, **retitle a row**
+to rename them (e.g. turn a bare email into a proper name). Rows must keep a `Person` link —
+rows without one are ignored. New workspace members do NOT appear automatically; re-run the
+script (or add a row by hand) to include them. On Render set `PEOPLE_DS_ID`; if it's unset
+the app falls back to listing all workspace members, the old behavior.
+
 ## Who submitted
 
 The form has **no Person field**. Instead, Time Entries has a `Logged by` property of type
@@ -155,9 +171,9 @@ Local dev without OAuth: set `AUTH_DISABLED=1` to bypass login (never in product
 
 The repo includes `render.yaml`. In Render: **New + → Blueprint → connect this repo**, then in
 the dashboard set the secret env vars (`NOTION_TOKEN`, `PROJECTS_DS_ID`, `TIME_ENTRIES_DS_ID`,
-the three `NOTION_OAUTH_*`, and `ALLOWED_EMAILS`; `SESSION_SECRET` is auto-generated). Because
-`databases.json` is gitignored, the deploy reads the data-source ids from `PROJECTS_DS_ID` /
-`TIME_ENTRIES_DS_ID` (find them in your local `databases.json`). Free instances sleep when idle
+`ALLOCATIONS_DS_ID`, `PEOPLE_DS_ID`, the three `NOTION_OAUTH_*`, and `ALLOWED_EMAILS`;
+`SESSION_SECRET` is auto-generated). Because `databases.json` is gitignored, the deploy reads
+the data-source ids from those env vars (find the values in your local `databases.json`). Free instances sleep when idle
 and wake on the next request (~30–60s) — fine for low traffic. After the first deploy you'll get
 the host URL; set the Notion redirect URI to `https://<that-host>/auth/callback`.
 
@@ -187,6 +203,7 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 |------|---------|
 | `src/config.py` | Loads `.env`, builds the Notion client, parses page URLs → ids, persists db ids. |
 | `src/setup_databases.py` | Creates the two databases (run once). |
+| `src/setup_people_db.py` | Creates the People roster db + seeds it from workspace members (idempotent). |
 | `src/seed_projects.py` | Bulk-adds projects, dedupe-safe. |
 | `src/log_hours.py` | Logs one time entry from the CLI. |
 | `src/report.py` | Aggregates hours by person (submitter) or project. |

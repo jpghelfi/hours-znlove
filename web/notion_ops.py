@@ -33,8 +33,47 @@ def ensure_person_property() -> None:
 
 # ---- reads -------------------------------------------------------------
 
+PEOPLE_DS = _ids.get("people_ds_id")
+
+
 def list_people() -> list[dict]:
-    """Workspace members (real people, not bots), for the self-select dropdown."""
+    """The roster shown everywhere (assignments columns, schedule rows,
+    person dropdowns).
+
+    Source of truth is the People database (created/seeded by
+    src/setup_people_db.py): one row per person, curated in Notion — delete a
+    row or untick Active to hide someone, retitle to rename. Falls back to the
+    raw workspace member list when the People db isn't configured.
+    """
+    people = _people_from_db() if PEOPLE_DS else _people_from_workspace()
+    people.sort(key=lambda p: p["name"].lower())
+    return people
+
+
+def _people_from_db() -> list[dict]:
+    people = []
+    kwargs = {
+        "data_source_id": PEOPLE_DS, "page_size": 100,
+        "filter": {"property": "Active", "checkbox": {"equals": True}},
+    }
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        for row in res["results"]:
+            props = row["properties"]
+            linked = props.get("Person", {}).get("people", [])
+            if not linked:  # no Notion user linked -> can't be assigned or log hours
+                continue
+            title = props.get("Name", {}).get("title", [])
+            name = title[0]["plain_text"].strip() if title else ""
+            people.append({"id": linked[0]["id"], "name": name or linked[0].get("name") or "(unnamed)"})
+        if not res.get("has_more"):
+            break
+        kwargs["start_cursor"] = res["next_cursor"]
+    return people
+
+
+def _people_from_workspace() -> list[dict]:
+    """Workspace members (real people, not bots)."""
     people = []
     start = None
     while True:
@@ -45,7 +84,6 @@ def list_people() -> list[dict]:
         if not res.get("has_more"):
             break
         start = res["next_cursor"]
-    people.sort(key=lambda p: p["name"].lower())
     return people
 
 

@@ -21,6 +21,8 @@ services:
         sync: false
       - key: ALLOCATIONS_DS_ID
         sync: false
+      - key: PEOPLE_DS_ID
+        sync: false
       - key: ADMIN_EMAILS
         sync: false
       - key: WEEK_TARGET_HOURS
