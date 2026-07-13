@@ -6,6 +6,7 @@ reads/writes Time Entries via the 2025-09-03 data-source API.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import sys
 import threading
 from pathlib import Path
@@ -41,11 +42,23 @@ def list_people() -> list[dict]:
     person dropdowns).
 
     Source of truth is the People database (created/seeded by
-    src/setup_people_db.py): one row per person, curated in Notion — delete a
-    row or untick Active to hide someone, retitle to rename. Falls back to the
-    raw workspace member list when the People db isn't configured.
+    src/setup_people_db.py): one row per person, curated in Notion — untick
+    Active to hide someone, retitle to rename. Falls back to the raw workspace
+    member list when the People db isn't configured — or when querying it
+    fails (bad PEOPLE_DS_ID), so a misconfig degrades to the old roster
+    instead of a 500 on every page.
     """
-    people = _people_from_db() if PEOPLE_DS else _people_from_workspace()
+    people = None
+    if PEOPLE_DS:
+        try:
+            people = _people_from_db()
+        except Exception:
+            logging.exception(
+                "People db query failed — check PEOPLE_DS_ID (must be the data source id, "
+                "people_ds_id in databases.json). Falling back to workspace members."
+            )
+    if people is None:
+        people = _people_from_workspace()
     people.sort(key=lambda p: p["name"].lower())
     return people
 
