@@ -134,7 +134,10 @@ async function saveAlloc(input) {
   const tr = input.closest('tr');
   const hours = parseFloat(input.value) || 0;
   if (!hours && parseFloat(input.dataset.prev)) {
-    if (!confirm('Remove this allocation?')) { input.value = input.dataset.prev; return; }
+    const msg = SCOPE === 'week'
+      ? 'Remove this allocation? This clears the whole week, including any day-by-day plan.'
+      : 'Remove this allocation?';
+    if (!confirm(msg)) { input.value = input.dataset.prev; return; }
   }
   input.classList.add('saving');
   try {

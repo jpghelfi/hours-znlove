@@ -419,12 +419,20 @@ def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours
 
 
 def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
-    """Allocation rows (person, project, hours) whose Week falls in the range."""
+    """Allocation rows (person, project, hours) planned within the range.
+
+    A row counts when its week's Monday falls in the range — whole-week,
+    all-or-nothing, matching the pre-day-granularity behavior. Bucketing day
+    rows to their Monday keeps 'scheduled' report totals identical whether a
+    week was planned as one week cell or spread across days.
+    """
     pname = _project_name_map()
     out = []
+    # day rows can sit up to 6 days after their Monday; filter query wide, bucket below
+    query_to = (dt.date.fromisoformat(date_to) + dt.timedelta(days=6)).isoformat()
     kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
         {"property": "Week", "date": {"on_or_after": date_from}},
-        {"property": "Week", "date": {"on_or_before": date_to}},
+        {"property": "Week", "date": {"on_or_before": query_to}},
     ]}}
     while True:
         res = _notion.data_sources.query(**kwargs)
@@ -435,7 +443,10 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
             if person_id and pid != person_id:
                 continue
             rel = props["Project"]["relation"]
-            if not rel:
+            if not rel or not props["Week"]["date"]:
+                continue
+            week_monday = monday_of(dt.date.fromisoformat(props["Week"]["date"]["start"][:10])).isoformat()
+            if not (date_from <= week_monday <= date_to):
                 continue
             out.append({
                 "person": people[0].get("name", "(unassigned)") if people else "(unassigned)",
