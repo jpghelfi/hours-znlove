@@ -98,8 +98,10 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .grid th, .grid td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: center; font-size: 15px; }
 .grid thead th { background: var(--head); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
 .col-person, .col-project { text-align: left; overflow-wrap: anywhere; }  /* long one-word names wrap instead of painting over cells */
-/* keep the Project column visible while day columns scroll horizontally */
-.grid .col-project { position: sticky; left: 0; background: var(--card); z-index: 1; }
+/* keep the Project column visible while day columns scroll horizontally;
+   min-width stops wide tables (Assignments) from starving it under
+   overflow-wrap:anywhere and wrapping names one character per line */
+.grid .col-project { position: sticky; left: 0; background: var(--card); z-index: 1; min-width: 180px; }
 .grid thead .col-project, .grid tfoot .col-project { background: var(--head); z-index: 2; }
 .grid .col-person { font-weight: 600; }
 .dnum { display: block; font-size: 11px; color: var(--muted); }
@@ -207,7 +209,7 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .cell input { padding: 7px 2px; font-size: 15px; border-color: var(--line); background: color-mix(in srgb, var(--bg) 55%, transparent); }
   /* pin the sticky name column: min-width stops table auto-layout from
      collapsing it to per-character lines under overflow-wrap:anywhere */
-  .col-project { min-width: 104px; max-width: 104px; }
+  .grid .col-project { min-width: 104px; max-width: 104px; }  /* .grid prefix: must outrank the desktop `.grid .col-project` min-width */
   .col-project.sub { padding-left: 10px; }  /* the 22px desktop indent starves narrow columns */
 
   /* assignments: roomier tap target for checkboxes on touch screens, and
