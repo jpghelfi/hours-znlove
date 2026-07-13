@@ -1,8 +1,9 @@
 """Create the People database in Notion and seed it from workspace members.
 
 The People database is the roster the web app shows (assignments columns,
-schedule rows, person dropdowns): curate it in Notion — delete a row to hide
-someone, retitle a row to rename them, untick Active to keep them but hide
+schedule rows, person dropdowns): curate it in Notion — untick Active to hide
+someone (don't delete the row: this script only skips people who still have
+one, so deleted people come back on the next run), retitle a row to rename
 them. Each row links the real Notion user via the Person property so the app
 can keep writing people properties elsewhere.
 

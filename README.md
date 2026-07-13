@@ -33,11 +33,13 @@ seeded from the current workspace members by:
 ./.venv/bin/python src/setup_people_db.py   # idempotent; re-run to pick up new members
 ```
 
-Curate it in Notion: **delete a row or untick `Active`** to hide someone, **retitle a row**
-to rename them (e.g. turn a bare email into a proper name). Rows must keep a `Person` link —
-rows without one are ignored. New workspace members do NOT appear automatically; re-run the
-script (or add a row by hand) to include them. On Render set `PEOPLE_DS_ID`; if it's unset
-the app falls back to listing all workspace members, the old behavior.
+Curate it in Notion: **untick `Active`** to hide someone, **retitle a row** to rename them
+(e.g. turn a bare email into a proper name). Prefer unticking over deleting the row — the
+seeder only skips people who still have a row, so a deleted person comes back next time it
+runs. Rows must keep a `Person` link — rows without one are ignored. New workspace members
+do NOT appear automatically; re-run the script (or add a row by hand) to include them. On
+Render set `PEOPLE_DS_ID`; if it's unset the app falls back to listing all workspace
+members, the old behavior.
 
 ## Who submitted
 

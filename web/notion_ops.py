@@ -51,7 +51,7 @@ def list_people() -> list[dict]:
 
 
 def _people_from_db() -> list[dict]:
-    people = []
+    people = {}  # user id -> entry; keyed so duplicate rows for one user can't duplicate columns
     kwargs = {
         "data_source_id": PEOPLE_DS, "page_size": 100,
         "filter": {"property": "Active", "checkbox": {"equals": True}},
@@ -65,11 +65,12 @@ def _people_from_db() -> list[dict]:
                 continue
             title = props.get("Name", {}).get("title", [])
             name = title[0]["plain_text"].strip() if title else ""
-            people.append({"id": linked[0]["id"], "name": name or linked[0].get("name") or "(unnamed)"})
+            uid = linked[0]["id"]
+            people.setdefault(uid, {"id": uid, "name": name or linked[0].get("name") or "(unnamed)"})
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
-    return people
+    return list(people.values())
 
 
 def _people_from_workspace() -> list[dict]:
