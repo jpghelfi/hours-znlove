@@ -1,8 +1,11 @@
-"""Notion OAuth login, gated by an email allowlist.
+"""Notion OAuth login, gated by the People-db roster (with an env fallback).
 
 Flow: /login -> Notion consent -> /auth/callback -> exchange code -> read the
-authorizing user's identity -> check email against ALLOWED_EMAILS. OAuth is used
-only to authenticate the person; all Notion data access still uses the
+authorizing user's identity -> check it against the roster. Access is curated
+in Notion: an Active People row grants login, an Admin tick grants team-wide
+reports (matched by the linked Notion user id). ALLOWED_EMAILS / ADMIN_EMAILS
+remain as a fallback so a People-db misconfig can't lock everyone out. OAuth is
+used only to authenticate the person; all Notion data access still uses the
 integration token (NOTION_TOKEN).
 """
 from __future__ import annotations
@@ -28,18 +31,31 @@ def allowed_emails() -> set[str]:
     return {e.strip().lower() for e in os.environ.get("ALLOWED_EMAILS", "").split(",") if e.strip()}
 
 
-def is_allowed(email: str | None) -> bool:
-    if not email:
-        return False
-    return email.strip().lower() in allowed_emails()
+def _admin_emails() -> set[str]:
+    return {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 
 
-def is_admin(email: str | None) -> bool:
-    """Admins (ADMIN_EMAILS env var) can see team-wide reports and exports."""
-    if not email:
+def is_allowed(user: dict | None) -> bool:
+    """May this person log in? Primary source is the People db (any Active row,
+    matched by the linked Notion user id); ALLOWED_EMAILS stays a fallback so a
+    People-db misconfig can't lock everyone out."""
+    if not user:
         return False
-    admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
-    return email.strip().lower() in admins
+    uid, email = user.get("id"), user.get("email")
+    if uid and uid in ops.access_ids()["allowed"]:
+        return True
+    return bool(email) and email.strip().lower() in allowed_emails()
+
+
+def is_admin(user: dict | None) -> bool:
+    """May this person see team-wide reports and exports? Admins are the People
+    db rows ticked Admin (matched by Notion user id); ADMIN_EMAILS is a fallback."""
+    if not user:
+        return False
+    uid, email = user.get("id"), user.get("email")
+    if uid and uid in ops.access_ids()["admins"]:
+        return True
+    return bool(email) and email.strip().lower() in _admin_emails()
 
 
 def _cfg(key: str) -> str:

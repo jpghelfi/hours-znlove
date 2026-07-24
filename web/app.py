@@ -48,6 +48,7 @@ app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 @app.on_event("startup")
 def _startup() -> None:
     ops.ensure_person_property()
+    ops.ensure_admin_property()
 
 
 @app.get("/healthz")
@@ -124,7 +125,7 @@ def auth_callback(request: Request, code: Optional[str] = None, state: Optional[
         user = auth.exchange_code(code)
     except Exception:
         return RedirectResponse(url="/login?denied=error", status_code=303)
-    if not auth.is_allowed(user.get("email")):
+    if not auth.is_allowed(user):
         return RedirectResponse(url="/login?denied=notallowed", status_code=303)
     request.session["user"] = {"id": user["id"], "name": user["name"], "email": user["email"]}
     return RedirectResponse(url="/", status_code=303)
@@ -146,7 +147,7 @@ def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = N
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "form.html", {
         "user": user,
-        "is_admin": auth.is_admin(user.get("email")),
+        "is_admin": auth.is_admin(user),
         "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
         "ok": ok, "err": _ENTRY_ERRORS.get(err) if err else None,
@@ -202,7 +203,7 @@ def week_page(request: Request, monday: Optional[str] = None):
     target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
     return templates.TemplateResponse(request, "week.html", {
         "user": user,
-        "is_admin": auth.is_admin(user.get("email")),
+        "is_admin": auth.is_admin(user),
         "grid": grid,
         "projects": ops.list_projects(member_of=user.get("id")),
         "prev_mon": (mon - dt.timedelta(days=7)).isoformat(),
@@ -241,7 +242,7 @@ def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: O
 
 def _report_data(user, scope, range_key, date_from, date_to):
     f, t, rk = _range_bounds(range_key, date_from, date_to)
-    is_admin = auth.is_admin(user.get("email"))
+    is_admin = auth.is_admin(user)
     team = scope == "team" and is_admin
     entries = ops.entries_between(f, t, None if team else user.get("id"))
     total = round(sum(e["hours"] for e in entries), 2)
@@ -307,7 +308,7 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user.get("email")):
+    if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     data = _report_data(user, scope, range, date_from, date_to)
     return templates.TemplateResponse(request, "reports.html", {"user": user, "r": data, "scope": scope, "is_admin": True})
@@ -319,7 +320,7 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user.get("email")):
+    if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     data = _report_data(user, scope, range, date_from, date_to)
     import csv
@@ -389,7 +390,7 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    is_admin = auth.is_admin(user.get("email"))
+    is_admin = auth.is_admin(user)
     if not is_admin:
         return RedirectResponse(url="/", status_code=303)
     by = by if by in ("person", "project") else "person"
@@ -463,7 +464,7 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
 @app.get("/assignments", response_class=HTMLResponse)
 def assignments_page(request: Request):
     user = _require_login(request)
-    if not user or not auth.is_admin(user.get("email")):
+    if not user or not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse(request, "assignments.html", {
         "user": user,
@@ -484,7 +485,7 @@ def api_assignment(request: Request, a: Assignment):
     user = _require_login(request)
     if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
-    if not auth.is_admin(user.get("email")):
+    if not auth.is_admin(user):
         return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
@@ -508,7 +509,7 @@ def api_allocation(request: Request, alloc: Alloc):
     user = _require_login(request)
     if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
-    if not auth.is_admin(user.get("email")):
+    if not auth.is_admin(user):
         return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)

@@ -9,6 +9,7 @@ import datetime as dt
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 
 # reuse the existing client/config from src/
@@ -30,6 +31,20 @@ def ensure_person_property() -> None:
     ds = _notion.data_sources.retrieve(TIME_DS)
     if "Person" not in ds["properties"]:
         _notion.data_sources.update(TIME_DS, properties={"Person": {"people": {}}})
+
+
+def ensure_admin_property() -> None:
+    """Make sure the People db has an Admin (checkbox) property; add if missing.
+
+    Access is curated in the People db: an Active row grants login, an Admin
+    tick grants the team-wide reports scope (see access_ids). Older People dbs
+    predate the Admin column, so add it on startup for existing deployments.
+    """
+    if not PEOPLE_DS:
+        return
+    ds = _notion.data_sources.retrieve(PEOPLE_DS)
+    if "Admin" not in ds["properties"]:
+        _notion.data_sources.update(PEOPLE_DS, properties={"Admin": {"checkbox": {}}})
 
 
 # ---- reads -------------------------------------------------------------
@@ -99,6 +114,77 @@ def _people_from_workspace() -> list[dict]:
             break
         start = res["next_cursor"]
     return people
+
+
+# ---- access control (login allowlist + admins) --------------------------
+#
+# Who may log in and who is an admin is curated in the People db, matched by
+# the linked Notion user id (the same id OAuth hands back at login): every
+# Active row grants login, an additionally-ticked Admin row grants the
+# team-wide reports scope. auth.py layers the env-var lists on top as a
+# fallback, so a misconfigured People db can't lock everyone out.
+#
+# is_admin() is checked several times per request, so the derived id sets are
+# cached briefly rather than re-queried each call; Notion edits take effect
+# within _ACCESS_TTL seconds.
+_ACCESS_TTL = 60.0
+_access_cache: dict = {"at": 0.0, "allowed": None, "admins": None}
+_access_lock = threading.Lock()
+
+
+def _access_from_db() -> tuple[set, set]:
+    """Return (allowed_ids, admin_ids) from the People db.
+
+    allowed = every Active row's linked Notion user; admins = those also ticked
+    Admin (an inactive row grants nothing). Rows with no linked Person can't map
+    to a login, so they're skipped.
+    """
+    allowed: set = set()
+    admins: set = set()
+    kwargs = {
+        "data_source_id": PEOPLE_DS, "page_size": 100,
+        "filter": {"property": "Active", "checkbox": {"equals": True}},
+    }
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        for row in res["results"]:
+            props = row["properties"]
+            linked = props.get("Person", {}).get("people", [])
+            if not linked:
+                continue
+            uid = linked[0]["id"]
+            allowed.add(uid)
+            if props.get("Admin", {}).get("checkbox", False):
+                admins.add(uid)
+        if not res.get("has_more"):
+            break
+        kwargs["start_cursor"] = res["next_cursor"]
+    return allowed, admins
+
+
+def access_ids() -> dict:
+    """Cached {"allowed": set, "admins": set} of Notion user ids from the People
+    db. Returns empty sets (so callers fall back to the env allowlists) when the
+    People db isn't configured or the query fails, rather than 500ing a login."""
+    if not PEOPLE_DS:
+        return {"allowed": set(), "admins": set()}
+    now = time.monotonic()
+    with _access_lock:
+        if _access_cache["allowed"] is not None and now - _access_cache["at"] < _ACCESS_TTL:
+            return {"allowed": _access_cache["allowed"], "admins": _access_cache["admins"]}
+    try:
+        allowed, admins = _access_from_db()
+    except Exception:
+        logging.exception(
+            "People access query failed — check PEOPLE_DS_ID. Falling back to the "
+            "env allowlists (ALLOWED_EMAILS / ADMIN_EMAILS) for this check."
+        )
+        # Cache the empty result too: a persistent misconfig would otherwise
+        # re-query Notion on every is_admin call. Env admins still get through.
+        allowed, admins = set(), set()
+    with _access_lock:
+        _access_cache.update(at=now, allowed=allowed, admins=admins)
+    return {"allowed": allowed, "admins": admins}
 
 
 def get_user(user_id: str) -> dict:
