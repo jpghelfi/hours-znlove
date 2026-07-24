@@ -43,7 +43,9 @@ members, the old behavior.
 
 This same roster is the **access list** (see [Auth](#auth)): an `Active` row lets that
 person log in, and the `Admin` checkbox grants the team-wide reports scope — so you add,
-remove, and promote users right here in Notion rather than editing env vars.
+remove, and promote users right here in Notion rather than editing env vars. Access is
+re-checked on every request (against the ~60s-cached roster), so unticking `Active` ends
+someone's live session within about a minute, not just their next login.
 
 ## Who submitted
 

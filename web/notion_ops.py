@@ -20,6 +20,7 @@ _notion = get_client()
 _ids = load_db_ids()
 TIME_DS = _ids["time_entries_ds_id"]
 PROJECTS_DS = _ids["projects_ds_id"]
+PEOPLE_DS = _ids.get("people_ds_id")  # optional: roster + access list
 
 
 def ensure_person_property() -> None:
@@ -48,8 +49,6 @@ def ensure_admin_property() -> None:
 
 
 # ---- reads -------------------------------------------------------------
-
-PEOPLE_DS = _ids.get("people_ds_id")
 
 
 def list_people() -> list[dict]:

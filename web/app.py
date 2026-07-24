@@ -71,8 +71,17 @@ def current_user(request: Request) -> Optional[dict]:
 
 
 def _require_login(request: Request) -> Optional[dict]:
-    """Return the user dict, or None if the caller should be redirected to login."""
-    return current_user(request)
+    """Return the user dict, or None if the caller should be redirected to login.
+
+    Re-checks the People-db roster every request (cheap — access_ids is
+    TTL-cached), so unticking someone's Active row actually ends their live
+    session within the cache TTL, not just blocks their next login. Skipped in
+    AUTH_DISABLED dev mode, where there's no real roster to check against."""
+    user = current_user(request)
+    if user and not auth.auth_disabled() and not auth.is_allowed(user):
+        request.session.pop("user", None)
+        return None
+    return user
 
 
 def _same_origin(request: Request) -> bool:
