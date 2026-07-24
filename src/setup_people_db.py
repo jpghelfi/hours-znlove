@@ -1,11 +1,14 @@
 """Create the People database in Notion and seed it from workspace members.
 
 The People database is the roster the web app shows (assignments columns,
-schedule rows, person dropdowns): curate it in Notion — untick Active to hide
-someone (don't delete the row: this script only skips people who still have
-one, so deleted people come back on the next run), retitle a row to rename
-them. Each row links the real Notion user via the Person property so the app
-can keep writing people properties elsewhere.
+schedule rows, person dropdowns) AND the access list: an Active row grants
+login, an additionally-ticked Admin row grants the team-wide reports scope
+(matched by the linked Notion user, so the same person who authorizes via
+OAuth). Curate it in Notion — untick Active to revoke access (don't delete the
+row: this script only skips people who still have one, so deleted people come
+back on the next run), retitle a row to rename them. Each row links the real
+Notion user via the Person property so the app can keep writing people
+properties elsewhere and match logins.
 
 Idempotent: skips creation if databases.json already has the ids, and seeding
 skips members who already have a row.
@@ -16,7 +19,8 @@ from setup_databases import create_db
 PEOPLE_PROPS = {
     "Name": {"title": {}},
     "Person": {"people": {}},
-    "Active": {"checkbox": {}},
+    "Active": {"checkbox": {}},  # ticked = can log in to the web app
+    "Admin": {"checkbox": {}},   # ticked = team-wide reports / exports scope
 }
 
 
@@ -53,6 +57,11 @@ def main() -> None:
     if ids.get("people_ds_id"):
         people_db, people_ds = ids["people_db_id"], ids["people_ds_id"]
         print(f"People database already exists (ds {people_ds}) — seeding only.")
+        # Backfill the Admin column on People dbs created before it existed.
+        ds = notion.data_sources.retrieve(people_ds)
+        if "Admin" not in ds["properties"]:
+            notion.data_sources.update(people_ds, properties={"Admin": {"checkbox": {}}})
+            print("  + added Admin checkbox to existing People db")
     else:
         print("Creating People database…")
         people_db, people_ds = create_db(notion, get_parent_page_id(), "People", PEOPLE_PROPS)

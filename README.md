@@ -26,8 +26,8 @@ automatically (see [Who submitted](#who-submitted) below) — no manual "person"
 ### The People roster
 
 The web app's list of people (assignments columns, schedule rows, person dropdowns) comes
-from a third database, **People** (`Name`, `Person` (people link), `Active`), created and
-seeded from the current workspace members by:
+from a third database, **People** (`Name`, `Person` (people link), `Active`, `Admin`),
+created and seeded from the current workspace members by:
 
 ```bash
 ./.venv/bin/python src/setup_people_db.py   # idempotent; re-run to pick up new members
@@ -40,6 +40,12 @@ runs. Rows must keep a `Person` link — rows without one are ignored. New works
 do NOT appear automatically; re-run the script (or add a row by hand) to include them. On
 Render set `PEOPLE_DS_ID`; if it's unset the app falls back to listing all workspace
 members, the old behavior.
+
+This same roster is the **access list** (see [Auth](#auth)): an `Active` row lets that
+person log in, and the `Admin` checkbox grants the team-wide reports scope — so you add,
+remove, and promote users right here in Notion rather than editing env vars. Access is
+re-checked on every request (against the ~60s-cached roster), so unticking `Active` ends
+someone's live session within about a minute, not just their next login.
 
 ## Who submitted
 
@@ -134,10 +140,10 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
 # then open http://localhost:8000
 ```
 
-- **Login:** "Sign in with Notion" (OAuth), gated by an email allowlist — see [Auth](#auth).
+- **Login:** "Sign in with Notion" (OAuth), gated by the People-db roster — see [Auth](#auth).
 - **`/reports` — Reports:** presets (this/last week/month) or custom range; totals, by-day
-  chart, by-project bars, CSV export. Admins (`ADMIN_EMAILS` env var) get a **Team** scope
-  with by-person totals and a team-wide CSV.
+  chart, by-project bars, CSV export. Admins (People-db `Admin` tick, or `ADMIN_EMAILS`) get a
+  **Team** scope with by-person totals and a team-wide CSV.
 - **Timer:** start/stop on the Log hours page (Harvest-style); survives reloads, fills the
   Hours field rounded to the nearest 0.25h on stop.
 - **Weekly extras:** capacity bar (`WEEK_TARGET_HOURS`, default 40) and a one-click
@@ -162,16 +168,24 @@ if missing. (Notion-form submissions still use `Logged by`; `report.py` and the 
 
 ### Auth
 
-Login uses **Notion OAuth**: the app reads the authorizing user's identity and checks their
-email against `ALLOWED_EMAILS`. OAuth is only for *identity* — all data access uses the
-integration token. Everyone not on the allowlist is rejected.
+Login uses **Notion OAuth**: the app reads the authorizing user's identity and checks it
+against the **People-db roster** — an `Active` row (matched by the linked `Person`'s Notion
+user id) lets them in, and the `Admin` checkbox grants the team-wide reports scope. OAuth is
+only for *identity* — all data access uses the integration token. So you manage who has
+access, and who is an admin, entirely in Notion — no redeploy needed (changes take up to a
+minute to propagate).
+
+`ALLOWED_EMAILS` / `ADMIN_EMAILS` (comma-separated emails) stay as a **fallback**, OR'd on
+top of the roster so a People-db misconfig can't lock everyone out; leave at least your own
+email in `ADMIN_EMAILS` as a break-glass admin.
 
 One-time setup:
 1. On your integration at <https://www.notion.so/my-integrations> → **Distribution** →
    make it **public**. Copy the **OAuth client ID** and **secret**.
 2. Add the redirect URI: `https://<your-host>/auth/callback`.
 3. Set env vars: `NOTION_OAUTH_CLIENT_ID`, `NOTION_OAUTH_CLIENT_SECRET`,
-   `NOTION_OAUTH_REDIRECT_URI`, `SESSION_SECRET`, and `ALLOWED_EMAILS` (comma-separated).
+   `NOTION_OAUTH_REDIRECT_URI`, `SESSION_SECRET`, and (optional fallback) `ALLOWED_EMAILS`
+   / `ADMIN_EMAILS`.
 
 Local dev without OAuth: set `AUTH_DISABLED=1` to bypass login (never in production).
 
