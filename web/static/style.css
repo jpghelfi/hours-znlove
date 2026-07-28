@@ -184,23 +184,68 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .group-add select { max-width: 320px; font-size: 13px; padding: 6px 8px; background: transparent; border-style: dashed; color: var(--muted); }
 .range-form select { max-width: 200px; }
 
-/* people filter (reports): checkbox menu in a <details>, so multi-select
-   survives without JS — Apply submits the whole range form */
+/* people filter (reports): a <details> dropdown of checkboxes, so multi-select
+   works without JS (JS only adds search, live label, outside-click close).
+   Selectors are kept at .range-form-beating specificity — the form styles
+   labels/inputs generically, and this panel must win inside it. */
 .pfilter { position: relative; }
-.pfilter > summary { list-style: none; cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px; }
-.pfilter > summary::-webkit-details-marker { display: none; }
-.pfilter[open] > summary { border-color: var(--accent); color: var(--accent); }
-.pfilter-count { background: var(--head); border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 700; color: var(--muted); }
-.pfilter-menu {
-  position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; min-width: 230px; max-height: 320px; overflow-y: auto;
-  background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; box-shadow: 0 10px 28px rgba(0,0,0,.18);
+.range-form .pfilter > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 8px; max-width: 260px;
 }
-.pfilter-tools { display: flex; gap: 10px; padding: 0 4px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
-.linkbtn { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; font-weight: 600; color: var(--accent); cursor: pointer; }
-.pfilter-opt { display: flex !important; align-items: center; gap: 8px; padding: 6px 4px; border-radius: 8px; font-size: 14px !important; cursor: pointer; }
+.pfilter > summary::-webkit-details-marker { display: none; }
+.pfilter[open] > summary { border-color: var(--accent); box-shadow: 0 0 0 3px var(--chart-track); }
+.pfilter-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pfilter-ico { flex: none; }
+.pfilter-caret { flex: none; font-size: 13px; line-height: 1; color: var(--muted); transition: transform .15s; }
+.pfilter[open] .pfilter-caret { transform: rotate(180deg); }
+
+.pfilter-menu {
+  position: absolute; z-index: 30; top: calc(100% + 8px); left: 0;
+  /* explicit width, not max-content: an auto-fill grid inside a shrink-to-fit
+     box resolves to a single column, which wastes the second one */
+  width: 520px; max-width: calc(100vw - 32px);
+  display: flex; flex-direction: column;
+  /* stay inside the fold (the panel hangs ~215px down the page), but never
+     collapse to a useless sliver on a short window */
+  max-height: max(240px, min(440px, calc(100vh - 250px)));
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.16); overflow: hidden;
+}
+.pfilter-head { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.range-form .pfilter-search {
+  width: 100%; padding: 8px 10px; font-size: 14px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--bg); color: var(--ink);
+}
+.pfilter-tools { display: flex; align-items: center; gap: 8px; padding-top: 8px; }
+.pfilter-sep { color: var(--muted); font-size: 12px; }
+.linkbtn { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; font-weight: 700; color: var(--accent); cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
+
+/* two columns once there's room — a 20-person roster fits without scrolling */
+.pfilter-list {
+  overflow-y: auto; padding: 8px; display: grid; gap: 2px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); align-content: start;
+}
+.range-form .pfilter-opt {
+  display: flex; flex-direction: row; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 9px; font-size: 14px; font-weight: 500;
+  cursor: pointer; min-width: 0;
+}
 .pfilter-opt:hover { background: var(--head); }
-.pfilter-opt input { width: 16px; height: 16px; accent-color: var(--accent); }
-.pfilter-hint { font-size: 11px; padding: 8px 4px 2px; }
+.pfilter-opt:focus-within { background: var(--head); box-shadow: inset 0 0 0 2px var(--chart-track); }
+/* min-height:0 defends against the mobile rule that gives .range-form inputs a
+   44px tap target — the row is the tap target here, not the box itself */
+.range-form .pfilter-opt input[type=checkbox] { flex: none; width: 17px; height: 17px; min-height: 0; margin: 0; accent-color: var(--accent); }
+.pfilter-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pfilter-opt[hidden] { display: none; }
+.pfilter-empty { padding: 10px; font-size: 13px; grid-column: 1 / -1; }
+.pfilter-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border-top: 1px solid var(--line); background: var(--head);
+}
+.pfilter-foot .subtle { font-size: 12px; }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
 /* by person ▸ projects */
 .ppgroup { margin-bottom: 16px; }
@@ -263,12 +308,14 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .range-form input[type=date] { width: 100%; }
   .range-actions .btn { flex: 1; text-align: center; padding: 10px 6px; white-space: nowrap; }
   .range-form select { flex: 1; min-width: 130px; }
-  /* people filter gets its own full-width row; the menu spans it instead of
-     hanging off the right edge */
+  /* people filter takes its own full-width row; the menu spans the screen
+     instead of hanging off the right edge, and stays one comfortable column */
   .pfilter { width: 100%; }
-  .pfilter > summary { width: 100%; justify-content: center; padding: 10px 6px; }
-  .pfilter-menu { left: 0; right: 0; min-width: 0; max-height: 260px; }
-  .pfilter-opt { padding: 9px 6px; }
+  .range-form .pfilter > summary { width: 100%; max-width: none; justify-content: center; padding: 11px 10px; }
+  .pfilter-menu { left: 0; right: 0; width: auto; min-width: 0; max-width: none; max-height: 70vh; }
+  .pfilter-list { grid-template-columns: 1fr; }
+  .range-form .pfilter-opt { padding: 11px 10px; font-size: 15px; }
+  .range-form .pfilter-search { min-height: 42px; }
 
   /* stat tiles: one row of three; 2x2 once a 4th (people) tile shows up in team scope */
   .statrow { grid-template-columns: repeat(3, 1fr); gap: 8px; }
