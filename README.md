@@ -143,7 +143,10 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
 - **Login:** "Sign in with Notion" (OAuth), gated by the People-db roster — see [Auth](#auth).
 - **`/reports` — Reports:** presets (this/last week/month) or custom range; totals, by-day
   chart, by-project bars, CSV export. Admins (People-db `Admin` tick, or `ADMIN_EMAILS`) get a
-  **Team** scope with by-person totals and a team-wide CSV.
+  **Team** scope with by-person totals and a team-wide CSV, plus a **People filter** — tick one
+  or more roster names to narrow every number on the page (and the CSV) to just them. Filtered
+  views add **By person ▸ projects** (each person's projects, ranked) and a **Project × person**
+  matrix with row/column totals.
 - **Timer:** start/stop on the Log hours page (Harvest-style); survives reloads, fills the
   Hours field rounded to the nearest 0.25h on stop.
 - **Weekly extras:** capacity bar (`WEEK_TARGET_HOURS`, default 40) and a one-click
