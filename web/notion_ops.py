@@ -232,6 +232,29 @@ def _project_name_map() -> dict:
     return {p["id"]: p["name"] for p in list_projects(active_only=False)}
 
 
+def _desc_text(props) -> str:
+    """Full plain text of Description (every rich_text chunk, not just the first)."""
+    return "".join(x.get("plain_text", "") for x in props.get("Description", {}).get("rich_text", []))
+
+
+def _desc_key(props) -> str:
+    """Normalized description — the test for whether two rows say the same thing.
+
+    Whitespace-collapsed and lowercased so "Exploratory Testing. " and
+    "exploratory testing." count as one description, not two.
+    """
+    return " ".join(_desc_text(props).split()).lower()
+
+
+def _entry_dict(row) -> dict:
+    props = row["properties"]
+    return {
+        "id": row["id"],
+        "hours": props["Hours"]["number"] or 0,
+        "description": _desc_text(props),
+    }
+
+
 def _row_person(props) -> tuple[str | None, str]:
     """Return (person_id, person_name), preferring Person, falling back to Logged by."""
     people = props.get("Person", {}).get("people", [])
@@ -276,7 +299,8 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
 
 # ---- writes ------------------------------------------------------------
 
-def create_entry(person_id: str | None, project_id: str, date: str, hours: float, description: str = "") -> None:
+def create_entry(person_id: str | None, project_id: str, date: str, hours: float, description: str = "") -> str:
+    """Create one time entry and return its page id."""
     pname_map = _project_name_map()
     props = {
         "Entry": {"title": [{"text": {"content": f"{pname_map.get(project_id, 'Entry')} — {date}"}}]},
@@ -287,7 +311,10 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     }
     if person_id:
         props["Person"] = {"people": [{"id": person_id}]}
-    _notion.pages.create(parent={"type": "data_source_id", "data_source_id": TIME_DS}, properties=props)
+    page = _notion.pages.create(
+        parent={"type": "data_source_id", "data_source_id": TIME_DS}, properties=props
+    )
+    return page["id"]
 
 
 # ---- weekly grid -------------------------------------------------------
@@ -341,8 +368,12 @@ def week_grid(monday: dt.date, person_id: str) -> dict:
             "project_id": project_id,
             "project_name": pname_map.get(project_id, "(none)"),
             "cells": {iso: 0.0 for iso in day_isos},
+            # how many entries each cell sums up — a cell showing "2" may be one
+            # 2h entry or two 1h ones, and the UI has to tell those apart
+            "counts": {iso: 0 for iso in day_isos},
         })
         row["cells"][date] += hours
+        row["counts"][date] += 1
 
     ordered = sorted(rows.values(), key=lambda r: r["project_name"].lower())
     for r in ordered:
@@ -560,30 +591,67 @@ def _query_all(kwargs: dict) -> list:
     return out
 
 
+def _day_rows(person_id: str, project_id: str, date: str) -> list:
+    """Every entry in one (person, project, date) cell, oldest first.
+
+    Sorted here rather than in the query: the 2025-09-03 data source endpoint
+    silently ignores `sorts` of the {"timestamp": "created_time"} form (property
+    sorts do work), so asking for it would look deterministic without being it.
+    created_time is only minute-granular, so id breaks ties.
+    """
+    rows = _query_all({
+        "data_source_id": TIME_DS, "page_size": 100,
+        "filter": {"and": [
+            {"property": "Date", "date": {"equals": date}},
+            {"property": "Project", "relation": {"contains": project_id}},
+            {"property": "Person", "people": {"contains": person_id}},
+        ]},
+    })
+    return sorted(rows, key=lambda r: (r.get("created_time") or "", r["id"]))
+
+
+def day_entries(person_id: str, project_id: str, date: str) -> list[dict]:
+    """Read-only listing of one cell's entries, for the day editor."""
+    return [_entry_dict(r) for r in _day_rows(person_id, project_id, date)]
+
+
 def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
     """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry.
 
-    Filters on Person in the query (not a Python scan), paginates, and
-    consolidates duplicates: the grid shows one summed cell, so a save must
-    leave exactly one row behind (or none for 0).
+    A grid cell is one number, but a day can legitimately hold several entries —
+    two different tasks on the same project. So before writing we check what the
+    cell actually contains:
+
+    - rows whose descriptions match are a real duplicate (double submit, an old
+      race) and fold into one, because `hours` is an authoritative new total;
+    - rows with *different* descriptions are different tasks. One number can't
+      say which one changed, so we refuse: nothing is written, nothing archived,
+      and the caller gets {"ok": False, "code": "multi_entry"} plus the rows, to
+      open the day editor instead. Guessing here used to silently delete work.
     """
     with _write_lock:
-        matches = _query_all({
-            "data_source_id": TIME_DS, "page_size": 100,
-            "filter": {"and": [
-                {"property": "Date", "date": {"equals": date}},
-                {"property": "Project", "relation": {"contains": project_id}},
-                {"property": "Person", "people": {"contains": person_id}},
-            ]},
-        })
-        keep = matches[0] if matches else None
-        for extra in matches[1:]:  # duplicates from old races/forms: fold into one
+        matches = _day_rows(person_id, project_id, date)
+
+        groups: dict = {}
+        for row in matches:
+            groups.setdefault(_desc_key(row["properties"]), []).append(row)
+
+        if len(groups) > 1:
+            return {
+                "ok": False, "code": "multi_entry",
+                "hours": round(sum(r["properties"]["Hours"]["number"] or 0 for r in matches), 2),
+                "entries": [_entry_dict(r) for r in matches],
+            }
+
+        same = next(iter(groups.values()), [])  # 0 or 1 distinct description
+        keep = same[0] if same else None
+        for extra in same[1:]:  # identical text: safe to fold into `keep`
             _notion.pages.update(extra["id"], archived=True)
 
         if not hours:  # 0, None -> remove
             if keep:
                 _notion.pages.update(keep["id"], archived=True)
-            return {"ok": True, "hours": 0}
+            return {"ok": True, "hours": 0, "count": 0}
 
         if keep:
             _notion.pages.update(keep["id"], properties={
@@ -592,4 +660,45 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
             })
         else:
             create_entry(person_id, project_id, date, hours)
-        return {"ok": True, "hours": hours}
+        return {"ok": True, "hours": hours, "count": 1}
+
+
+def _owned_entry(entry_id: str, person_id: str) -> dict:
+    """Fetch a time entry, or raise PermissionError if it isn't this person's.
+
+    The id arrives from the browser, so verify both that the page really lives in
+    Time Entries and that it belongs to the caller — otherwise a guessed id would
+    let anyone edit someone else's hours.
+    """
+    page = _notion.pages.retrieve(entry_id)
+    parent_ds = ((page.get("parent") or {}).get("data_source_id") or "").replace("-", "").lower()
+    if not parent_ds or parent_ds != (TIME_DS or "").replace("-", "").lower():
+        raise PermissionError("not a time entry")
+    pid, _ = _row_person(page["properties"])
+    if not person_id or pid != person_id:
+        raise PermissionError("not your entry")
+    return page
+
+
+def update_entry(entry_id: str, person_id: str, hours: float, description: str) -> dict:
+    """Edit one entry in place. hours <= 0 removes it."""
+    with _write_lock:
+        _owned_entry(entry_id, person_id)
+        if not hours:
+            _notion.pages.update(entry_id, archived=True)
+            return {"ok": True, "deleted": True, "id": entry_id}
+        page = _notion.pages.update(entry_id, properties={
+            "Hours": {"number": hours},
+            "Description": {"rich_text": [{"text": {"content": description}}]},
+            # make authorship explicit on rows that only had the "Logged by" fallback
+            "Person": {"people": [{"id": person_id}]},
+        })
+        return {"ok": True, "entry": _entry_dict(page)}
+
+
+def delete_entry(entry_id: str, person_id: str) -> dict:
+    """Remove one entry (leaving any siblings on that day untouched)."""
+    with _write_lock:
+        _owned_entry(entry_id, person_id)
+        _notion.pages.update(entry_id, archived=True)
+        return {"ok": True, "deleted": True, "id": entry_id}

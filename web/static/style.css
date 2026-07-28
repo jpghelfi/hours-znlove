@@ -114,6 +114,62 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .cell input.saving { background: var(--saving); }
 .cell input.saved { background: var(--okbg); }
 .cell input.err { background: var(--err); }
+
+/* Cells holding more than one entry: a single number would hide the split, so
+   badge them and send the click to the day editor instead of an inline edit. */
+.cell.multi input { cursor: pointer; border-color: var(--line); border-style: dashed; }
+.cell.multi::after {
+  content: attr(data-n) "\00d7"; position: absolute; top: 1px; right: 3px;
+  font-size: 10px; font-weight: 700; line-height: 1.4; padding: 0 4px;
+  border-radius: 6px; background: var(--active-bg); color: var(--active-ink); pointer-events: none;
+}
+.multi-chip {
+  display: inline-block; font-size: 10px; font-weight: 700; padding: 0 4px;
+  border-radius: 6px; background: var(--active-bg); color: var(--active-ink); vertical-align: 1px;
+}
+
+/* "⋯" — open any cell entry-by-entry. Quiet until you hover or tab to it, so the
+   grid stays clean, but it's a real button so keyboard users can reach it. */
+.cell { position: relative; }
+.cell-more {
+  position: absolute; bottom: 1px; right: 3px; padding: 0 4px; line-height: 1.2;
+  background: transparent; border: 0; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--muted); opacity: 0; transition: opacity .12s;
+}
+.cell:hover .cell-more, .cell:focus-within .cell-more, .cell-more:focus { opacity: 1; }
+.cell-more:hover, .cell-more:focus { background: var(--active-bg); color: var(--active-ink); }
+
+/* Day editor */
+.modal {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 5, 40, .45);
+}
+.modal[hidden] { display: none; }
+.modal-card {
+  background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 14px;
+  padding: 18px; width: min(560px, 100%); max-height: 88vh; overflow-y: auto;
+  box-shadow: 0 18px 48px rgba(0, 5, 40, .28);
+}
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.modal-head h3 { margin: 0 0 2px; font-size: 16px; }
+.day-line { display: grid; grid-template-columns: 82px 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.day-line input { padding: 9px 10px; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); }
+.day-line .dl-hours { text-align: center; }
+.day-line.saving input { background: var(--saving); }
+.day-line.saved input { background: var(--okbg); }
+.day-line.err input { background: var(--err); }
+.dl-del {
+  background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--muted);
+  font-size: 14px; line-height: 1; padding: 9px 10px; cursor: pointer;
+}
+.dl-del:hover { background: var(--err); color: var(--err-ink); }
+.addline { margin-top: 2px; font-size: 13px; }
+.modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+@media (max-width: 480px) {
+  .day-line { grid-template-columns: 72px 1fr auto; }
+}
+
 .rowtotal, .col-total { font-weight: 700; }
 .grid tfoot td { background: var(--head); font-weight: 700; }
 .empty td { color: var(--muted); padding: 22px; }
