@@ -13,7 +13,7 @@ import secrets
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -249,11 +249,17 @@ def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: O
     return mon.isoformat(), (mon + dt.timedelta(days=6)).isoformat(), "this-week"
 
 
-def _report_data(user, scope, range_key, date_from, date_to):
+def _report_data(user, scope, range_key, date_from, date_to, people=None):
     f, t, rk = _range_bounds(range_key, date_from, date_to)
     is_admin = auth.is_admin(user)
-    team = scope == "team" and is_admin
+    # Picking specific people is a team-wide read narrowed down, so it implies
+    # team scope (admins only, like everything else on this page).
+    selected = [p for p in (people or []) if p] if is_admin else []
+    team = (scope == "team" or bool(selected)) and is_admin
     entries = ops.entries_between(f, t, None if team else user.get("id"))
+    if selected:
+        sel = set(selected)
+        entries = [e for e in entries if e["person_id"] in sel]
     total = round(sum(e["hours"] for e in entries), 2)
 
     def agg(key):
@@ -281,6 +287,8 @@ def _report_data(user, scope, range_key, date_from, date_to):
     # planned vs actual (Forecast): allocations in range vs logged hours,
     # pivotable by project AND by person
     planned = ops.planned_rows(f, t, None if team else user.get("id"))
+    if selected:
+        planned = [p for p in planned if p["person_id"] in sel]
 
     def pva(dim):
         a, p = {}, {}
@@ -308,30 +316,78 @@ def _report_data(user, scope, range_key, date_from, date_to):
         "by_project": agg("project"), "by_person": agg("person") if team else [],
         "days": days, "people_count": len({e["person"] for e in entries}),
         "pva": pva("project"), "pva_person": pva("person"),
+        "selected": selected,
+        "person_projects": _person_projects(entries),
+        "matrix": _person_project_matrix(entries),
+    }
+
+
+def _person_projects(entries):
+    """Per person, their projects — the 'by person, then by project' view.
+    Sorted by hours descending at both levels."""
+    per = {}
+    for e in entries:
+        p = per.setdefault(e["person"], {"name": e["person"], "hours": 0, "projects": {}})
+        p["hours"] += e["hours"]
+        p["projects"][e["project"]] = p["projects"].get(e["project"], 0) + e["hours"]
+    out = []
+    for p in sorted(per.values(), key=lambda p: (-p["hours"], p["name"].lower())):
+        mx = max(p["projects"].values(), default=0)
+        out.append({
+            "name": p["name"], "hours": round(p["hours"], 2),
+            "projects": [{"name": n, "hours": round(v, 2), "pct": round(v / mx * 100) if mx else 0}
+                         for n, v in sorted(p["projects"].items(), key=lambda kv: (-kv[1], kv[0].lower()))],
+        })
+    return out
+
+
+def _person_project_matrix(entries):
+    """Projects (rows) × people (columns) with row/column totals — the same
+    numbers as person_projects, pivoted for scanning across people."""
+    cells = {}
+    ptot, jtot = {}, {}
+    for e in entries:
+        cells[(e["project"], e["person"])] = cells.get((e["project"], e["person"]), 0) + e["hours"]
+        ptot[e["person"]] = ptot.get(e["person"], 0) + e["hours"]
+        jtot[e["project"]] = jtot.get(e["project"], 0) + e["hours"]
+    people = [n for n, _ in sorted(ptot.items(), key=lambda kv: (-kv[1], kv[0].lower()))]
+    projects = [n for n, _ in sorted(jtot.items(), key=lambda kv: (-kv[1], kv[0].lower()))]
+    return {
+        "people": people,
+        "rows": [{"project": j,
+                  "cells": [round(cells.get((j, n), 0), 2) for n in people],
+                  "total": round(jtot[j], 2)} for j in projects],
+        "totals": [round(ptot[n], 2) for n in people],
+        "grand": round(sum(jtot.values()), 2),
     }
 
 
 @app.get("/reports", response_class=HTMLResponse)
 def reports_page(request: Request, scope: str = "me", range: Optional[str] = None,
-                 date_from: Optional[str] = None, date_to: Optional[str] = None):
+                 date_from: Optional[str] = None, date_to: Optional[str] = None,
+                 person: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    data = _report_data(user, scope, range, date_from, date_to)
-    return templates.TemplateResponse(request, "reports.html", {"user": user, "r": data, "scope": scope, "is_admin": True})
+    data = _report_data(user, scope, range, date_from, date_to, person)
+    return templates.TemplateResponse(request, "reports.html", {
+        "user": user, "r": data, "scope": "team" if data["team"] else "me",
+        "is_admin": True, "people": ops.list_people(),
+    })
 
 
 @app.get("/reports.csv")
 def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None,
-                date_from: Optional[str] = None, date_to: Optional[str] = None):
+                date_from: Optional[str] = None, date_to: Optional[str] = None,
+                person: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    data = _report_data(user, scope, range, date_from, date_to)
+    data = _report_data(user, scope, range, date_from, date_to, person)
     import csv
     import io
     buf = io.StringIO()

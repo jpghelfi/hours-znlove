@@ -534,6 +534,7 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
             if not (date_from <= week_monday <= date_to):
                 continue
             out.append({
+                "person_id": pid,
                 "person": people[0].get("name", "(unassigned)") if people else "(unassigned)",
                 "project": pname.get(rel[0]["id"], "(none)"),
                 "hours": props["Hours"]["number"] or 0,

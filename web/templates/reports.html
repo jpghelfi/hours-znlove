@@ -2,11 +2,17 @@
 {% block title %}Reports · Hours Tracker{% endblock %}
 {% block nav_reports %}active{% endblock %}
 {% block content %}
-{% set qs = '&scope=' ~ scope %}
+{# people picks ride along on every range link / export so a filter survives navigation #}
+{% set psq %}{% for pid in r.selected %}&person={{ pid }}{% endfor %}{% endset %}
+{% set qs = '&scope=' ~ scope ~ psq %}
+{% set sel_names = people|selectattr('id', 'in', r.selected)|map(attribute='name')|list %}
 <div class="week-head">
   <div>
     <h1>Reports</h1>
-    <div class="subtle">{{ r.from }} → {{ r.to }}{% if r.team %} · whole team{% else %} · {{ user.name }}{% endif %}</div>
+    <div class="subtle">{{ r.from }} → {{ r.to }} ·
+      {%- if r.selected %} {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' people' }}
+      {%- elif r.team %} whole team
+      {%- else %} {{ user.name }}{% endif %}</div>
   </div>
   <div class="weeknav weeknav-4">
     <a class="btn {{ 'active' if r.range == 'this-week' }}" href="/reports?range=this-week{{ qs }}">This week</a>
@@ -22,6 +28,25 @@
     <label>From <input type="date" name="date_from" value="{{ r.from }}"></label>
     <label>To <input type="date" name="date_to" value="{{ r.to }}"></label>
   </div>
+  {% if r.is_admin %}
+  <details class="pfilter">
+    <summary class="btn">👥 People
+      <span class="pfilter-count">{{ r.selected|length if r.selected else 'all' }}</span></summary>
+    <div class="pfilter-menu">
+      <div class="pfilter-tools">
+        <button type="button" class="linkbtn" onclick="pfAll(true)">All</button>
+        <button type="button" class="linkbtn" onclick="pfAll(false)">None</button>
+      </div>
+      {% for p in people %}
+      <label class="pfilter-opt">
+        <input type="checkbox" name="person" value="{{ p.id }}" {{ 'checked' if p.id in r.selected }}>
+        <span>{{ p.name }}</span>
+      </label>
+      {% else %}<div class="subtle">No people in the roster.</div>{% endfor %}
+      <div class="subtle pfilter-hint">Pick one or more, then Apply. No pick = everyone.</div>
+    </div>
+  </details>
+  {% endif %}
   <div class="range-actions">
     <button type="submit" class="btn">Apply</button>
     {% if r.is_admin %}
@@ -31,6 +56,11 @@
     <a class="btn" href="/reports.csv?range={{ r.range }}&date_from={{ r.from }}&date_to={{ r.to }}{{ qs }}">⬇ CSV</a>
   </div>
 </form>
+<script>
+  function pfAll(on) {
+    document.querySelectorAll('.pfilter-opt input[name=person]').forEach(function (c) { c.checked = on; });
+  }
+</script>
 
 <div class="statrow">
   <div class="stat card"><div class="stat-n">{{ '%g'|format(r.total) }}</div><div class="stat-l">hours</div></div>
@@ -64,6 +94,58 @@
   </div>
   {% else %}<div class="subtle">No entries in this range.</div>{% endfor %}
 </div>
+
+{% if r.team and r.person_projects %}
+<div class="card wide">
+  <h3>By person ▸ projects</h3>
+  {% for p in r.person_projects %}
+  <div class="ppgroup">
+    <div class="ppgroup-head">
+      <span class="ppgroup-name">{{ p.name }}</span>
+      <span class="ppgroup-h">{{ '%g'|format(p.hours) }}h</span>
+    </div>
+    {% for j in p.projects %}
+    <div class="baritem baritem-sub">
+      <div class="bar-name">{{ j.name }}</div>
+      <div class="bar-track"><div class="bar-fill" style="width: {{ j.pct }}%"></div></div>
+      <div class="bar-val">{{ '%g'|format(j.hours) }}h</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card wide">
+  <h3>Project × person</h3>
+  <div class="grid-wrap">
+    <table class="grid matrix-grid">
+      <thead>
+        <tr>
+          <th class="col-project">Project</th>
+          {% for n in r.matrix.people %}<th>{{ n }}</th>{% endfor %}
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in r.matrix.rows %}
+        <tr>
+          <td class="col-project col-person">{{ row.project }}</td>
+          {% for v in row.cells %}<td class="{{ 'zero' if not v }}">{{ '%g'|format(v) if v else '·' }}</td>{% endfor %}
+          <td><strong>{{ '%g'|format(row.total) }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td class="col-project">Total</td>
+          {% for v in r.matrix.totals %}<td>{{ '%g'|format(v) }}</td>{% endfor %}
+          <td>{{ '%g'|format(r.matrix.grand) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {% macro pva_card(title, items) %}
 {% if items %}
