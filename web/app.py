@@ -8,6 +8,7 @@ Run:  ./.venv/bin/uvicorn web.app:app --reload --port 8000
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import secrets
 from pathlib import Path
@@ -43,6 +44,47 @@ app.add_middleware(
     https_only=os.environ.get("AUTH_DISABLED") != "1",  # Secure cookie in production
 )
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
+
+
+_asset_cache: dict[str, tuple[float, str]] = {}
+
+
+def asset_v(name: str) -> str:
+    """Short content hash of a static file, used as ?v= on its <link>/<script>.
+
+    Starlette serves /static with an ETag but no Cache-Control, so browsers fall
+    back to heuristic caching and can keep a stale stylesheet for days after a
+    deploy — which is how new HTML ended up rendering against old CSS. The hash
+    changes with the file, so a deploy always yields a fresh URL.
+
+    Keyed on mtime rather than computed once at import: otherwise editing CSS
+    under a running server keeps handing out the old (immutable-cached) URL and
+    local changes never show up.
+    """
+    path = BASE / "static" / name
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return "dev"
+    hit = _asset_cache.get(name)
+    if not hit or hit[0] != mtime:
+        _asset_cache[name] = (mtime, hashlib.sha256(path.read_bytes()).hexdigest()[:12])
+    return _asset_cache[name][1]
+
+
+templates.env.globals["asset_v"] = asset_v
+
+
+@app.middleware("http")
+async def _static_cache_headers(request: Request, call_next):
+    """Hash-stamped assets are immutable; an unstamped URL must revalidate."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable" if request.query_params.get("v")
+            else "no-cache"
+        )
+    return response
 
 
 @app.on_event("startup")

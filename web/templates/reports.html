@@ -29,21 +29,35 @@
     <label>To <input type="date" name="date_to" value="{{ r.to }}"></label>
   </div>
   {% if r.is_admin %}
-  <details class="pfilter">
-    <summary class="btn">👥 People
-      <span class="pfilter-count">{{ r.selected|length if r.selected else 'all' }}</span></summary>
+  <details class="pfilter" id="pfilter">
+    <summary class="btn pfilter-btn">
+      <span class="pfilter-ico">👥</span>
+      <span class="pfilter-label">{{ 'Everyone' if not r.selected else (sel_names|join(', ') if sel_names|length == 1 else sel_names|length ~ ' people') }}</span>
+      <span class="pfilter-caret" aria-hidden="true">▾</span>
+    </summary>
     <div class="pfilter-menu">
-      <div class="pfilter-tools">
-        <button type="button" class="linkbtn" onclick="pfAll(true)">All</button>
-        <button type="button" class="linkbtn" onclick="pfAll(false)">None</button>
+      <div class="pfilter-head">
+        <input type="search" class="pfilter-search" placeholder="Search people…" aria-label="Search people"
+               autocomplete="off" oninput="pfSearch(this.value)">
+        <div class="pfilter-tools">
+          <button type="button" class="linkbtn" onclick="pfAll(true)">Select all</button>
+          <span class="pfilter-sep">·</span>
+          <button type="button" class="linkbtn" onclick="pfAll(false)">Clear</button>
+        </div>
       </div>
-      {% for p in people %}
-      <label class="pfilter-opt">
-        <input type="checkbox" name="person" value="{{ p.id }}" {{ 'checked' if p.id in r.selected }}>
-        <span>{{ p.name }}</span>
-      </label>
-      {% else %}<div class="subtle">No people in the roster.</div>{% endfor %}
-      <div class="subtle pfilter-hint">Pick one or more, then Apply. No pick = everyone.</div>
+      <div class="pfilter-list">
+        {% for p in people %}
+        <label class="pfilter-opt" data-name="{{ p.name|lower }}">
+          <input type="checkbox" name="person" value="{{ p.id }}" {{ 'checked' if p.id in r.selected }}>
+          <span class="pfilter-nm">{{ p.name }}</span>
+        </label>
+        {% else %}<div class="subtle pfilter-empty">No people in the roster.</div>{% endfor %}
+        <div class="subtle pfilter-empty" id="pfilter-nomatch" hidden>No one matches that search.</div>
+      </div>
+      <div class="pfilter-foot">
+        <span class="subtle">No pick = everyone</span>
+        <button type="submit" class="btn btn-primary">Apply</button>
+      </div>
     </div>
   </details>
   {% endif %}
@@ -57,9 +71,46 @@
   </div>
 </form>
 <script>
-  function pfAll(on) {
-    document.querySelectorAll('.pfilter-opt input[name=person]').forEach(function (c) { c.checked = on; });
-  }
+  (function () {
+    var pf = document.getElementById('pfilter');
+    if (!pf) return;
+    var boxes = function () { return pf.querySelectorAll('.pfilter-opt input[name=person]'); };
+
+    window.pfAll = function (on) {
+      // only touch what the search currently shows, so "Clear" inside a search
+      // can't silently drop picks the user can't see
+      pf.querySelectorAll('.pfilter-opt:not([hidden]) input[name=person]').forEach(function (c) { c.checked = on; });
+      pfCount();
+    };
+
+    window.pfSearch = function (q) {
+      q = q.trim().toLowerCase();
+      var shown = 0;
+      pf.querySelectorAll('.pfilter-opt').forEach(function (opt) {
+        var hit = !q || opt.dataset.name.indexOf(q) !== -1;
+        opt.hidden = !hit;
+        if (hit) shown++;
+      });
+      document.getElementById('pfilter-nomatch').hidden = shown > 0;
+    };
+
+    function pfCount() {
+      var n = pf.querySelectorAll('.pfilter-opt input[name=person]:checked').length;
+      var one = pf.querySelector('.pfilter-opt input[name=person]:checked');
+      pf.querySelector('.pfilter-label').textContent =
+        n === 0 ? 'Everyone' : (n === 1 ? one.parentNode.querySelector('.pfilter-nm').textContent : n + ' people');
+    }
+    boxes().forEach(function (c) { c.addEventListener('change', pfCount); });
+
+    // click outside / Esc closes the menu, like any dropdown
+    document.addEventListener('click', function (e) { if (!pf.contains(e.target)) pf.open = false; });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && pf.open) { pf.open = false; pf.querySelector('summary').focus(); }
+    });
+    pf.addEventListener('toggle', function () {
+      if (pf.open) pf.querySelector('.pfilter-search').focus();
+    });
+  })();
 </script>
 
 <div class="statrow">
