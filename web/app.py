@@ -622,3 +622,91 @@ def api_cell(request: Request, cell: Cell):
         return JSONResponse(ops.set_cell(person_id, cell.project_id, cell.date, cell.hours))
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save entry"}, status_code=400)
+
+
+# ---- day editor: one line per entry, for cells holding several ----------
+
+class NewEntry(BaseModel):
+    project_id: str
+    date: str
+    hours: float = Field(gt=0, le=24, allow_inf_nan=False)
+    description: str = Field(default="", max_length=1900)  # Notion caps rich_text at 2000
+
+
+class EditEntry(BaseModel):
+    id: str
+    hours: float = Field(ge=0, le=24, allow_inf_nan=False)
+    description: str = Field(default="", max_length=1900)
+
+
+class EntryRef(BaseModel):
+    id: str
+
+
+def _entry_caller(request: Request) -> tuple[Optional[dict], Optional[JSONResponse]]:
+    """Shared guards for the day-editor endpoints: login, origin, known identity."""
+    user = _require_login(request)
+    if not user:
+        return None, JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not _same_origin(request):
+        return None, JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not user.get("id"):
+        return None, JSONResponse({"ok": False, "error": "no user identity"}, status_code=400)
+    return user, None
+
+
+@app.get("/api/day")
+def api_day(request: Request, project_id: str, date: str):
+    """The individual entries behind one grid cell (always the caller's own)."""
+    user, err = _entry_caller(request)
+    if err:
+        return err
+    if not _parse_date(date) or len(date) != 10:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    try:
+        return JSONResponse({"ok": True, "entries": ops.day_entries(user["id"], project_id, date)})
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not load entries"}, status_code=400)
+
+
+@app.post("/api/entry/add")
+def api_entry_add(request: Request, e: NewEntry):
+    user, err = _entry_caller(request)
+    if err:
+        return err
+    if not _parse_date(e.date) or len(e.date) != 10:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    if e.project_id not in _member_project_ids(user["id"]):
+        return JSONResponse({"ok": False, "error": "not a member of that project"}, status_code=403)
+    try:
+        entry_id = ops.create_entry(user["id"], e.project_id, e.date, e.hours, e.description)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not add entry"}, status_code=400)
+    return JSONResponse({"ok": True, "entry": {"id": entry_id, "hours": e.hours,
+                                               "description": e.description}})
+
+
+@app.post("/api/entry/update")
+def api_entry_update(request: Request, e: EditEntry):
+    user, err = _entry_caller(request)
+    if err:
+        return err
+    try:
+        return JSONResponse(ops.update_entry(e.id, user["id"], e.hours, e.description))
+    except PermissionError:
+        return JSONResponse({"ok": False, "error": "not your entry"}, status_code=403)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not save entry"}, status_code=400)
+
+
+@app.post("/api/entry/delete")
+def api_entry_delete(request: Request, ref: EntryRef):
+    user, err = _entry_caller(request)
+    if err:
+        return err
+    try:
+        return JSONResponse(ops.delete_entry(ref.id, user["id"]))
+    except PermissionError:
+        return JSONResponse({"ok": False, "error": "not your entry"}, status_code=403)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "could not remove entry"}, status_code=400)

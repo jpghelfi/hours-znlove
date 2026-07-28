@@ -33,9 +33,13 @@
     <tr data-project="{{ r.project_id }}">
       <td class="col-project">{{ r.project_name }}</td>
       {% for iso in grid.day_isos %}
-      <td class="cell"><input type="number" step="0.25" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[iso]) if r.cells[iso] else '' }}"
-          aria-label="{{ r.project_name }} — {{ iso }}" data-date="{{ iso }}"
-          onfocus="this.dataset.prev=this.value" onchange="saveCell(this)"></td>
+      <td class="cell{% if r.counts[iso] > 1 %} multi{% endif %}" data-n="{{ r.counts[iso] }}">
+        <input type="number" step="0.25" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[iso]) if r.cells[iso] else '' }}"
+          aria-label="{{ r.project_name }} — {{ iso }}{% if r.counts[iso] > 1 %} ({{ r.counts[iso] }} entries){% endif %}"
+          {% if r.counts[iso] > 1 %}title="{{ r.counts[iso] }} separate entries — click to edit them"{% endif %}
+          data-date="{{ iso }}" onfocus="cellFocus(this)" onchange="saveCell(this)"><button
+          type="button" class="cell-more" onclick="openDayFor(this)"
+          aria-label="Edit {{ r.project_name }} — {{ iso }} entry by entry">⋯</button></td>
       {% endfor %}
       <td class="col-total rowtotal">{{ '%g'|format(r.total) }}</td>
     </tr>
@@ -63,11 +67,39 @@
     <button class="btn" onclick="addRow()">Add row</button>
     {% if prev_projects %}<button class="btn" onclick="copyLastWeek()">⧉ Copy last week's projects</button>{% endif %}
   </div>
-  <div class="subtle">Edit any weekday cell to save. Set a cell to blank to remove that entry. You only see and edit your own hours.</div>
+  <div class="subtle">Edit any weekday cell to save. Set a cell to blank to remove that entry. Use
+    <span class="multi-chip">⋯</span> on a cell to log two different tasks on the same day, each with its own
+    note — cells marked <span class="multi-chip">2×</span> already hold several entries and open there. You
+    only see and edit your own hours.</div>
+</div>
+
+<div id="day-modal" class="modal" hidden onclick="if (event.target === this) closeDay()">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="day-title">
+    <div class="modal-head">
+      <div>
+        <h3 id="day-title"></h3>
+        <div class="subtle" id="day-sub"></div>
+      </div>
+      <button type="button" class="btn" onclick="closeDay()" aria-label="Close">✕</button>
+    </div>
+    <div id="day-lines"></div>
+    <button type="button" class="btn addline" onclick="addLine()">＋ Add line</button>
+    <div class="modal-foot">
+      <span class="subtle" id="day-total"></span>
+      <button type="button" class="btn primary" onclick="closeDay()">Done</button>
+    </div>
+  </div>
 </div>
 
 <script>
 const DAY_ISOS = {{ grid.day_isos|tojson }};
+
+// A cell holding several entries can't be edited as a single number — open the
+// day editor instead of letting one value overwrite two different tasks.
+function cellFocus(input) {
+  input.dataset.prev = input.value;
+  if (+input.closest('td').dataset.n > 1) { input.blur(); openDay(input); }
+}
 
 async function saveCell(input) {
   const tr = input.closest('tr');
@@ -86,12 +118,177 @@ async function saveCell(input) {
     });
     const data = await res.json();
     input.classList.remove('saving');
+    // the day grew a second entry since this page was rendered — don't clobber it
+    if (!data.ok && data.code === 'multi_entry') {
+      input.value = input.dataset.prev;
+      markMulti(input.closest('td'), data.entries.length);
+      openDay(input, data.entries);
+      return;
+    }
     if (!data.ok) { input.classList.add('err'); alert('Save failed: ' + (data.error||'unknown')); return; }
+    markMulti(input.closest('td'), data.count);  // server's count, not a local guess
     input.classList.remove('err'); input.classList.add('saved');
     setTimeout(() => input.classList.remove('saved'), 800);
     recalc();
   } catch (e) { input.classList.remove('saving'); input.classList.add('err'); alert('Network error'); }
 }
+
+function markMulti(td, n) {
+  td.dataset.n = n;
+  td.classList.toggle('multi', n > 1);
+  const inp = td.querySelector('input');
+  if (n > 1) inp.title = n + ' separate entries — click to edit them';
+  else inp.removeAttribute('title');
+}
+
+// ---- day editor: one line per entry --------------------------------------
+
+let DAY = null;
+
+// The "⋯" affordance: any cell can be opened line-by-line, which is how you
+// *split* a day into two tasks rather than only repairing one that's already split.
+function openDayFor(btn) { openDay(btn.closest('td').querySelector('input')); }
+
+async function openDay(input, entries) {
+  const tr = input.closest('tr');
+  DAY = {
+    projectId: tr.dataset.project,
+    projectName: tr.querySelector('.col-project').textContent.trim(),
+    date: input.dataset.date,
+    input, td: input.closest('td'),
+  };
+  document.getElementById('day-title').textContent = DAY.projectName;
+  document.getElementById('day-sub').textContent = new Date(DAY.date + 'T00:00')
+    .toLocaleDateString(undefined, {weekday: 'long', month: 'short', day: 'numeric'});
+  const box = document.getElementById('day-lines');
+  box.innerHTML = '<div class="subtle">Loading…</div>';
+  document.getElementById('day-modal').hidden = false;
+
+  if (!entries) {
+    try {
+      const res = await fetch(`/api/day?project_id=${encodeURIComponent(DAY.projectId)}&date=${encodeURIComponent(DAY.date)}`);
+      const data = await res.json();
+      if (!data.ok) { box.innerHTML = '<div class="subtle">Could not load entries.</div>'; return; }
+      entries = data.entries;
+    } catch (e) { box.innerHTML = '<div class="subtle">Network error.</div>'; return; }
+  }
+  box.innerHTML = '';
+  entries.forEach(e => box.appendChild(lineEl(e)));
+  if (!entries.length) box.appendChild(lineEl({id: null, hours: '', description: ''}));
+  syncDay();
+  const first = box.querySelector('.dl-hours');
+  if (first) first.focus();
+}
+
+function lineEl(e) {
+  const div = document.createElement('div');
+  div.className = 'day-line';
+  if (e.id) div.dataset.id = e.id;
+  div.innerHTML =
+    '<input class="dl-hours" type="number" step="0.25" min="0" max="24" inputmode="decimal" placeholder="0" aria-label="Hours">' +
+    '<input class="dl-desc" type="text" maxlength="1900" placeholder="What did you work on?" aria-label="Description">' +
+    '<button type="button" class="dl-del" title="Remove this entry" aria-label="Remove this entry">✕</button>';
+  // set via .value, never via innerHTML — descriptions are user text
+  div.querySelector('.dl-hours').value = e.hours || '';
+  div.querySelector('.dl-desc').value = e.description || '';
+  div.querySelector('.dl-hours').addEventListener('change', () => saveLine(div));
+  div.querySelector('.dl-desc').addEventListener('change', () => saveLine(div));
+  div.querySelector('.dl-del').addEventListener('click', () => removeLine(div));
+  return div;
+}
+
+function addLine() {
+  const box = document.getElementById('day-lines');
+  const div = lineEl({id: null, hours: '', description: ''});
+  box.appendChild(div);
+  div.querySelector('.dl-hours').focus();
+}
+
+// Saves for one line run strictly one after another. Typing hours then a
+// description fires two changes; if both ran while the line still had no id,
+// each would POST /add and create the very duplicate this editor exists to
+// prevent. Chaining means the second call sees the id the first one stored.
+function saveLine(div) {
+  // .catch keeps one failure from wedging every later save on this line
+  div._queue = (div._queue || Promise.resolve()).then(() => saveLineNow(div)).catch(() => {});
+  return div._queue;
+}
+
+async function saveLineNow(div) {
+  if (!div.isConnected) return;  // removed while an earlier save was in flight
+  const hours = parseFloat(div.querySelector('.dl-hours').value) || 0;
+  const description = div.querySelector('.dl-desc').value;
+  const id = div.dataset.id;
+  if (!id && !hours) return;  // a blank new line isn't worth saving yet
+  div.classList.remove('err'); div.classList.add('saving');
+  try {
+    const [url, body] = id
+      ? ['/api/entry/update', {id, hours, description}]
+      : ['/api/entry/add', {project_id: DAY.projectId, date: DAY.date, hours, description}];
+    const res = await fetch(url, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    div.classList.remove('saving');
+    if (!data.ok) { div.classList.add('err'); alert('Save failed: ' + (data.error||'unknown')); return; }
+    if (data.deleted) div.remove();                      // hours cleared to 0
+    else if (data.entry) div.dataset.id = data.entry.id;  // newly created line
+    if (div.isConnected) {
+      div.classList.add('saved');
+      setTimeout(() => div.classList.remove('saved'), 800);
+    }
+    syncDay();
+  } catch (e) { div.classList.remove('saving'); div.classList.add('err'); alert('Network error'); }
+}
+
+// Queued behind any in-flight save: hitting ✕ while a line's first save was
+// still running used to drop the row locally and leave the created entry
+// orphaned in Notion, invisible until the next reload.
+function removeLine(div) {
+  div._queue = (div._queue || Promise.resolve()).then(() => removeLineNow(div)).catch(() => {});
+  return div._queue;
+}
+
+async function removeLineNow(div) {
+  if (!div.isConnected) return;
+  const id = div.dataset.id;
+  if (!id) { div.remove(); syncDay(); return; }  // never saved — just drop it
+  const what = div.querySelector('.dl-desc').value.trim();
+  if (!confirm('Remove this entry?' + (what ? '\n\n' + what : ''))) return;
+  div.classList.add('saving');
+  try {
+    const res = await fetch('/api/entry/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id})
+    });
+    const data = await res.json();
+    if (!data.ok) { div.classList.remove('saving'); div.classList.add('err'); alert('Remove failed: ' + (data.error||'unknown')); return; }
+    div.remove();
+    syncDay();
+  } catch (e) { div.classList.remove('saving'); div.classList.add('err'); alert('Network error'); }
+}
+
+// Push the editor's state back onto the grid cell it came from.
+function syncDay() {
+  const saved = [...document.querySelectorAll('#day-lines .day-line')].filter(d => d.dataset.id);
+  const total = saved.reduce((s, d) => s + (parseFloat(d.querySelector('.dl-hours').value) || 0), 0);
+  document.getElementById('day-total').textContent =
+    saved.length + (saved.length === 1 ? ' entry · ' : ' entries · ') + fmt(total) + 'h';
+  if (!DAY) return;
+  DAY.input.value = total ? fmt(total) : '';
+  DAY.input.dataset.prev = DAY.input.value;
+  markMulti(DAY.td, saved.length);
+  recalc();
+}
+
+function closeDay() {
+  document.getElementById('day-modal').hidden = true;
+  if (DAY) DAY.input.blur();  // don't let focus bounce straight back into openDay
+  DAY = null;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !document.getElementById('day-modal').hidden) closeDay();
+});
 
 function recalc() {
   let grand = 0;
@@ -114,9 +311,41 @@ function addRowWith(pid, prName) {
   const empty = document.querySelector('#grid-body tr.empty'); if (empty) empty.remove();
   const tr = document.createElement('tr');
   tr.dataset.project = pid;
-  let cells = '';
-  DAY_ISOS.forEach(iso => { cells += `<td class="cell"><input type="number" step="0.25" min="0" inputmode="decimal" aria-label="${prName} — ${iso}" data-date="${iso}" onfocus="this.dataset.prev=this.value" onchange="saveCell(this)"></td>`; });
-  tr.innerHTML = `<td class="col-project">${prName}</td>${cells}<td class="col-total rowtotal">0</td>`;
+  // Built with DOM calls rather than innerHTML: project names are user-entered,
+  // and the browser HTML-decodes attribute values, so a name containing a quote
+  // would escape the aria-label it was interpolated into.
+  const nameCell = document.createElement('td');
+  nameCell.className = 'col-project';
+  nameCell.textContent = prName;
+  tr.appendChild(nameCell);
+
+  DAY_ISOS.forEach(iso => {
+    const td = document.createElement('td');
+    td.className = 'cell';
+    td.dataset.n = '0';
+
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.step = '0.25'; inp.min = '0'; inp.inputMode = 'decimal';
+    inp.dataset.date = iso;
+    inp.setAttribute('aria-label', `${prName} — ${iso}`);
+    inp.addEventListener('focus', () => cellFocus(inp));
+    inp.addEventListener('change', () => saveCell(inp));
+
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'cell-more';
+    more.textContent = '⋯';
+    more.setAttribute('aria-label', `Edit ${prName} — ${iso} entry by entry`);
+    more.addEventListener('click', () => openDayFor(more));
+
+    td.append(inp, more);
+    tr.appendChild(td);
+  });
+
+  const totalCell = document.createElement('td');
+  totalCell.className = 'col-total rowtotal';
+  totalCell.textContent = '0';
+  tr.appendChild(totalCell);
   document.getElementById('grid-body').appendChild(tr);
   tr.querySelector('input').focus();
 }
