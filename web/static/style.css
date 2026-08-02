@@ -121,6 +121,95 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 .addrow .row2 { grid-template-columns: 1fr 1fr auto; align-items: end; margin: 10px 0; }
 .foot { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
 
+/* ---- schedule planner -------------------------------------------------- */
+/* Eight pill colors, assigned to a project by a hash of its id (_swatch in
+   app.py) so a project keeps its color everywhere. Backgrounds are tinted,
+   ink is the same hue darkened/lightened, so text stays readable in both
+   themes. Declared separately from the main theme blocks to keep those
+   readable — same three selectors, palette only. */
+:root {
+  --s0:#DCE9FB; --s0i:#1A4E8A; --s1:#D6F2EA; --s1i:#0A6B57;
+  --s2:#FBEAD2; --s2i:#8A5411; --s3:#E6E1FA; --s3i:#463596;
+  --s4:#FBE0E6; --s4i:#9E2038; --s5:#E3F1D8; --s5i:#3C6821;
+  --s6:#D8EDF5; --s6i:#125A70; --s7:#F3E1F6; --s7i:#792B85;
+}
+:root[data-theme="dark"] {
+  --s0:#16305F; --s0i:#A9CFFF; --s1:#0D3B31; --s1i:#6FE0C4;
+  --s2:#40300F; --s2i:#F0CC8A; --s3:#26205A; --s3i:#BDB2FF;
+  --s4:#46141F; --s4i:#FFA7B4; --s5:#1D3312; --s5i:#B7E39A;
+  --s6:#0F303B; --s6i:#8FD6EC; --s7:#351340; --s7i:#E8B0F0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --s0:#16305F; --s0i:#A9CFFF; --s1:#0D3B31; --s1i:#6FE0C4;
+    --s2:#40300F; --s2i:#F0CC8A; --s3:#26205A; --s3i:#BDB2FF;
+    --s4:#46141F; --s4i:#FFA7B4; --s5:#1D3312; --s5i:#B7E39A;
+    --s6:#0F303B; --s6i:#8FD6EC; --s7:#351340; --s7i:#E8B0F0;
+  }
+}
+
+table.plan { min-width: 720px; }
+/* .grid td's text-align:center outranks .col-project's left — restate it here */
+.plan td.col-project, .plan th.col-project { text-align: left; }
+.plan .col-day { min-width: 148px; }
+.plan-cell {
+  position: relative; vertical-align: top; text-align: left;
+  padding: 8px 8px 20px; cursor: pointer; min-width: 148px;
+}
+.plan-cell:hover { background: var(--active-bg); }
+.plan-cell:hover .addbtn { opacity: 1; }
+/* the capacity meter: how full the day is against DAY_TARGET_HOURS */
+.cap { height: 4px; border-radius: 3px; background: var(--chart-track); overflow: hidden; }
+.cap i { display: block; height: 100%; border-radius: 3px; background: var(--chart); }
+.cap-ok i { background: var(--ok); }
+.cap-full i { background: var(--chart); }
+.cap-over i { background: var(--over); }
+.cap-num { font-size: 11px; font-weight: 700; color: var(--muted); margin: 3px 0 5px; min-height: 14px; }
+.cap-of { font-weight: 500; opacity: .7; }
+.cap-over + .cap-num { color: var(--over); }
+.pills { display: flex; flex-direction: column; gap: 4px; }
+.pill {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  width: 100%; padding: 5px 8px; border-radius: 7px; border: 1px solid transparent;
+  font-size: 12.5px; font-weight: 600; text-align: left; line-height: 1.25;
+  background: var(--s0); color: var(--s0i);
+}
+.pill:hover { border-color: currentColor; }
+.pill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill-h { font-weight: 700; flex: none; opacity: .85; }
+.pill.s0 { background: var(--s0); color: var(--s0i); }
+.pill.s1 { background: var(--s1); color: var(--s1i); }
+.pill.s2 { background: var(--s2); color: var(--s2i); }
+.pill.s3 { background: var(--s3); color: var(--s3i); }
+.pill.s4 { background: var(--s4); color: var(--s4i); }
+.pill.s5 { background: var(--s5); color: var(--s5i); }
+.pill.s6 { background: var(--s6); color: var(--s6i); }
+.pill.s7 { background: var(--s7); color: var(--s7i); }
+.addbtn {
+  position: absolute; left: 8px; right: 8px; bottom: 4px; text-align: center;
+  font-size: 13px; font-weight: 700; color: var(--muted); opacity: 0;
+  border: 1px dashed var(--line); border-radius: 6px; line-height: 1.2;
+}
+.plan-cell.is-empty .addbtn { opacity: .55; }
+.plan-hint { margin-top: 12px; }
+
+/* assign popover */
+dialog.pop {
+  border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
+  padding: 18px; width: min(340px, calc(100vw - 32px)); box-shadow: 0 18px 40px rgba(0,5,40,.22);
+}
+dialog.pop::backdrop { background: rgba(0,5,40,.35); }
+.pop-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px; }
+.pop-x { background: none; border: none; color: var(--muted); font-size: 20px; padding: 0 4px; line-height: 1; }
+dialog.pop label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+dialog.pop label .subtle { font-size: 11.5px; }
+.pop-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.pop-actions .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.pop-actions .danger { color: var(--err-ink); border-color: var(--line); background: var(--card); margin-right: auto; }
+/* .btn's display:inline-block outranks the UA [hidden] rule — restore it */
+.pop-actions .btn[hidden] { display: none; }
+.pop-err { margin-top: 12px; background: var(--err); color: var(--err-ink); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-weight: 600; }
+
 /* nav user */
 .topbar nav .who { color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
 .topbar nav a.logout { color: var(--muted); font-size: 13px; }
