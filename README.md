@@ -147,13 +147,13 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
   or more roster names to narrow every number on the page (and the CSV) to just them. Filtered
   views add **By person ▸ projects** (each person's projects, ranked) and a **Project × person**
   matrix with row/column totals.
-- **`/project` — By project (admins):** one project at a time, every person's logged hours in
-  a people × time matrix. **Daily** (Mon–Sun of one week), **Weekly** (8 weeks) and **Monthly**
-  (6 months) are the granularity filters; each window defaults to the one ending today and
-  Earlier / Now / Later shift it by a whole window. Cells are shaded against the busiest cell,
-  so who was on the project when reads at a glance. People assigned to the project but with
-  nothing logged still get a row (dashed total), the footer totals each period, and there's a
-  per-project CSV plus a collapsible list of the underlying entries.
+- **`/project` — By project (admins):** Harvest-style. Pick a project, pick a period —
+  **Monthly** (default), **Weekly** or **Daily** — then pick *which* month / week / day from the
+  native picker next to it (← / This month / → step one period at a time). The result is a plain
+  table: one row per person with their **hours** for that period, a share bar (% of the
+  project's total), and how many days / entries it took. People assigned to the project with
+  nothing logged still appear with a dashed total, so "assigned but idle" is visible. Totals
+  row at the bottom, per-project CSV, and a collapsible list of the underlying entries.
 - **Timer:** start/stop on the Log hours page (Harvest-style); survives reloads, fills the
   Hours field rounded to the nearest 0.25h on stop.
 - **Weekly extras:** capacity bar (`WEEK_TARGET_HOURS`, default 40) and a one-click
