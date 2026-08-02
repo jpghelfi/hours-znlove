@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ sel.name if sel else 'Project' }} · Hours Tracker{% endblock %}
+{% block nav_project %}active{% endblock %}
+{% block content %}
+{% set pid = sel.id if sel else '' %}
+<div class="week-head">
+  <div>
+    <h1>{{ sel.name if sel else 'Project hours' }}</h1>
+    <div class="subtle">Hours per person · {{ win.label }}</div>
+  </div>
+  {% if sel %}
+  <div class="weeknav">
+    <a class="btn" href="/project?project={{ pid }}&period={{ period }}&start={{ win.prev }}">← Earlier</a>
+    <a class="btn" href="/project?project={{ pid }}&period={{ period }}&start={{ win.now }}">Now</a>
+    <a class="btn" href="/project?project={{ pid }}&period={{ period }}&start={{ win.next }}">Later →</a>
+  </div>
+  {% endif %}
+</div>
+
+<form class="range-form" method="get" action="/project">
+  <div class="seg" role="group" aria-label="Granularity">
+    <span class="seg-label">Period</span>
+    <div class="seg-opts">
+      {# carry `start` across: switching granularity keeps you at the same point
+         in time (the window re-anchors around it), instead of jumping to today #}
+      {% for p, lbl in [('daily', 'Daily'), ('weekly', 'Weekly'), ('monthly', 'Monthly')] %}
+      <a class="seg-opt{{ ' is-on' if period == p }}" {% if period == p %}aria-current="page"{% endif %}
+         href="/project?project={{ pid }}&period={{ p }}&start={{ start_iso }}">{{ lbl }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <span class="seg-label filters-label">Project</span>
+  <input type="hidden" name="period" value="{{ period }}">
+  <input type="hidden" name="start" value="{{ start_iso }}">
+  <select name="project" onchange="this.form.submit()" aria-label="Project">
+    {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if sel and p.id == sel.id }}>{{ p.name }}</option>{% endfor %}
+    {% if not projects %}<option value="">No projects</option>{% endif %}
+  </select>
+  {% if sel %}
+  <a class="btn" href="/project.csv?project={{ pid }}&period={{ period }}&start={{ start_iso }}">⬇ CSV</a>
+  {% endif %}
+</form>
+
+{% if not sel %}
+<div class="card wide"><div class="subtle">No projects yet — add one in Notion first.</div></div>
+{% else %}
+
+<div class="statrow">
+  <div class="stat card"><div class="stat-n">{{ '%g'|format(d.total) }}</div><div class="stat-l">hours</div></div>
+  <div class="stat card"><div class="stat-n">{{ d.people_count }}</div><div class="stat-l">people logging</div></div>
+  <div class="stat card"><div class="stat-n">{{ d.entries|length }}</div><div class="stat-l">entries</div></div>
+</div>
+
+<div class="grid-wrap">
+<table class="grid projgrid">
+  <thead>
+    <tr>
+      <th class="col-project">Person</th>
+      {% for c in cols %}<th class="col-day">{{ c.top }}<span class="dnum">{{ c.sub }}</span></th>{% endfor %}
+      <th class="col-total">Total</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in d.rows %}
+    <tr>
+      <td class="col-project">{{ r.person_name }}</td>
+      {% for c in cols %}
+      {% set v = r.cells[c.iso] %}
+      <td class="hcell" {% if v and d.peak %}style="--i: {{ (v / d.peak)|round(3) }}"{% endif %}>{{ '%g'|format(v) if v else '' }}</td>
+      {% endfor %}
+      <td class="col-total">{{ '%g'|format(r.total) if r.total else '—' }}</td>
+    </tr>
+    {% else %}
+    <tr class="empty"><td colspan="{{ cols|length + 2 }}">Nobody is assigned to this project and nothing was logged in this range.</td></tr>
+    {% endfor %}
+  </tbody>
+  {% if d.rows %}
+  <tfoot>
+    <tr>
+      <td class="col-project">All people</td>
+      {% for c in cols %}<td>{{ '%g'|format(d.col_totals[c.iso]) if d.col_totals[c.iso] else '' }}</td>{% endfor %}
+      <td class="col-total">{{ '%g'|format(d.total) }}</td>
+    </tr>
+  </tfoot>
+  {% endif %}
+</table>
+</div>
+
+<details class="card wide entrylist">
+  <summary>{{ d.entries|length }} entries in this range</summary>
+  <div class="entrylist-scroll">
+  <table class="grid flat">
+    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Hours</th><th class="left">Description</th></tr></thead>
+    <tbody>
+      {% for e in d.entries %}
+      <tr>
+        <td class="left nowrap">{{ e.date }}</td>
+        <td class="left">{{ e.person }}</td>
+        <td>{{ '%g'|format(e.hours) }}</td>
+        <td class="left desc">{{ e.description }}</td>
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="4">No entries logged in this range.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+{% endif %}
+{% endblock %}

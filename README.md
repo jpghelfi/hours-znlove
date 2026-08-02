@@ -147,6 +147,13 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
   or more roster names to narrow every number on the page (and the CSV) to just them. Filtered
   views add **By person ▸ projects** (each person's projects, ranked) and a **Project × person**
   matrix with row/column totals.
+- **`/project` — By project (admins):** one project at a time, every person's logged hours in
+  a people × time matrix. **Daily** (Mon–Sun of one week), **Weekly** (8 weeks) and **Monthly**
+  (6 months) are the granularity filters; each window defaults to the one ending today and
+  Earlier / Now / Later shift it by a whole window. Cells are shaded against the busiest cell,
+  so who was on the project when reads at a glance. People assigned to the project but with
+  nothing logged still get a row (dashed total), the footer totals each period, and there's a
+  per-project CSV plus a collapsible list of the underlying entries.
 - **Timer:** start/stop on the Log hours page (Harvest-style); survives reloads, fills the
   Hours field rounded to the nearest 0.25h on stop.
 - **Weekly extras:** capacity bar (`WEEK_TARGET_HOURS`, default 40) and a one-click
@@ -236,7 +243,7 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 | `web/auth.py` | Notion OAuth flow + email allowlist. |
 | `web/notion_ops.py` | Notion reads/writes for the web app (people, projects, entries, grid). |
 | `render.yaml` | Render deploy blueprint (free tier). |
-| `web/templates/` | Jinja2 templates (base, form, week). |
+| `web/templates/` | Jinja2 templates (base, form, week, reports, schedule, assignments, project). |
 | `web/static/style.css` | App styling (light/dark aware). |
 | `databases.json` | Auto-written database + data source ids (gitignored). |
 | `.env` | Token + parent page (gitignored). |
