@@ -497,3 +497,27 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
    scroller or it widens the whole page on a phone */
 .entrylist-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .range-form label.period-pick { white-space: nowrap; }
+/* All-projects rollup: a project row expands to its people. Rows are plain
+   <tr hidden> toggled by the disclosure button — no layout shift, and the
+   whole table stays one grid so columns line up across groups. */
+.projgrid .disclosure {
+  background: none; border: none; padding: 0; font: inherit; font-weight: 700;
+  color: var(--ink); cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+}
+.projgrid .disclosure:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; border-radius: 6px; }
+.projgrid .caret { color: var(--muted); font-size: 11px; width: 10px; }
+.projgrid .who-count {
+  font-size: 11px; font-weight: 600; color: var(--muted); background: var(--head);
+  border-radius: 999px; padding: 1px 7px;
+}
+.projgrid .group-row td { background: var(--card); font-weight: 700; }
+.projgrid .group-row .col-project { background: var(--card); }
+.projgrid .person-row td { background: var(--bg); font-weight: 500; }
+.projgrid .person-row .col-project.sub { background: var(--bg); padding-left: 34px; font-weight: 500; color: var(--muted); }
+.projgrid .person-row .share-track { max-width: 240px; }
+.expand-all {
+  float: right; background: none; border: 1px solid var(--line); color: var(--muted);
+  font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .03em; padding: 3px 9px; border-radius: 7px; cursor: pointer;
+}
+.expand-all:hover { color: var(--ink); background: var(--active-bg); }

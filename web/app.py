@@ -545,6 +545,70 @@ def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict)
     }
 
 
+def _all_projects_hours(rng: dict, projects: list, name_map: dict) -> dict:
+    """Every project in the period, each with its people nested inside it.
+
+    One Notion read for the whole period (entries_between), grouped by project
+    id — not one query per project, which would be dozens of round trips.
+    Projects with nothing logged are still listed (at the bottom, zeroed), and
+    so are projects that only appear in the entries: an entry logged against an
+    archived/inactive project must not silently drop out of the totals.
+    """
+    entries = ops.entries_between(rng["from"], rng["to"])
+    groups: dict = {}
+
+    def group_for(prid, name):
+        return groups.setdefault(prid, {
+            "project_id": prid, "project_name": name,
+            "hours": 0.0, "entries": 0, "days": set(), "people": {},
+        })
+
+    for e in entries:
+        g = group_for(e["project_id"], e["project"])
+        g["hours"] += e["hours"]
+        g["entries"] += 1
+        g["days"].add(e["date"])
+        key = e["person_id"] or "(unassigned)"
+        p = g["people"].setdefault(key, {
+            "person_name": e["person"], "hours": 0.0, "entries": 0, "days": set(),
+        })
+        p["hours"] += e["hours"]
+        p["entries"] += 1
+        p["days"].add(e["date"])
+
+    for proj in projects:  # every active project shows up, logged against or not
+        g = group_for(proj["id"], proj["name"])
+        for mid in proj.get("member_ids", []):
+            g["people"].setdefault(mid, {
+                "person_name": name_map.get(mid, "(unnamed)"),
+                "hours": 0.0, "entries": 0, "days": set(),
+            })
+
+    total = round(sum(g["hours"] for g in groups.values()), 2)
+    top = max([g["hours"] for g in groups.values()], default=0)
+    ordered = sorted(groups.values(), key=lambda g: (-g["hours"], g["project_name"].lower()))
+    for g in ordered:
+        g["days"] = len(g["days"])
+        g["pct"] = round(g["hours"] / top * 100) if top else 0
+        g["share"] = round(g["hours"] / total * 100) if total else 0
+        ptop = max([p["hours"] for p in g["people"].values()], default=0)
+        rows = sorted(g["people"].values(), key=lambda p: (-p["hours"], p["person_name"].lower()))
+        for p in rows:
+            p["days"] = len(p["days"])
+            # person bars are scaled within their project, so an expanded group
+            # shows that project's split rather than a sliver of the biggest one
+            p["pct"] = round(p["hours"] / ptop * 100) if ptop else 0
+            p["share"] = round(p["hours"] / g["hours"] * 100) if g["hours"] else 0
+            p["hours"] = round(p["hours"], 2)
+        g["rows"] = rows
+        g["hours"] = round(g["hours"], 2)
+    return {
+        "groups": ordered, "total": total, "entries": entries,
+        "projects_count": sum(1 for g in ordered if g["hours"]),
+        "people_count": len({e["person_id"] for e in entries}),
+    }
+
+
 @app.get("/project", response_class=HTMLResponse)
 def project_page(request: Request, project: Optional[str] = None,
                  period: str = "monthly", start: Optional[str] = None):
@@ -555,15 +619,17 @@ def project_page(request: Request, project: Optional[str] = None,
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     projects = ops.list_projects(include_members=True)
-    sel = next((p for p in projects if p["id"] == project), None) or (projects[0] if projects else None)
+    # ?project= is a project id, or "all"/unset for the every-project rollup
+    sel = next((p for p in projects if p["id"] == project), None)
+    is_all = sel is None
     rng = _period_range(period, _project_anchor(period, start))
     people = ops.list_people()
     name_map = {p["id"]: p["name"] for p in people}
-    data = (_project_hours(sel["id"], rng, sel.get("member_ids", []), name_map) if sel
-            else {"rows": [], "total": 0, "entries": [], "people_count": 0})
+    data = (_all_projects_hours(rng, projects, name_map) if is_all
+            else _project_hours(sel["id"], rng, sel.get("member_ids", []), name_map))
     return templates.TemplateResponse(request, "project.html", {
         "user": user, "is_admin": True,
-        "projects": projects, "sel": sel,
+        "projects": projects, "sel": sel, "is_all": is_all,
         "period": period, "rng": rng,
         "d": data, "start_iso": rng["from"],
     })
@@ -579,20 +645,22 @@ def project_csv(request: Request, project: Optional[str] = None,
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     projects = ops.list_projects(include_members=True)
-    sel = next((p for p in projects if p["id"] == project), None) or (projects[0] if projects else None)
-    if not sel:
-        return JSONResponse({"ok": False, "error": "no projects"}, status_code=404)
+    sel = next((p for p in projects if p["id"] == project), None)
     rng = _period_range(period, _project_anchor(period, start))
-    entries = ops.project_entries(sel["id"], rng["from"], rng["to"])
+    if sel:
+        entries = [dict(e, project=sel["name"])
+                   for e in ops.project_entries(sel["id"], rng["from"], rng["to"])]
+    else:  # All projects: the same rows the rollup is built from
+        entries = ops.entries_between(rng["from"], rng["to"])
     import csv
     import io
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["date", "person", "project", "hours", "description"])
-    for e in sorted(entries, key=lambda e: (e["date"], e["person"])):
-        w.writerow([e["date"], e["person"], sel["name"], e["hours"], e["description"]])
+    for e in sorted(entries, key=lambda e: (e["date"], e["project"], e["person"])):
+        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"]])
     from fastapi.responses import Response
-    slug = "".join(c if c.isalnum() else "-" for c in sel["name"]).strip("-").lower()
+    slug = "".join(c if c.isalnum() else "-" for c in (sel["name"] if sel else "all-projects")).strip("-").lower()
     fname = f"{slug or 'project'}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
