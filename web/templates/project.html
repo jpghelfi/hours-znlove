@@ -21,14 +21,17 @@
   <div class="seg" role="group" aria-label="Granularity">
     <span class="seg-label">Period</span>
     <div class="seg-opts">
+      {# carry `start` across: switching granularity keeps you at the same point
+         in time (the window re-anchors around it), instead of jumping to today #}
       {% for p, lbl in [('daily', 'Daily'), ('weekly', 'Weekly'), ('monthly', 'Monthly')] %}
       <a class="seg-opt{{ ' is-on' if period == p }}" {% if period == p %}aria-current="page"{% endif %}
-         href="/project?project={{ pid }}&period={{ p }}">{{ lbl }}</a>
+         href="/project?project={{ pid }}&period={{ p }}&start={{ start_iso }}">{{ lbl }}</a>
       {% endfor %}
     </div>
   </div>
   <span class="seg-label filters-label">Project</span>
   <input type="hidden" name="period" value="{{ period }}">
+  <input type="hidden" name="start" value="{{ start_iso }}">
   <select name="project" onchange="this.form.submit()" aria-label="Project">
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if sel and p.id == sel.id }}>{{ p.name }}</option>{% endfor %}
     {% if not projects %}<option value="">No projects</option>{% endif %}
