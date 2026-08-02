@@ -186,11 +186,15 @@ function openPop(cell, pill) {
   if (POP.editing) sel.value = BY === 'person' ? POP.projectId : POP.personId;
   sel.disabled = POP.editing;  // changing who/what = remove it and add the other
 
+  // In the People grouping the cell total is one person's day, so a new
+  // booking can default to what's left of their capacity. In the Projects
+  // grouping it's the project's total across everyone — that says nothing
+  // about the person being booked, so just offer a full day.
   const booked = parseFloat(cell.dataset.total) || 0;
   const mine = pill ? parseFloat(pill.dataset.hours) : 0;
   const free = Math.max(0, CAP - (booked - mine));
   const hours = document.getElementById('pop-hours');
-  hours.value = pill ? fmt(mine) : fmt(free || CAP);
+  hours.value = pill ? fmt(mine) : fmt(BY === 'person' ? (free || CAP) : CAP);
   document.getElementById('pop-free').textContent =
     BY === 'person' ? fmt(free) + 'h free of ' + fmt(CAP) : fmt(booked) + 'h booked that day';
   const through = document.getElementById('pop-through');
@@ -223,6 +227,12 @@ async function savePop(forceHours) {
     });
     const data = await res.json();
     if (!data.ok) { err.textContent = 'Save failed: ' + (data.error || ''); err.hidden = false; return; }
+    // the save also made them a project member — record it so the next
+    // popover files them under "Assigned" without needing a reload
+    if (data.assigned) {
+      const proj = PROJECTS.find(p => p.id === projectId);
+      if (proj && !proj.member_ids.includes(personId)) proj.member_ids.push(personId);
+    }
     const row = POP.row;
     (data.days || [POP.date]).forEach(day => patchCell(row, day, personId, projectId, label, hours, swatch));
     retotal();

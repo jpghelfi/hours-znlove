@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -893,13 +894,20 @@ def api_allocation(request: Request, alloc: Alloc):
     try:
         res = ops.set_allocation_range(alloc.person_id, alloc.project_id,
                                        day.isoformat(), end.isoformat(), alloc.hours)
-        if alloc.hours and alloc.also_assign:
-            # keep /assignments honest: booking someone onto a project makes
-            # them a member of it (idempotent, so a re-book is a no-op)
-            ops.set_project_member(alloc.project_id, alloc.person_id, True)
-        return JSONResponse(res)
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save allocation"}, status_code=400)
+    if alloc.hours and alloc.also_assign:
+        # keep /assignments honest: booking someone onto a project makes them a
+        # member of it (idempotent, so a re-book is a no-op). Deliberately not
+        # in the try above: the allocation is already written, so failing the
+        # whole response here would show "Save failed" over a saved booking.
+        try:
+            ops.set_project_member(alloc.project_id, alloc.person_id, True)
+            res["assigned"] = True
+        except Exception:
+            logging.exception("Allocation saved but adding %s to project %s failed",
+                              alloc.person_id, alloc.project_id)
+    return JSONResponse(res)
 
 
 class Cell(BaseModel):
