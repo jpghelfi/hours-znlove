@@ -1,20 +1,18 @@
 {% extends "base.html" %}
-{% block title %}{{ sel.name if sel else 'Project' }} · Hours Tracker{% endblock %}
+{% block title %}{{ sel.name if sel else 'All projects' }} · Hours Tracker{% endblock %}
 {% block nav_project %}active{% endblock %}
 {% block content %}
-{% set pid = sel.id if sel else '' %}
+{% set pid = sel.id if sel else 'all' %}
 <div class="week-head">
   <div>
-    <h1>{{ sel.name if sel else 'Project hours' }}</h1>
-    <div class="subtle">Hours per person · {{ rng.label }}</div>
+    <h1>{{ sel.name if sel else 'All projects' }}</h1>
+    <div class="subtle">{{ 'Hours per project · expand one to see its people' if is_all else 'Hours per person' }} · {{ rng.label }}</div>
   </div>
-  {% if sel %}
   <div class="weeknav">
     <a class="btn" href="/project?project={{ pid }}&period={{ period }}&start={{ rng.prev }}">←</a>
     <a class="btn" href="/project?project={{ pid }}&period={{ period }}&start={{ rng.now }}">{{ rng.now_label }}</a>
     <a class="btn" href="/project?project={{ pid }}&period={{ period }}&start={{ rng.next }}">→</a>
   </div>
-  {% endif %}
 </div>
 
 <form class="range-form" method="get" action="/project">
@@ -35,16 +33,80 @@
   </label>
   <span class="seg-label filters-label">Project</span>
   <select name="project" onchange="this.form.submit()" aria-label="Project">
+    <option value="all" {{ 'selected' if is_all }}>All projects</option>
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if sel and p.id == sel.id }}>{{ p.name }}</option>{% endfor %}
-    {% if not projects %}<option value="">No projects</option>{% endif %}
   </select>
-  {% if sel %}
   <a class="btn" href="/project.csv?project={{ pid }}&period={{ period }}&start={{ start_iso }}">⬇ CSV</a>
-  {% endif %}
 </form>
 
-{% if not sel %}
-<div class="card wide"><div class="subtle">No projects yet — add one in Notion first.</div></div>
+{% macro share_cell(pct, share) %}
+<td class="col-share">
+  <div class="share"><div class="share-track"><div class="share-fill" style="width: {{ pct }}%"></div></div><span class="share-pct">{{ share }}%</span></div>
+</td>
+{% endmacro %}
+
+{% if is_all %}
+<div class="statrow">
+  <div class="stat card"><div class="stat-n">{{ '%g'|format(d.total) }}</div><div class="stat-l">hours</div></div>
+  <div class="stat card"><div class="stat-n">{{ d.projects_count }}</div><div class="stat-l">projects worked</div></div>
+  <div class="stat card"><div class="stat-n">{{ d.people_count }}</div><div class="stat-l">people logging</div></div>
+  <div class="stat card"><div class="stat-n">{{ d.entries|length }}</div><div class="stat-l">entries</div></div>
+</div>
+
+<div class="grid-wrap">
+<table class="grid projgrid">
+  <thead>
+    <tr>
+      <th class="col-project">Project
+        <button type="button" class="expand-all" onclick="toggleAll(this)" aria-expanded="false">Expand all</button>
+      </th>
+      <th class="col-hours">Hours</th>
+      <th class="col-share">Share</th>
+      <th class="col-num">Days</th>
+      <th class="col-num">Entries</th>
+    </tr>
+  </thead>
+  {% for g in d.groups %}
+  <tbody class="pgroup">
+    <tr class="group-row {{ 'idle' if not g.hours }}">
+      <td class="col-project">
+        <button type="button" class="disclosure" onclick="toggleGroup(this)" aria-expanded="false">
+          <span class="caret" aria-hidden="true">▸</span>{{ g.project_name }}
+          <span class="who-count">{{ g.rows|length }}</span>
+        </button>
+      </td>
+      <td class="col-hours">{{ '%g'|format(g.hours) if g.hours else '—' }}</td>
+      {% if g.hours %}{{ share_cell(g.pct, g.share) }}{% else %}<td class="col-share"></td>{% endif %}
+      <td class="col-num">{{ g.days or '' }}</td>
+      <td class="col-num">{{ g.entries or '' }}</td>
+    </tr>
+    {% for r in g.rows %}
+    <tr class="person-row {{ 'idle' if not r.hours }}" hidden>
+      <td class="col-project sub">{{ r.person_name }}</td>
+      <td class="col-hours">{{ '%g'|format(r.hours) if r.hours else '—' }}</td>
+      {% if r.hours %}{{ share_cell(r.pct, r.share) }}{% else %}<td class="col-share"></td>{% endif %}
+      <td class="col-num">{{ r.days or '' }}</td>
+      <td class="col-num">{{ r.entries or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  {% else %}
+  <tbody><tr class="empty"><td colspan="5">No projects yet — add one in Notion first.</td></tr></tbody>
+  {% endfor %}
+  {% if d.groups %}
+  <tfoot>
+    <tr>
+      <td class="col-project">Total</td>
+      <td class="col-hours">{{ '%g'|format(d.total) }}</td>
+      <td class="col-share"></td>
+      <td class="col-num"></td>
+      <td class="col-num">{{ d.entries|length }}</td>
+    </tr>
+  </tfoot>
+  {% endif %}
+</table>
+</div>
+
 {% else %}
 
 <div class="statrow">
@@ -69,11 +131,7 @@
     <tr class="{{ 'idle' if not r.hours }}">
       <td class="col-project">{{ r.person_name }}</td>
       <td class="col-hours">{{ '%g'|format(r.hours) if r.hours else '—' }}</td>
-      <td class="col-share">
-        {% if r.hours %}
-        <div class="share"><div class="share-track"><div class="share-fill" style="width: {{ r.pct }}%"></div></div><span class="share-pct">{{ r.share }}%</span></div>
-        {% endif %}
-      </td>
+      {% if r.hours %}{{ share_cell(r.pct, r.share) }}{% else %}<td class="col-share"></td>{% endif %}
       <td class="col-num">{{ r.days or '' }}</td>
       <td class="col-num">{{ r.entries or '' }}</td>
     </tr>
@@ -94,26 +152,44 @@
   {% endif %}
 </table>
 </div>
+{% endif %}
 
 <details class="card wide entrylist">
   <summary>{{ d.entries|length }} entries in this period</summary>
   <div class="entrylist-scroll">
   <table class="grid flat">
-    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Hours</th><th class="left">Description</th></tr></thead>
+    <thead><tr><th class="left">Date</th>{% if is_all %}<th class="left">Project</th>{% endif %}<th class="left">Person</th><th>Hours</th><th class="left">Description</th></tr></thead>
     <tbody>
-      {% for e in d.entries %}
+      {% for e in d.entries|sort(attribute='date', reverse=true) %}
       <tr>
         <td class="left nowrap">{{ e.date }}</td>
+        {% if is_all %}<td class="left">{{ e.project }}</td>{% endif %}
         <td class="left">{{ e.person }}</td>
         <td>{{ '%g'|format(e.hours) }}</td>
         <td class="left desc">{{ e.description }}</td>
       </tr>
       {% else %}
-      <tr class="empty"><td colspan="4">No entries logged in this period.</td></tr>
+      <tr class="empty"><td colspan="{{ 5 if is_all else 4 }}">No entries logged in this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
 </details>
+
+{% if is_all %}
+<script>
+function setGroup(btn, open) {
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.querySelector('.caret').textContent = open ? '▾' : '▸';
+  btn.closest('tbody').querySelectorAll('tr.person-row').forEach(tr => { tr.hidden = !open; });
+}
+function toggleGroup(btn) { setGroup(btn, btn.getAttribute('aria-expanded') !== 'true'); }
+function toggleAll(btn) {
+  const open = btn.getAttribute('aria-expanded') !== 'true';
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.textContent = open ? 'Collapse all' : 'Expand all';
+  document.querySelectorAll('.pgroup .disclosure').forEach(b => setGroup(b, open));
+}
+</script>
 {% endif %}
 {% endblock %}

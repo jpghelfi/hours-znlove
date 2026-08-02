@@ -263,6 +263,9 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
             desc = props["Description"]["rich_text"]
             out.append({
                 "person_id": pid, "person": person,
+                # project_id as well as the name: /project's All view groups by
+                # id, so two projects sharing a name can't be merged into one
+                "project_id": rel[0]["id"] if rel else None,
                 "project": pname.get(rel[0]["id"], "(none)") if rel else "(none)",
                 "date": date["start"][:10] if date else None,
                 "hours": props["Hours"]["number"] or 0,
