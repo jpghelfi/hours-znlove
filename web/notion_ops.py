@@ -274,6 +274,39 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
     return [e for e in out if e["date"]]
 
 
+def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]:
+    """Every entry logged against one project in [date_from, date_to].
+
+    Filters on the Project relation in the Notion query (not a Python scan) so
+    a busy Time Entries db doesn't get paged through in full for one project.
+    """
+    out = []
+    kwargs = {"data_source_id": TIME_DS, "page_size": 100, "filter": {"and": [
+        {"property": "Date", "date": {"on_or_after": date_from}},
+        {"property": "Date", "date": {"on_or_before": date_to}},
+        {"property": "Project", "relation": {"contains": project_id}},
+    ]}}
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        for row in res["results"]:
+            props = row["properties"]
+            date = props["Date"]["date"]
+            if not date:
+                continue
+            pid, person = _row_person(props)
+            desc = props["Description"]["rich_text"]
+            out.append({
+                "person_id": pid, "person": person,
+                "date": date["start"][:10],
+                "hours": props["Hours"]["number"] or 0,
+                "description": desc[0]["plain_text"] if desc else "",
+            })
+        if not res.get("has_more"):
+            break
+        kwargs["start_cursor"] = res["next_cursor"]
+    return out
+
+
 # ---- writes ------------------------------------------------------------
 
 def create_entry(person_id: str | None, project_id: str, date: str, hours: float, description: str = "") -> None:

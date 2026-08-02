@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A time tracker where **Notion is the database / source of truth**. Two Notion databases (Projects, Time Entries — plus an optional Allocations one for the schedule/forecast view) live under a "Hours Tracker" page. On top of that:
 
-- `web/` — FastAPI + Jinja2 + HTMX web app (log hours form, editable Mon–Fri weekly grid, reports with CSV export, schedule/allocations grid, start/stop timer). Deployed on Render free tier (`render.yaml`), live at hours-znlove.onrender.com.
+- `web/` — FastAPI + Jinja2 + HTMX web app (log hours form, editable Mon–Fri weekly grid, reports with CSV export, per-project hours matrix, schedule/allocations grid, start/stop timer). Deployed on Render free tier (`render.yaml`), live at hours-znlove.onrender.com.
 - `src/` — Python CLI scripts: one-time schema setup, project seeding, backfill logging, reports.
 
 There are no tests and no linter configured.
@@ -39,6 +39,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 - **Who logged an entry**: web-app entries write an explicit `Person` (people) property (re-added on startup by `ensure_person_property` if missing); Notion-form submissions rely on the auto-filled `Logged by` (created-by) property; CLI entries have no human submitter. Readers (`report.py`, the weekly grid) must handle both `Person` and `Logged by`.
 - **Weekly grid & allocations**: cell edits are upserts keyed on (person, project, date/week); hours = 0 deletes the entry. Allocation writes are serialized with a lock (`_set_allocation_locked`) to avoid duplicate rows from concurrent upserts. Allocation rows carry real dates (the property is still named `Week`): the Schedule's Days view upserts exact days (`scope="day"`), a Weeks-view cell edit replaces the pair's whole week with one Monday-dated row (`scope="week"`), and the weeks grid buckets any date into its Monday column.
 - **Reports people filter**: `/reports` (and `/reports.csv`) accept repeated `?person=<notion user id>`. `_report_data` filters entries *and* allocations in memory (the Notion query stays unfiltered) and a non-empty pick implies team scope — so the pick is honored for admins only, and ignored for everyone else. Cross-breakdowns (`_person_projects`, `_person_project_matrix`) are derived from the same filtered entries; both sort by hours desc, tie-broken by name.
+- **Per-project view** (`/project`, admins): read-only people × time matrix for one project. `_period_window` in `web/app.py` owns all three granularities — it returns the columns, the date bounds, a `bucket(date_iso) -> column_iso` function and the prev/now/next starts, so adding a granularity means adding a branch there and nothing else. Reads go through `ops.project_entries`, which filters on the Project relation *in the Notion query* rather than scanning all entries in Python.
 - **No Notion views via API**: Form and reporting views can only be created in the Notion UI, never programmatically.
 
 ## Deploy

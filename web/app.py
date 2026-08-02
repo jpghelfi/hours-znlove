@@ -443,6 +443,161 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
+# ---- per-project hours -------------------------------------------------
+
+_PERIODS = ("daily", "weekly", "monthly")
+
+
+def _add_months(d: dt.date, n: int) -> dt.date:
+    """First of the month n months from d's month (n may be negative)."""
+    y, m = divmod(d.year * 12 + (d.month - 1) + n, 12)
+    return dt.date(y, m + 1, 1)
+
+
+def _period_window(period: str, start: Optional[dt.date]) -> dict:
+    """Columns + date bounds for one granularity.
+
+    Each window ends on "now" by default (this week / this week's 8th week /
+    this month), so landing on the page shows the most recent activity; the
+    Earlier/Later buttons shift by a whole window.
+    """
+    today = dt.date.today()
+    if period == "daily":
+        # Mon–Sun, not Mon–Fri: weekend entries exist (CLI/backfill) and must not vanish
+        mon = ops.monday_of(start or today)
+        days = [mon + dt.timedelta(days=i) for i in range(7)]
+        return {
+            "cols": [{"iso": d.isoformat(), "top": d.strftime("%a"), "sub": d.strftime("%d/%m")} for d in days],
+            "bucket": lambda iso: iso,
+            "from": mon.isoformat(), "to": days[-1].isoformat(),
+            "prev": (mon - dt.timedelta(days=7)).isoformat(),
+            "next": (mon + dt.timedelta(days=7)).isoformat(),
+            "now": ops.monday_of(today).isoformat(),
+            "label": f"Week of {mon.isoformat()}",
+        }
+    if period == "monthly":
+        first = (start or _add_months(today, -5)).replace(day=1)
+        months = [_add_months(first, i) for i in range(6)]
+        last = _add_months(first, 6) - dt.timedelta(days=1)
+        return {
+            "cols": [{"iso": m.isoformat(), "top": m.strftime("%b"), "sub": m.strftime("%Y")} for m in months],
+            "bucket": lambda iso: iso[:8] + "01",
+            "from": first.isoformat(), "to": last.isoformat(),
+            "prev": _add_months(first, -6).isoformat(),
+            "next": _add_months(first, 6).isoformat(),
+            "now": _add_months(today, -5).isoformat(),
+            "label": f"{months[0].strftime('%b %Y')} → {months[-1].strftime('%b %Y')}",
+        }
+    mon = ops.monday_of(start or today - dt.timedelta(weeks=7))
+    weeks = [mon + dt.timedelta(weeks=i) for i in range(8)]
+    last = weeks[-1] + dt.timedelta(days=6)
+    return {
+        "cols": [{"iso": w.isoformat(), "top": "W" + w.strftime("%V"), "sub": w.strftime("%d/%m")} for w in weeks],
+        "bucket": lambda iso: ops.monday_of(dt.date.fromisoformat(iso)).isoformat(),
+        "from": mon.isoformat(), "to": last.isoformat(),
+        "prev": (mon - dt.timedelta(weeks=8)).isoformat(),
+        "next": (mon + dt.timedelta(weeks=8)).isoformat(),
+        "now": ops.monday_of(dt.date.today() - dt.timedelta(weeks=7)).isoformat(),
+        "label": f"{mon.isoformat()} → {last.isoformat()}",
+    }
+
+
+def _project_hours(project_id: str, win: dict, member_ids: list, name_map: dict) -> dict:
+    """One row per person, one column per bucket, cells = hours logged.
+
+    People assigned to the project but with nothing logged still get a row, so
+    the view answers "who is on this and what have they done" rather than only
+    "who logged something".
+    """
+    entries = ops.project_entries(project_id, win["from"], win["to"])
+    isos = [c["iso"] for c in win["cols"]]
+    r_cols = set(isos)
+    rows: dict = {}
+
+    def row_for(pid, name):
+        return rows.setdefault(pid or "(unassigned)", {
+            "person_id": pid, "person_name": name,
+            "cells": {i: 0.0 for i in isos}, "entries": 0, "total": 0.0,
+        })
+
+    for e in entries:
+        col = win["bucket"](e["date"])
+        if col not in r_cols:
+            continue
+        r = row_for(e["person_id"], e["person"])
+        r["cells"][col] += e["hours"]
+        r["entries"] += 1
+        r["total"] += e["hours"]
+    for mid in member_ids:
+        row_for(mid, name_map.get(mid, "(unnamed)"))
+
+    ordered = sorted(rows.values(), key=lambda r: (-r["total"], r["person_name"].lower()))
+    for r in ordered:
+        r["total"] = round(r["total"], 2)
+        r["cells"] = {i: round(v, 2) for i, v in r["cells"].items()}
+    col_totals = {i: round(sum(r["cells"][i] for r in ordered), 2) for i in isos}
+    peak = max([v for r in ordered for v in r["cells"].values()], default=0)
+    return {
+        "rows": ordered, "col_totals": col_totals, "peak": peak,
+        "total": round(sum(col_totals.values()), 2),
+        "entries": sorted(entries, key=lambda e: (e["date"], e["person"]), reverse=True),
+        "people_count": sum(1 for r in ordered if r["total"]),
+    }
+
+
+@app.get("/project", response_class=HTMLResponse)
+def project_page(request: Request, project: Optional[str] = None,
+                 period: str = "weekly", start: Optional[str] = None):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    period = period if period in _PERIODS else "weekly"
+    projects = ops.list_projects(include_members=True)
+    sel = next((p for p in projects if p["id"] == project), None) or (projects[0] if projects else None)
+    win = _period_window(period, _parse_date(start))
+    people = ops.list_people()
+    name_map = {p["id"]: p["name"] for p in people}
+    data = (_project_hours(sel["id"], win, sel.get("member_ids", []), name_map) if sel
+            else {"rows": [], "col_totals": {}, "peak": 0, "total": 0, "entries": [], "people_count": 0})
+    return templates.TemplateResponse(request, "project.html", {
+        "user": user, "is_admin": True,
+        "projects": projects, "sel": sel,
+        "period": period, "win": win, "cols": win["cols"],
+        "d": data, "start_iso": win["from"],
+    })
+
+
+@app.get("/project.csv")
+def project_csv(request: Request, project: Optional[str] = None,
+                period: str = "weekly", start: Optional[str] = None):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    period = period if period in _PERIODS else "weekly"
+    projects = ops.list_projects(include_members=True)
+    sel = next((p for p in projects if p["id"] == project), None) or (projects[0] if projects else None)
+    if not sel:
+        return JSONResponse({"ok": False, "error": "no projects"}, status_code=404)
+    win = _period_window(period, _parse_date(start))
+    entries = ops.project_entries(sel["id"], win["from"], win["to"])
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["date", "person", "project", "hours", "description"])
+    for e in sorted(entries, key=lambda e: (e["date"], e["person"])):
+        w.writerow([e["date"], e["person"], sel["name"], e["hours"], e["description"]])
+    from fastapi.responses import Response
+    slug = "".join(c if c.isalnum() else "-" for c in sel["name"]).strip("-").lower()
+    fname = f"{slug or 'project'}_{win['from']}_{win['to']}.csv"
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
 def _schedule_placeholder_rows(existing_rows: list[dict], weeks: list[str], projects: list[dict],
                                project_filter: Optional[str], person_scope: Optional[str],
                                name_map: dict) -> list[dict]:
