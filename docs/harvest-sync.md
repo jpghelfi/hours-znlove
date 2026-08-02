@@ -10,9 +10,16 @@ Four filters, applied in this order. Everything dropped is counted and printed, 
 run always tells you what it left behind.
 
 1. **Date range** — `--from` / `--to` (inclusive).
-2. **Billable only** — non-billable Harvest time is skipped. `--include-non-billable`
-   turns that off. (This is why internal work like "Bear Website (Internal)" and
-   "BG: Admin" doesn't come across: it's booked as non-billable in Harvest.)
+2. **Billable only** — non-billable Harvest time is skipped. Two escape hatches:
+   `--include-non-billable` (everything) and `--nonbillable-project NAME` (repeatable,
+   matches either the Notion or the Harvest project name).
+
+   This matters more than it sounds: Harvest flags *whole projects* non-billable, so
+   internal work like **Bear Website (Internal)** — every one of its July entries,
+   every person — is invisible to a billable-only run. If people expect their internal
+   hours in the app, that project needs to be named explicitly:
+   `--nonbillable-project "Bear Website"`. The check runs after project matching, which
+   is what lets it work on the Notion-side name.
 3. **znlove people only** — a Harvest user is imported only when their name matches an
    active row of the Notion **People** roster. Matching is on normalized name tokens
    (accent- and punctuation-insensitive, ≥2 tokens in common), so "Joaquin Heianna" in
@@ -33,7 +40,9 @@ hours) and skipped — nothing is silently dropped.
 
 Harvest entries are rolled up to **one Notion row per (person, project, day)** — the
 same shape as a cell in the app's weekly grid. Hours are summed; the individual Harvest
-notes are de-duplicated and joined with commas.
+notes are de-duplicated and joined with commas. A day that sums to 0 h is dropped:
+Harvest keeps 0-hour entries (a timer started and cleared), but in this app a zero-hour
+cell means "no entry".
 
 Every imported row's Description starts with a `Harvest` marker line:
 
@@ -65,8 +74,9 @@ edits their Harvest timesheet pulls the correction through.
 # preview — writes nothing
 ./.venv/bin/python src/sync_harvest.py --from 2026-07-01 --to 2026-07-31 --dry-run
 
-# for real
-./.venv/bin/python src/sync_harvest.py --from 2026-07-01 --to 2026-07-31
+# for real, the way July was run
+./.venv/bin/python src/sync_harvest.py --from 2026-07-01 --to 2026-07-31 \
+    --nonbillable-project "Bear Website" --allow-unassigned
 ```
 
 Two ways to feed it Harvest data:
@@ -81,19 +91,31 @@ Two ways to feed it Harvest data:
 
 ## July 2026 backfill (first run)
 
-Run on 2026-08-02 for `2026-07-01..2026-07-31`, from an MCP-pulled Harvest export:
+Run on 2026-08-02 for `2026-07-01..2026-07-31` from an MCP-pulled Harvest export, with
+`--nonbillable-project "Bear Website" --allow-unassigned`:
 
-- 3,043 Harvest entries read → **129 Notion rows, 358.00 h, 6 people**
-- skipped: 1,941 entries (not on the znlove roster, 25 such Harvest users), 942 entries
-  (non-billable)
-- every Harvest project mapped to a Notion project — no unmapped names
+- 3,043 Harvest entries read → **162 Notion rows, 463.91 h, 7 people**
+- skipped: 2,845 entries by the 26 Harvest users who aren't on the znlove roster
+- `BG: Admin 2026` (1 h) has no Notion project, so it was reported and left out
 - one off-assignment pair imported deliberately: **Zarco Nontol / Streamside OSS
-  (14 h)** — Zarco isn't in that project's People property in Notion. Add him to the
-  assignment if that's meant to be permanent; otherwise future runs need
-  `--allow-unassigned` again.
-- the 41 pre-existing app-logged July rows (104.5 h) were untouched, and an immediate
-  re-run reported `0 created, 0 updated, 129 unchanged`.
+  (14 h)** — he isn't in that project's People property. Add him to the assignment if
+  that's permanent, otherwise future runs need `--allow-unassigned` again
+- one collision: Joaquin had already logged 3 h on Bear Website for 2026-07-21 in the
+  app, so Harvest's 3 h for that day was skipped rather than double-counted
+- one 0-hour Harvest entry (Lautaro, 2026-07-07) dropped
+- the 41 pre-existing app-logged July rows (104.5 h) were untouched
 
-Per person: Lautaro Ayub 121 h, Zarco Nontol 82.5 h, Pablo Saracca 82 h, Francisco
-Andres 46.5 h, Juan Pablo Ghelfi 24 h, Joaquin Kenta Heianna 2 h. Melisa Bellico had
-July Harvest time but all of it non-billable, so she has no imported rows.
+| Person | Imported | Projects |
+|---|---|---|
+| Lautaro Ayub | 121.00 h | 44PRO |
+| Zarco Nontol | 84.50 h | Vital Signals ×2, Saltworks, Streamside OSS, Bear Website, Neurogum, Centerline |
+| Pablo Saracca | 82.00 h | Neurogum, Vital Signals ×2, True Temper, The Human Bean, Saltworks |
+| Joaquin Kenta Heianna | 76.91 h | Bear Website, True Citrus |
+| Francisco Andres | 46.50 h | Streamside OSS, Streamside 7 Parks |
+| Juan Pablo Ghelfi | 31.00 h | True Temper, Neurogum, Bear Website |
+| Melisa Bellico | 22.00 h | Bear Website |
+
+Numbers that look low are usually the roster filter, not a bug: Centerline shows 1 h
+because only Zarco (1 h) is znlove — the other 21.76 h that month were logged by Bear
+people who aren't on the roster. Saltworks is the same story (22.5 h ours, 17.5 h
+theirs).

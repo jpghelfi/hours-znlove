@@ -224,6 +224,10 @@ def main() -> None:
     p.add_argument("--entries", help="saved Harvest API response (JSON); omit to use the API")
     p.add_argument("--include-non-billable", action="store_true",
                    help="also import non-billable Harvest time (default: billable only)")
+    p.add_argument("--nonbillable-project", action="append", default=[], metavar="NAME",
+                   help="import non-billable time for this project too (repeatable). "
+                        "Matches the Notion or the Harvest project name, e.g. "
+                        "--nonbillable-project 'Bear Website'")
     p.add_argument("--allow-unassigned", action="store_true",
                    help="import person/project pairs even when the person isn't assigned "
                         "to that project in Notion (default: skip and report them)")
@@ -241,6 +245,7 @@ def main() -> None:
 
     # 1. filter: date range, billable, roster membership, mapped+assigned project
     by_token = {p["name"]: name_tokens(p["name"]) for p in roster}
+    nonbillable_ok = {norm(n) for n in args.nonbillable_project}
     person_cache, project_cache = {}, {}
     skipped = collections.Counter()
     off_assignment, unmapped, non_roster = collections.Counter(), collections.Counter(), set()
@@ -251,10 +256,6 @@ def main() -> None:
         if not (args.date_from <= date <= args.date_to):
             skipped["out of date range"] += 1
             continue
-        if not (e.get("billable") or args.include_non_billable):
-            skipped["non-billable"] += 1
-            continue
-
         huser = e["user"]["name"]
         if huser not in person_cache:
             toks = name_tokens(huser)
@@ -275,6 +276,15 @@ def main() -> None:
             skipped["no matching Notion project"] += 1
             continue
 
+        # Billable is checked after the project is known, so --nonbillable-project
+        # can let internal projects through by name. Harvest flags whole projects
+        # non-billable (e.g. "Bear Website (Internal)"), so this is the only way
+        # that time can ever be imported.
+        if not (e.get("billable") or args.include_non_billable
+                or norm(project["name"]) in nonbillable_ok or norm(hproj) in nonbillable_ok):
+            skipped["non-billable"] += 1
+            continue
+
         if person["id"] not in project["member_ids"]:
             off_assignment[(person["name"], project["name"])] += e["hours"]
             if not args.allow_unassigned:
@@ -290,6 +300,8 @@ def main() -> None:
     # 2. report what is going in
     total = sum(c["hours"] for c in days.values())
     scope = "all" if args.include_non_billable else "billable"
+    if not args.include_non_billable and args.nonbillable_project:
+        scope += " + non-billable on " + ", ".join(args.nonbillable_project)
     print(f"Harvest {args.date_from}..{args.date_to} ({scope}): {len(raw)} entries read -> "
           f"{len(days)} day rows, {total:.2f}h for "
           f"{len({k[1] for k in days})} people")
@@ -309,6 +321,11 @@ def main() -> None:
     existing = {} if args.dry_run else existing_rows(
         notion, ids["time_entries_ds_id"], args.date_from, args.date_to)
     for (pname, pid, projname, projid, date), cell in sorted(days.items(), key=lambda kv: kv[0]):
+        if round(cell["hours"], 2) <= 0:
+            # Harvest keeps 0h entries (a timer started and cleared); in this app a
+            # zero-hour cell means "no entry", so there is nothing to write.
+            counts["zero"] += 1
+            continue
         description = MARKER + ("\n" + ", ".join(cell["notes"]) if cell["notes"] else "")
         if args.dry_run:
             counts["planned"] += 1
@@ -323,14 +340,17 @@ def main() -> None:
                          {"id": pid, "name": pname}, {"id": projid, "name": projname},
                          date, cell["hours"], description)] += 1
 
+    zero = f", {counts['zero']} zero-hour rows dropped" if counts["zero"] else ""
     if args.dry_run:
-        print(f"\nDRY RUN — nothing written. {counts['planned']} rows would be created/updated.")
+        print(f"\nDRY RUN — nothing written. {counts['planned']} rows would be "
+              f"created/updated{zero}.")
         for (pname, _, projname, _, date), cell in sorted(days.items(), key=lambda kv: kv[0])[:400]:
             print(f"  {date}  {pname:<24} {projname:<36} {cell['hours']:5.2f}h  "
                   f"{', '.join(cell['notes'])[:60]}")
     else:
         print(f"\nDone: {counts['created']} created, {counts['updated']} updated, "
-              f"{counts['unchanged']} unchanged, {counts['conflict']} skipped (hand-logged).")
+              f"{counts['unchanged']} unchanged, {counts['conflict']} skipped "
+              f"(hand-logged){zero}.")
 
 
 if __name__ == "__main__":
