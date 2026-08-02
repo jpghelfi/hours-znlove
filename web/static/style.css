@@ -466,10 +466,9 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
   .who { display: none; }
 }
 
-/* per-project hours: read-only matrix of people × period buckets. Cells are
-   shaded relative to the busiest cell in the grid, so the pattern of who was
-   on the project when is readable before you read any number. */
-.hcell { font-variant-numeric: tabular-nums; background: color-mix(in srgb, var(--chart) calc(var(--i, 0) * 38%), transparent); }
+/* per-project hours: one row per person for the chosen day/week/month. The
+   share bar is scaled to the busiest person, so the split reads at a glance
+   while the % stays the person's share of the project's total. */
 .grid th.left, .grid td.left { text-align: left; }
 .grid td.nowrap { white-space: nowrap; }
 .entrylist { padding-bottom: 8px; }
@@ -481,9 +480,20 @@ table.grid { border-collapse: collapse; width: 100%; min-width: 520px; }
 /* the person column is the row label, not a data column: left-aligned and
    narrow, so the period columns get the remaining width. Scoped to .projgrid
    so the week/schedule/assignment grids keep their current layout. */
-.projgrid td.col-project, .projgrid th.col-project { text-align: left; width: 220px; }
+.projgrid td.col-project, .projgrid th.col-project { text-align: left; min-width: 200px; }
+/* the share bar shouldn't swallow the slack — give it a cap and let the name
+   column absorb the rest, so the numbers stay grouped and readable */
+.projgrid .col-share { width: 340px; }
 .projgrid tbody td.col-project { font-weight: 600; }
 .projgrid tfoot td { background: var(--head); font-weight: 700; }
+.projgrid .col-hours { width: 110px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.projgrid .col-num { width: 90px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.projgrid tr.idle td { color: var(--muted); }
+.share { display: flex; align-items: center; gap: 10px; }
+.share-track { flex: 1; min-width: 60px; height: 10px; background: var(--chart-track); border-radius: 6px; overflow: hidden; }
+.share-fill { height: 100%; background: var(--chart); border-radius: 6px; min-width: 2px; }
+.share-pct { width: 42px; text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* table.grid carries a 520px min-width, so the entry list needs its own
    scroller or it widens the whole page on a phone */
 .entrylist-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.range-form label.period-pick { white-space: nowrap; }
