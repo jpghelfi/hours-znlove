@@ -230,6 +230,20 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 > Note: CLI entries are created by the API integration, so they have no human submitter
 > in `Logged by`. Team entry goes through the form; use the CLI for backfills/corrections.
 
+## Harvest import
+
+`src/sync_harvest.py` pulls billable Harvest time into the Time Entries db — only people
+on the People roster, only projects they're assigned to, rolled up to one row per
+person/project/day, each tagged with a `Harvest` marker line in the Description. Re-runs
+update their own rows instead of duplicating, and never touch hand-logged entries.
+
+```bash
+./.venv/bin/python src/sync_harvest.py --from 2026-07-01 --to 2026-07-31 --dry-run
+```
+
+See [docs/harvest-sync.md](docs/harvest-sync.md) for the filters, project-name matching,
+credentials, and the July 2026 backfill numbers.
+
 ## Files
 | File | Purpose |
 |------|---------|
@@ -239,6 +253,7 @@ The form is the main entry path, but the CLI is handy for backfills and reports:
 | `src/seed_projects.py` | Bulk-adds projects, dedupe-safe. |
 | `src/log_hours.py` | Logs one time entry from the CLI. |
 | `src/report.py` | Aggregates hours by person (submitter) or project. |
+| `src/sync_harvest.py` | Imports billable Harvest time into Notion (roster + assignment filtered, idempotent). |
 | `web/app.py` | FastAPI routes: login/OAuth, form page, `/entry`, weekly grid, `/api/cell`. |
 | `web/auth.py` | Notion OAuth flow + email allowlist. |
 | `web/notion_ops.py` | Notion reads/writes for the web app (people, projects, entries, grid). |
