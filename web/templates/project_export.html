@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Export · {{ label }} · Hours Tracker{% endblock %}
+{% block nav_project %}active{% endblock %}
+{% block content %}
+{% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
+<div class="week-head">
+  <div>
+    <h1>Export · {{ label }}</h1>
+    <div class="subtle">{{ rng.label }} · {{ '%g'|format(total) }} h · what you change here goes in the file only</div>
+  </div>
+  <div class="weeknav">
+    <a class="btn" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">← Back to the report</a>
+  </div>
+</div>
+
+<div class="notebar">
+  <strong>Nothing here is saved back.</strong> Adjust hours or reword a comment for the copy you send —
+  the logged entries in Notion keep their original values. To correct what was actually logged,
+  edit it in the entry list on <a href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">the report</a>.
+</div>
+
+<div class="card wide sendbox">
+  <div class="sendbox-grid">
+    <label>To
+      <input type="text" id="to" value="{{ recipients }}" autocomplete="off"
+             aria-label="Recipients, comma separated">
+    </label>
+    <label>Subject
+      <input type="text" id="subject" value="Hours — {{ label }} — {{ rng.label }}" autocomplete="off">
+    </label>
+  </div>
+  <label class="sendbox-msg">Message
+    <textarea id="message" rows="3" placeholder="Leave blank for a short default note…"></textarea>
+  </label>
+  <div class="sendbox-actions">
+    <div class="subtle" id="sendfrom">
+      {%- if mail_ready %}Sends from {{ sender }}
+      {%- else %}Email isn't set up yet — add {{ missing_vars|join(' and ') }} in Render{% endif %}
+    </div>
+    <div class="sendbox-btns">
+      <button type="button" class="btn" onclick="downloadBook()">⬇ Download Excel</button>
+      <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendBook()"
+              {{ 'disabled' if not mail_ready }}>✉ Send by email</button>
+    </div>
+  </div>
+  <div class="sendresult" id="sendresult" hidden role="status"></div>
+</div>
+
+{# the POST that returns the file: a plain form, so the browser handles the download #}
+<form id="dlform" method="post" action="/project/export.xlsx" hidden>
+  <input type="hidden" name="payload" id="dlpayload">
+</form>
+
+{% for g in groups %}
+<div class="card wide exportgroup" data-project="{{ g.name }}">
+  <div class="exportgroup-head">
+    <strong>{{ g.name }}</strong>
+    <span class="subtle"><span class="gtotal">{{ '%g'|format(g.hours) }}</span> h · {{ g.rows|length }} entries</span>
+  </div>
+  <div class="entrylist-scroll">
+  <table class="grid flat exporttable">
+    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Hours</th><th class="left">Comment</th></tr></thead>
+    <tbody>
+      {% for r in g.rows %}
+      <tr data-project-id="{{ r.project_id or '' }}" data-project="{{ r.project }}"
+          data-person="{{ r.person }}" data-date="{{ r.date }}">
+        <td class="left nowrap">{{ r.date }}</td>
+        <td class="left">{{ r.person }}</td>
+        <td class="cell"><input type="number" step="0.25" min="0" max="24" inputmode="decimal"
+                                class="xhours" value="{{ '%g'|format(r.hours) }}"
+                                aria-label="Hours for the export — {{ r.person }}, {{ r.date }}"
+                                oninput="recalc()"></td>
+        <td class="left"><input type="text" class="xdesc" value="{{ r.description }}"
+                                aria-label="Comment for the export — {{ r.person }}, {{ r.date }}"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% else %}
+<div class="card wide"><div class="subtle">No hours logged in this period — nothing to export.</div></div>
+{% endfor %}
+
+<script>
+function rows() {
+  const out = [];
+  document.querySelectorAll('.exporttable tbody tr').forEach(tr => {
+    const hours = parseFloat(tr.querySelector('.xhours').value) || 0;
+    out.push({
+      project_id: tr.dataset.projectId || null,
+      project: tr.dataset.project,
+      person: tr.dataset.person,
+      date: tr.dataset.date,
+      hours: hours,
+      description: tr.querySelector('.xdesc').value,
+    });
+  });
+  return out;
+}
+
+function recalc() {
+  let grand = 0;
+  document.querySelectorAll('.exportgroup').forEach(card => {
+    let t = 0;
+    card.querySelectorAll('.xhours').forEach(i => { t += parseFloat(i.value) || 0; });
+    card.querySelector('.gtotal').textContent = (Math.round(t * 100) / 100).toString();
+    grand += t;
+  });
+  const head = document.querySelector('.week-head .subtle');
+  head.textContent = head.textContent.replace(/[\d.]+ h/, (Math.round(grand * 100) / 100) + ' h');
+}
+
+function payload() {
+  return JSON.stringify({
+    rows: rows(),
+    label: {{ label|tojson }},
+    period_label: {{ rng.label|tojson }},
+    date_from: {{ rng.from|tojson }},
+    date_to: {{ rng.to|tojson }},
+  });
+}
+
+function downloadBook() {
+  document.getElementById('dlpayload').value = payload();
+  document.getElementById('dlform').submit();
+}
+
+function say(msg, ok) {
+  const box = document.getElementById('sendresult');
+  box.hidden = false;
+  box.className = 'sendresult ' + (ok ? 'is-ok' : 'is-err');
+  box.textContent = msg;
+}
+
+async function sendBook() {
+  const btn = document.getElementById('sendbtn');
+  const to = document.getElementById('to').value.trim();
+  if (!confirm('Send this spreadsheet to:\n\n' + to)) return;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Sending…';
+  try {
+    const body = JSON.parse(payload());
+    body.to = to;
+    body.subject = document.getElementById('subject').value;
+    body.message = document.getElementById('message').value;
+    const res = await fetch('/api/report/email', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.ok) say('Sent from ' + data.from + ' to ' + data.to.join(', '), true);
+    else say('Not sent: ' + (data.error || 'unknown error'), false);
+  } catch (e) {
+    say('Not sent: network error', false);
+  }
+  btn.disabled = false;
+  btn.textContent = original;
+}
+</script>
+{% endblock %}
