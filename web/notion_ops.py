@@ -496,6 +496,48 @@ def set_allocation_range(person_id: str, project_id: str, date_from: str, date_t
     return {"ok": True, "hours": hours, "days": days}
 
 
+MAX_COPY_ROWS = 500  # a copy is one write per booking — keep it a burst, not a job
+
+
+def copy_week_allocations(from_monday: str, to_monday: str,
+                          person_ids: list[str] | None = None,
+                          project_id: str | None = None) -> dict:
+    """Duplicate one week's bookings onto another week, weekday for weekday.
+
+    Additive, not a replace: every (person, project, day) pair in the source
+    week is written onto the matching weekday of the target week — overwriting
+    that pair's hours if it was already booked there — and anything else
+    already in the target week is left alone. Planning next week from last week
+    is the point; quietly wiping edits already made to next week is not.
+
+    person_ids / project_id narrow the copy to whatever the planner is filtered
+    to, so the button copies what you can actually see. Takes _write_lock once
+    for the whole week, like set_allocation_range.
+    """
+    src = dt.date.fromisoformat(from_monday)
+    offset = (dt.date.fromisoformat(to_monday) - src).days
+    pick = set(person_ids or [])
+    plan: dict[tuple, float] = {}
+    for a in alloc_rows(from_monday, (src + dt.timedelta(days=4)).isoformat()):
+        if not a["person_id"] or not a["hours"]:
+            continue
+        if pick and a["person_id"] not in pick:
+            continue
+        if project_id and a["project_id"] != project_id:
+            continue
+        day = dt.date.fromisoformat(a["date"]) + dt.timedelta(days=offset)
+        if day.weekday() >= 5:  # legacy week-scoped rows could land on a weekend
+            continue
+        key = (a["person_id"], a["project_id"], day.isoformat())
+        plan[key] = plan.get(key, 0.0) + a["hours"]  # duplicate source rows fold into one write
+    if len(plan) > MAX_COPY_ROWS:
+        raise ValueError(f"that week has {len(plan)} bookings — more than the {MAX_COPY_ROWS} a copy will write")
+    with _write_lock:
+        for (pid, prid, iso), hours in plan.items():
+            _set_allocation_locked(pid, prid, iso, hours)
+    return {"ok": True, "copied": len(plan), "hours": round(sum(plan.values()), 2)}
+
+
 def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float) -> dict:
     matches = _query_all({
         "data_source_id": ALLOC_DS, "page_size": 100,

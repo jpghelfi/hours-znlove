@@ -2,7 +2,8 @@
 {% block title %}Schedule · Hours Tracker{% endblock %}
 {% block nav_schedule %}active{% endblock %}
 {% block content %}
-{% set qs_person = '&person=' ~ focus_person if focus_person else '' %}
+{# people picks ride along on every nav link so a filter survives navigation #}
+{% set qs_person %}{% for pid in focus_people %}&person={{ pid }}{% endfor %}{% endset %}
 {% set qs_project = '&project=' ~ focus_project if focus_project else '' %}
 <div class="week-head">
   <div>
@@ -15,7 +16,11 @@
       {%- endif -%}
     </div>
   </div>
-  <div class="weeknav">
+  <div class="weeknav{{ ' weeknav-4' if view == 'days' }}">
+    {% if view == 'days' %}
+    <button type="button" class="btn" id="copyweek" onclick="copyLastWeek(this)" data-busy="Copying…"
+            title="Copy every booking from the week of {{ copy_from }} into this week">⧉ Copy last week</button>
+    {% endif %}
     <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">← Earlier</a>
     <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Now</a>
     <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Later →</a>
@@ -45,13 +50,10 @@
   <span class="seg-label filters-label">Show</span>
   <input type="hidden" name="by" value="{{ by }}">
   <input type="hidden" name="view" value="{{ view }}">
-  {# navStart() by hand: form.submit() fires no submit event, so base.html's
-     listener never sees these — and the select looks applied the instant you
-     pick, while the old grid is still on screen #}
-  <select name="person" onchange="navStart(); this.form.submit()">
-    <option value="">Everyone</option>
-    {% for p in people %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_person }}>{{ p.name }}</option>{% endfor %}
-  </select>
+  {# the people picker's Apply is a real submit button, so base.html's listener
+     starts the progress bar on its own — only the select needs navStart() by
+     hand, since form.submit() fires no submit event #}
+  {% with selected = focus_people %}{% include "_people_filter.html" %}{% endwith %}
   <select name="project" onchange="navStart(); this.form.submit()">
     <option value="">All projects</option>
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
@@ -119,7 +121,7 @@
 </div>
 
 {% if view == 'days' %}
-<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date.</p>
+<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one.</p>
 
 <dialog class="pop" id="pop">
   <div class="pop-head"><strong id="pop-title">Assign</strong>
@@ -149,7 +151,42 @@ const CAP = {{ cap|tojson }};
 const PROJECTS = {{ projects|tojson }};
 const PEOPLE = {{ people|tojson }};
 {% if view == 'days' %}
+const FOCUS_PEOPLE = {{ focus_people|tojson }};
+const FOCUS_PROJECT = {{ focus_project|tojson }};
+const WEEK = {{ start_iso|tojson }}, WEEK_LABEL = {{ week_label|tojson }};
+const COPY_FROM = {{ copy_from|tojson }}, COPY_FROM_LABEL = {{ copy_from_label|tojson }};
 let POP = null;  // {cell, row, date, personId, projectId, editing}
+
+/* "Plan next week like last week": lift the previous week's bookings onto this
+   one, day for day. Additive — anything already booked here that last week
+   doesn't mention survives — and scoped to the current filters, so the button
+   copies exactly the rows on screen. */
+async function copyLastWeek(btn) {
+  const scope = FOCUS_PEOPLE.length || FOCUS_PROJECT ? '\n\nOnly what the current filter shows will be copied.' : '';
+  if (!confirm('Copy the bookings from the week of ' + COPY_FROM_LABEL
+               + ' into the week of ' + WEEK_LABEL + '?'
+               + '\n\nBookings already in this week are kept; a day/project that exists in both takes last week\'s hours.'
+               + scope)) return;
+  setBusy(btn, true);
+  const restore = () => setBusy(btn, false);
+  try {
+    const res = await fetch('/api/allocation/copy-week', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({from_start: COPY_FROM, to_start: WEEK,
+                            person_ids: FOCUS_PEOPLE, project_id: FOCUS_PROJECT || null})
+    });
+    const data = await res.json();
+    if (!data.ok) { alert('Copy failed: ' + (data.error || '')); return restore(); }
+    if (!data.copied) { alert('Nothing booked in the week of ' + COPY_FROM_LABEL + ' to copy.'); return restore(); }
+    // a whole week changed — redraw from the server, not cell by cell. The
+    // re-query costs seconds, so keep the bar running across the reload.
+    navStart();
+    location.reload();
+  } catch (e) {
+    alert('Copy failed — check your connection.');
+    restore();
+  }
+}
 
 function fmt(n) { return (Math.round(n * 100) / 100).toString(); }
 
