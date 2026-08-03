@@ -1,0 +1,80 @@
+{# Multi-project picker: a <details> dropdown of checkboxes named "project",
+   the project-side twin of _people_filter.html. Submits with whatever form
+   encloses it; no pick means every project. Context it expects: `projects`
+   and `selected` (the picked ids) — pass the latter with {% with selected = … %}
+   at the include site. #}
+{% set jsel_names = projects|selectattr('id', 'in', selected)|map(attribute='name')|list %}
+<details class="pfilter pfilter-end" id="jfilter">
+  <summary class="btn pfilter-btn">
+    <span class="pfilter-ico">📁</span>
+    <span class="pfilter-label">{{ 'All projects' if not selected else (jsel_names|join(', ') if jsel_names|length == 1 else jsel_names|length ~ ' projects') }}</span>
+    <span class="pfilter-caret" aria-hidden="true">▾</span>
+  </summary>
+  <div class="pfilter-menu">
+    <div class="pfilter-head">
+      <input type="search" class="pfilter-search" placeholder="Search projects…" aria-label="Search projects"
+             autocomplete="off" oninput="jfSearch(this.value)">
+      <div class="pfilter-tools">
+        <button type="button" class="linkbtn" onclick="jfAll(true)">Select all</button>
+        <span class="pfilter-sep">·</span>
+        <button type="button" class="linkbtn" onclick="jfAll(false)">Clear</button>
+      </div>
+    </div>
+    <div class="pfilter-list">
+      {% for p in projects %}
+      <label class="pfilter-opt" data-name="{{ p.name|lower }}">
+        <input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
+        <span class="pfilter-nm">{{ p.name }}</span>
+      </label>
+      {% else %}<div class="subtle pfilter-empty">No projects yet — add one in Notion first.</div>{% endfor %}
+      <div class="subtle pfilter-empty" id="jfilter-nomatch" hidden>Nothing matches that search.</div>
+    </div>
+    <div class="pfilter-foot">
+      <span class="subtle">No pick = all projects</span>
+      <button type="submit" class="btn btn-primary">Apply</button>
+    </div>
+  </div>
+</details>
+<script>
+  (function () {
+    var jf = document.getElementById('jfilter');
+    if (!jf) return;
+
+    window.jfAll = function (on) {
+      // only touch what the search currently shows, so "Clear" inside a search
+      // can't silently drop picks the user can't see
+      jf.querySelectorAll('.pfilter-opt:not([hidden]) input[name=project]').forEach(function (c) { c.checked = on; });
+      jfCount();
+    };
+
+    window.jfSearch = function (q) {
+      q = q.trim().toLowerCase();
+      var shown = 0;
+      jf.querySelectorAll('.pfilter-opt').forEach(function (opt) {
+        var hit = !q || opt.dataset.name.indexOf(q) !== -1;
+        opt.hidden = !hit;
+        if (hit) shown++;
+      });
+      document.getElementById('jfilter-nomatch').hidden = shown > 0;
+    };
+
+    function jfCount() {
+      var n = jf.querySelectorAll('.pfilter-opt input[name=project]:checked').length;
+      var one = jf.querySelector('.pfilter-opt input[name=project]:checked');
+      jf.querySelector('.pfilter-label').textContent =
+        n === 0 ? 'All projects' : (n === 1 ? one.parentNode.querySelector('.pfilter-nm').textContent : n + ' projects');
+    }
+    jf.querySelectorAll('.pfilter-opt input[name=project]').forEach(function (c) {
+      c.addEventListener('change', jfCount);
+    });
+
+    // click outside / Esc closes the menu, like any dropdown
+    document.addEventListener('click', function (e) { if (!jf.contains(e.target)) jf.open = false; });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && jf.open) { jf.open = false; jf.querySelector('summary').focus(); }
+    });
+    jf.addEventListener('toggle', function () {
+      if (jf.open) jf.querySelector('.pfilter-search').focus();
+    });
+  })();
+</script>

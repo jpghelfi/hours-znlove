@@ -546,7 +546,8 @@ def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict)
     }
 
 
-def _all_projects_hours(rng: dict, projects: list, name_map: dict) -> dict:
+def _all_projects_hours(rng: dict, projects: list, name_map: dict,
+                        keep_ids: Optional[set] = None) -> dict:
     """Every project in the period, each with its people nested inside it.
 
     One Notion read for the whole period (entries_between), grouped by project
@@ -554,8 +555,15 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict) -> dict:
     Projects with nothing logged are still listed (at the bottom, zeroed), and
     so are projects that only appear in the entries: an entry logged against an
     archived/inactive project must not silently drop out of the totals.
+
+    `keep_ids` narrows the rollup to a picked set of projects: the filtering is
+    done here, in memory, over that same single read (the Notion query stays
+    unfiltered), so picking projects costs no extra round trips.
     """
     entries = ops.entries_between(rng["from"], rng["to"])
+    if keep_ids is not None:
+        entries = [e for e in entries if e["project_id"] in keep_ids]
+        projects = [p for p in projects if p["id"] in keep_ids]
     groups: dict = {}
 
     def group_for(prid, name):
@@ -610,8 +618,26 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict) -> dict:
     }
 
 
+def _project_picks(projects: list, picked: list) -> tuple:
+    """Resolve repeated ?project= into (selected ids, the one project or None).
+
+    Ids that no longer exist (and the "all" sentinel, which older links and the
+    "All projects" checkbox both send) are dropped, so a stale bookmark degrades
+    to the rollup rather than to an empty page. Exactly one pick keeps the
+    per-person drill-in; none or several read as the rollup.
+    """
+    known = {p["id"]: p for p in projects}
+    sel_ids, seen = [], set()
+    for pid in picked or []:
+        if pid in known and pid not in seen:
+            seen.add(pid)
+            sel_ids.append(pid)
+    sel = known[sel_ids[0]] if len(sel_ids) == 1 else None
+    return sel_ids, sel
+
+
 @app.get("/project", response_class=HTMLResponse)
-def project_page(request: Request, project: Optional[str] = None,
+def project_page(request: Request, project: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None):
     user = _require_login(request)
     if not user:
@@ -620,24 +646,25 @@ def project_page(request: Request, project: Optional[str] = None,
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     projects = ops.list_projects(include_members=True)
-    # ?project= is a project id, or "all"/unset for the every-project rollup
-    sel = next((p for p in projects if p["id"] == project), None)
+    # ?project= repeats: no pick (or "all") is the every-project rollup, one
+    # pick drills into that project, several roll up just those projects
+    sel_ids, sel = _project_picks(projects, project)
     is_all = sel is None
     rng = _period_range(period, _project_anchor(period, start))
     people = ops.list_people()
     name_map = {p["id"]: p["name"] for p in people}
-    data = (_all_projects_hours(rng, projects, name_map) if is_all
+    data = (_all_projects_hours(rng, projects, name_map, set(sel_ids) or None) if is_all
             else _project_hours(sel["id"], rng, sel.get("member_ids", []), name_map))
     return templates.TemplateResponse(request, "project.html", {
         "user": user, "is_admin": True,
-        "projects": projects, "sel": sel, "is_all": is_all,
+        "projects": projects, "sel": sel, "sel_ids": sel_ids, "is_all": is_all,
         "period": period, "rng": rng,
         "d": data, "start_iso": rng["from"],
     })
 
 
 @app.get("/project.csv")
-def project_csv(request: Request, project: Optional[str] = None,
+def project_csv(request: Request, project: list[str] = Query(default=[]),
                 period: str = "monthly", start: Optional[str] = None):
     user = _require_login(request)
     if not user:
@@ -646,13 +673,16 @@ def project_csv(request: Request, project: Optional[str] = None,
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     projects = ops.list_projects(include_members=True)
-    sel = next((p for p in projects if p["id"] == project), None)
+    sel_ids, sel = _project_picks(projects, project)
     rng = _period_range(period, _project_anchor(period, start))
     if sel:
         entries = [dict(e, project=sel["name"])
                    for e in ops.project_entries(sel["id"], rng["from"], rng["to"])]
-    else:  # All projects: the same rows the rollup is built from
+    else:  # several projects (or all): the same rows the rollup is built from
         entries = ops.entries_between(rng["from"], rng["to"])
+        if sel_ids:
+            keep = set(sel_ids)
+            entries = [e for e in entries if e["project_id"] in keep]
     import csv
     import io
     buf = io.StringIO()
@@ -661,7 +691,8 @@ def project_csv(request: Request, project: Optional[str] = None,
     for e in sorted(entries, key=lambda e: (e["date"], e["project"], e["person"])):
         w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"]])
     from fastapi.responses import Response
-    slug = "".join(c if c.isalnum() else "-" for c in (sel["name"] if sel else "all-projects")).strip("-").lower()
+    label = sel["name"] if sel else (f"{len(sel_ids)}-projects" if sel_ids else "all-projects")
+    slug = "".join(c if c.isalnum() else "-" for c in label).strip("-").lower()
     fname = f"{slug or 'project'}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
