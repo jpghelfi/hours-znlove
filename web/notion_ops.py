@@ -412,6 +412,41 @@ def week_grid(monday: dt.date, person_id: str) -> dict:
 
 ALLOC_DS = _ids.get("allocations_ds_id")
 
+_alloc_person_cache: dict = {"at": 0.0, "name": None}
+_alloc_person_lock = threading.Lock()
+_ALLOC_PROP_TTL = 300.0  # seconds
+
+
+def alloc_person_prop() -> str:
+    """Name of the Allocations people property — "Person" unless it's been
+    renamed in Notion.
+
+    The API addresses properties by name, so renaming that column in the Notion
+    UI used to 500 every page that reads or writes an allocation (the schedule,
+    the reports forecast). Resolve the name from the data source's schema
+    instead — preferring "Person", else the one people-typed property — and
+    cache it briefly, since this is consulted on every allocation read/write.
+    """
+    now = time.monotonic()
+    with _alloc_person_lock:
+        if _alloc_person_cache["name"] and now - _alloc_person_cache["at"] < _ALLOC_PROP_TTL:
+            return _alloc_person_cache["name"]
+    name = "Person"
+    try:
+        props = _notion.data_sources.retrieve(data_source_id=ALLOC_DS)["properties"]
+        if "Person" not in props:
+            people_props = [k for k, v in props.items() if v.get("type") == "people"]
+            if len(people_props) == 1:
+                name = people_props[0]
+                logging.warning(
+                    "Allocations has no 'Person' property — using the people property "
+                    "%r instead. Rename it back to 'Person' in Notion.", name)
+    except Exception:
+        logging.exception("Could not read the Allocations schema; assuming 'Person'.")
+    with _alloc_person_lock:
+        _alloc_person_cache.update(at=now, name=name)
+    return name
+
 
 def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
     """Every allocation in [date_from, date_to] as flat records:
@@ -427,6 +462,7 @@ def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> li
     see _person_name_map), so callers with a roster to hand should prefer it.
     """
     pname = _project_name_map()
+    person_prop = alloc_person_prop()
     out: list[dict] = []
     kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
         {"property": "Week", "date": {"on_or_after": date_from}},
@@ -436,7 +472,7 @@ def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> li
         res = _notion.data_sources.query(**kwargs)
         for row in res["results"]:
             props = row["properties"]
-            people = props["Person"]["people"]
+            people = props.get(person_prop, {}).get("people") or []
             pid = people[0]["id"] if people else None
             if person_id and pid != person_id:
                 continue
@@ -543,12 +579,13 @@ def copy_week_allocations(from_monday: str, to_monday: str,
 
 
 def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float) -> dict:
+    person_prop = alloc_person_prop()
     matches = _query_all({
         "data_source_id": ALLOC_DS, "page_size": 100,
         "filter": {"and": [
             {"property": "Week", "date": {"equals": date_iso}},
             {"property": "Project", "relation": {"contains": project_id}},
-            {"property": "Person", "people": {"contains": person_id}},
+            {"property": person_prop, "people": {"contains": person_id}},
         ]}})
     match = matches[0] if matches else None
     for extra in matches[1:]:  # duplicates from old races: fold into one
@@ -565,7 +602,7 @@ def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours
             parent={"type": "data_source_id", "data_source_id": ALLOC_DS},
             properties={
                 "Allocation": {"title": [{"text": {"content": f"{pmap.get(project_id,'?')} — {date_iso}"}}]},
-                "Person": {"people": [{"id": person_id}]},
+                person_prop: {"people": [{"id": person_id}]},
                 "Project": {"relation": [{"id": project_id}]},
                 "Week": {"date": {"start": date_iso}},
                 "Hours": {"number": hours},
@@ -583,6 +620,7 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
     """
     pname = _project_name_map()
     person_names = _person_name_map()
+    person_prop = alloc_person_prop()
     out = []
     # day rows can sit up to 6 days after their Monday; filter query wide, bucket below
     query_to = (dt.date.fromisoformat(date_to) + dt.timedelta(days=6)).isoformat()
@@ -594,7 +632,7 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
         res = _notion.data_sources.query(**kwargs)
         for row in res["results"]:
             props = row["properties"]
-            people = props["Person"]["people"]
+            people = props.get(person_prop, {}).get("people") or []
             pid = people[0]["id"] if people else None
             if person_id and pid != person_id:
                 continue
