@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A time tracker where **Notion is the database / source of truth**. Two Notion databases (Projects, Time Entries — plus an optional Allocations one for the schedule/forecast view) live under a "Hours Tracker" page. On top of that:
 
-- `web/` — FastAPI + Jinja2 + HTMX web app (log hours form, editable Mon–Fri weekly grid, reports with CSV export, per-project hours matrix, schedule/allocations grid, start/stop timer). Deployed on Render free tier (`render.yaml`), live at hours-znlove.onrender.com.
+- `web/` — FastAPI + Jinja2 + HTMX web app (log hours form, editable Mon–Fri weekly grid, reports with CSV export, per-project hours by month/week/day, schedule/allocations grid, start/stop timer). Deployed on Render free tier (`render.yaml`), live at hours-znlove.onrender.com.
 - `src/` — Python CLI scripts: one-time schema setup, project seeding, backfill logging, reports.
 
 There are no tests and no linter configured.
