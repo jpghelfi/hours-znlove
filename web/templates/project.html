@@ -157,18 +157,24 @@
 </div>
 {% endif %}
 
-<details class="card wide entrylist">
-  <summary>{{ d.entries|length }} entries in this period</summary>
+<details class="card wide entrylist" id="entrylist">
+  <summary><span id="entry-count">{{ d.entries|length }}</span> entries in this period · <span class="subtle">edit any Hours cell to correct it</span></summary>
   <div class="entrylist-scroll">
   <table class="grid flat">
     <thead><tr><th class="left">Date</th>{% if is_all %}<th class="left">Project</th>{% endif %}<th class="left">Person</th><th>Hours</th><th class="left">Description</th></tr></thead>
     <tbody>
       {% for e in d.entries|sort(attribute='date', reverse=true) %}
-      <tr>
+      <tr data-entry="{{ e.id }}">
         <td class="left nowrap">{{ e.date }}</td>
         {% if is_all %}<td class="left">{{ e.project }}</td>{% endif %}
         <td class="left">{{ e.person }}</td>
-        <td>{{ '%g'|format(e.hours) }}</td>
+        {# the whole page is admin-only, so every reader here may correct an entry #}
+        <td class="cell">
+          <input type="number" step="0.25" min="0" max="24" inputmode="decimal"
+                 aria-label="Hours — {{ e.person }}, {{ e.project if is_all else sel.name }}, {{ e.date }}"
+                 value="{{ '%g'|format(e.hours) }}"
+                 onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
+        </td>
         <td class="left desc">{{ e.description }}</td>
       </tr>
       {% else %}
@@ -178,6 +184,61 @@
   </table>
   </div>
 </details>
+
+{# The tables above are server-rendered aggregates: once an entry changes they
+   are one edit out of date, so say so rather than quietly showing stale sums. #}
+<div class="stalebar" id="stalebar" hidden role="status">
+  <span>Hours changed — the totals above still show the old numbers.</span>
+  <button type="button" class="btn btn-primary" onclick="location.reload()">↻ Refresh totals</button>
+</div>
+
+<script>
+function markStale() { document.getElementById('stalebar').hidden = false; }
+
+async function saveEntry(input) {
+  const tr = input.closest('tr');
+  const entry_id = tr.dataset.entry;
+  const hours = parseFloat(input.value) || 0;
+  // blanking a value deletes the entry — confirm, and revert if they back out
+  if (!hours && parseFloat(input.dataset.prev)) {
+    if (!confirm('Remove this entry? The hours and its description are deleted.')) {
+      input.value = input.dataset.prev;
+      return;
+    }
+  }
+  input.classList.remove('err');
+  input.classList.add('saving');
+  try {
+    const res = await fetch('/api/entry/hours', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entry_id, hours})
+    });
+    const data = await res.json();
+    input.classList.remove('saving');
+    if (!data.ok) {
+      input.classList.add('err');
+      input.value = input.dataset.prev || input.value;
+      alert('Save failed: ' + (data.error || 'unknown'));
+      return;
+    }
+    if (data.deleted) {
+      const count = document.getElementById('entry-count');
+      count.textContent = Math.max(0, parseInt(count.textContent, 10) - 1);
+      tr.remove();
+    } else {
+      input.dataset.prev = input.value;
+      input.classList.add('saved');
+      setTimeout(() => input.classList.remove('saved'), 800);
+    }
+    markStale();
+  } catch (err) {
+    input.classList.remove('saving');
+    input.classList.add('err');
+    input.value = input.dataset.prev || input.value;
+    alert('Network error — nothing was saved.');
+  }
+}
+</script>
 
 {% if is_all %}
 <script>
