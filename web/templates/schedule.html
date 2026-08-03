@@ -45,11 +45,14 @@
   <span class="seg-label filters-label">Show</span>
   <input type="hidden" name="by" value="{{ by }}">
   <input type="hidden" name="view" value="{{ view }}">
-  <select name="person" onchange="this.form.submit()">
+  {# navStart() by hand: form.submit() fires no submit event, so base.html's
+     listener never sees these — and the select looks applied the instant you
+     pick, while the old grid is still on screen #}
+  <select name="person" onchange="navStart(); this.form.submit()">
     <option value="">Everyone</option>
     {% for p in people %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_person }}>{{ p.name }}</option>{% endfor %}
   </select>
-  <select name="project" onchange="this.form.submit()">
+  <select name="project" onchange="navStart(); this.form.submit()">
     <option value="">All projects</option>
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
   </select>
@@ -134,7 +137,7 @@
   </label>
   <div class="pop-actions">
     <button type="button" class="btn danger" id="pop-del" onclick="savePop(0)">Remove</button>
-    <button type="button" class="btn primary" onclick="savePop()">Save</button>
+    <button type="button" class="btn primary" id="pop-save" onclick="savePop()">Save</button>
   </div>
   <div class="pop-err" id="pop-err" hidden></div>
 </dialog>
@@ -207,8 +210,47 @@ function openPop(cell, pill) {
 
 function closePop() { const p = document.getElementById('pop'); if (p.open) p.close(); POP = null; }
 
+/* Weekdays the server will actually touch — it writes one Notion row per
+   weekday in the range, so this is both the wait and the honest label. */
+function weekdaysBetween(fromIso, toIso) {
+  const d = new Date(fromIso + 'T00:00:00'), end = new Date(toIso + 'T00:00:00');
+  let n = 0;
+  for (let guard = 0; guard < 800 && d <= end; guard++) {
+    const w = d.getDay();
+    if (w >= 1 && w <= 5) n++;
+    d.setDate(d.getDate() + 1);
+  }
+  return n;
+}
+
+/* The one genuinely slow write in the app: /api/allocation upserts a Notion
+   row per weekday, in sequence, under a lock. A "repeat through" a month is
+   ~20 round-trips — long enough that an idle-looking dialog gets clicked
+   again, which just queues a second full range write behind the first. */
+let POP_BUSY = false;
+function setPopBusy(on, activeBtn, count, removing) {
+  POP_BUSY = on;
+  const dlg = document.getElementById('pop');
+  dlg.classList.toggle('is-busy', on);
+  if (on && activeBtn) {
+    const verb = removing ? 'Removing' : 'Saving';
+    activeBtn.dataset.busy = count > 1 ? `${verb} ${count} days…` : `${verb}…`;
+  }
+  setBusy(activeBtn, on);
+  ['pop-what', 'pop-hours', 'pop-through'].forEach(id => {
+    const el = document.getElementById(id);
+    // the select is disabled on purpose while editing — don't re-enable it
+    if (el && !(id === 'pop-what' && POP && POP.editing)) el.disabled = on;
+  });
+  const other = activeBtn && activeBtn.id === 'pop-save'
+    ? document.getElementById('pop-del') : document.getElementById('pop-save');
+  if (other) other.disabled = on;
+  const x = dlg.querySelector('.pop-x');
+  if (x) x.disabled = on;
+}
+
 async function savePop(forceHours) {
-  if (!POP) return;
+  if (!POP || POP_BUSY) return;
   const sel = document.getElementById('pop-what');
   const personId = BY === 'person' ? POP.personId : sel.value;
   const projectId = BY === 'person' ? sel.value : POP.projectId;
@@ -220,10 +262,15 @@ async function savePop(forceHours) {
   const through = document.getElementById('pop-through').value || POP.date;
   const label = sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '';
   const swatch = (PROJECTS.find(p => p.id === projectId) || {}).swatch;
+  // captured up front: a save outlives the popover's own state
+  const row = POP.row, date = POP.date;
+  const btn = document.getElementById(forceHours === 0 ? 'pop-del' : 'pop-save');
+  err.hidden = true;
+  setPopBusy(true, btn, weekdaysBetween(date, through), !hours);
   try {
     const res = await fetch('/api/allocation', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({person_id: personId, project_id: projectId, date: POP.date, through, hours})
+      body: JSON.stringify({person_id: personId, project_id: projectId, date, through, hours})
     });
     const data = await res.json();
     if (!data.ok) { err.textContent = 'Save failed: ' + (data.error || ''); err.hidden = false; return; }
@@ -233,12 +280,13 @@ async function savePop(forceHours) {
       const proj = PROJECTS.find(p => p.id === projectId);
       if (proj && !proj.member_ids.includes(personId)) proj.member_ids.push(personId);
     }
-    const row = POP.row;
-    (data.days || [POP.date]).forEach(day => patchCell(row, day, personId, projectId, label, hours, swatch));
+    (data.days || [date]).forEach(day => patchCell(row, day, personId, projectId, label, hours, swatch));
     retotal();
     closePop();
   } catch (e) {
     err.textContent = 'Save failed — check your connection.'; err.hidden = false;
+  } finally {
+    setPopBusy(false, btn);
   }
 }
 
@@ -306,6 +354,8 @@ function retotal() {
 }
 
 document.getElementById('pop').addEventListener('close', () => { POP = null; });
+// Esc during a save would drop the state the in-flight write needs to repaint
+document.getElementById('pop').addEventListener('cancel', (e) => { if (POP_BUSY) e.preventDefault(); });
 {% endif %}
 </script>
 {% endblock %}

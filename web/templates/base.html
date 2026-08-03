@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v('style.css') }}">
 </head>
 <body>
+  <div class="navprog" id="navprog" hidden><i></i></div>
   <header class="topbar">
     <div class="brand">⏱ Hours Tracker</div>
     <nav>
@@ -45,6 +46,86 @@
       var a = document.activeElement;
       if (a && a.matches && a.matches('.cell input') && (e.target === a || a.contains(e.target))) a.blur();
     }, {passive: true});
+
+    /* ---- busy feedback ---------------------------------------------------
+       Notion is the database, so every navigation re-queries it and every save
+       writes to it: clicks here cost seconds, not milliseconds. Without a cue
+       people assume nothing happened and click again — which on the write
+       paths means duplicate entries, not just a doubled wait.
+
+       setBusy(btn, on)  — spinner + disable on one button, label from data-busy
+       navStart()        — show the top progress bar (also for programmatic
+                           form.submit(), which fires no submit event)
+       form[data-lock]   — locks itself and its submit button on first submit
+    */
+    (function () {
+      var bar = document.getElementById('navprog');
+      var barTimer = null;
+
+      function setBusy(btn, on) {
+        if (!btn) return;
+        if (on) {
+          if (btn.dataset.busy && btn.dataset.idleLabel === undefined) {
+            btn.dataset.idleLabel = btn.textContent;
+            btn.textContent = btn.dataset.busy;
+          }
+          btn.classList.add('is-busy');
+          btn.disabled = true;
+        } else {
+          if (btn.dataset.idleLabel !== undefined) {
+            btn.textContent = btn.dataset.idleLabel;
+            delete btn.dataset.idleLabel;
+          }
+          btn.classList.remove('is-busy');
+          btn.disabled = false;
+        }
+      }
+      window.setBusy = setBusy;
+
+      function navStop() { clearTimeout(barTimer); if (bar) bar.hidden = true; }
+      function navStart() {
+        if (!bar || !bar.hidden) return;
+        bar.hidden = false;  // display:none -> block restarts the CSS animation
+        // a navigation the browser quietly drops (cancelled, blocked) would
+        // otherwise leave the bar running forever
+        clearTimeout(barTimer);
+        barTimer = setTimeout(navStop, 30000);
+      }
+      window.navStart = navStart;
+
+      // registered before the nav listeners so a blocked re-submit (below)
+      // marks the event handled and doesn't also restart the progress bar
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (e.defaultPrevented || !form.matches || !form.matches('form[data-lock]')) return;
+        if (form.dataset.sent) { e.preventDefault(); return; }
+        form.dataset.sent = '1';
+        // safe on submit (unlike on click): the submission is already underway
+        setBusy(form.querySelector('button[type=submit], button:not([type])'), true);
+      });
+
+      document.addEventListener('click', function (e) {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        var a = e.target.closest && e.target.closest('a[href]');
+        if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
+        var url;
+        try { url = new URL(a.href, location.href); } catch (err) { return; }
+        if (url.origin !== location.origin) return;
+        if (url.href.split('#')[0] === location.href.split('#')[0]) return;  // hash jump, not a load
+        if (/\.csv$/.test(url.pathname)) return;  // a download never navigates: no pageshow to stop the bar
+        navStart();
+      });
+      document.addEventListener('submit', function (e) { if (!e.defaultPrevented) navStart(); });
+
+      // bfcache hands back the page exactly as it left — bar mid-run, submit
+      // button still locked. Reset both so Back doesn't look stuck.
+      window.addEventListener('pageshow', function () {
+        navStop();
+        document.querySelectorAll('form[data-lock]').forEach(function (f) { delete f.dataset.sent; });
+        document.querySelectorAll('.is-busy').forEach(function (b) { setBusy(b, false); });
+      });
+      window.addEventListener('pagehide', navStop);
+    })();
   </script>
 </body>
 </html>
