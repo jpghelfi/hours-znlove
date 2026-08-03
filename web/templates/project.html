@@ -29,10 +29,12 @@
   </div>
   <input type="hidden" name="period" value="{{ period }}">
   <label class="period-pick">{{ 'Month' if period == 'monthly' else ('Week of' if period == 'weekly' else 'Day') }}
-    <input type="{{ rng.picker }}" name="start" value="{{ rng.value }}" onchange="this.form.submit()">
+    {# navStart() by hand: form.submit() fires no submit event, so base.html's
+       progress bar never sees these #}
+    <input type="{{ rng.picker }}" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
   </label>
   <span class="seg-label filters-label">Project</span>
-  <select name="project" onchange="this.form.submit()" aria-label="Project">
+  <select name="project" onchange="navStart(); this.form.submit()" aria-label="Project">
     <option value="all" {{ 'selected' if is_all }}>All projects</option>
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if sel and p.id == sel.id }}>{{ p.name }}</option>{% endfor %}
   </select>
