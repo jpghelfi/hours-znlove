@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -666,128 +667,158 @@ def project_csv(request: Request, project: Optional[str] = None,
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
-def _schedule_placeholder_rows(existing_rows: list[dict], weeks: list[str], projects: list[dict],
-                               project_filter: Optional[str], person_scope: Optional[str],
-                               name_map: dict) -> list[dict]:
-    """Assignment rows schedule_grid wouldn't otherwise surface: a person is on
-    a project's People property but has logged no allocation for it yet.
-    Shaped exactly like schedule_grid's rows (same keys, all-zero cells) so
-    the template renders them as ordinary, empty-input rows.
+_PALETTE_SIZE = 8  # .pill.s0 … .pill.s7 (--s0 … --s7) in style.css
 
-    project_filter: the selected ?project=, if any.
-    person_scope: the person to scope to — the admin's ?person= pick, or the
-    viewer's own id for non-admins. When both project_filter and person_scope
-    are set, only their intersection (that one person/project pair) is added.
+
+def _swatch(key: str) -> int:
+    """Stable palette slot for a project id, so a project keeps its pill color
+    across days, views and page loads (and matches between the two groupings)."""
+    return int(hashlib.md5(key.encode()).hexdigest()[:8], 16) % _PALETTE_SIZE
+
+
+def _current_monday() -> dt.date:
+    """The week the planner opens on. On a weekend there's nothing left to plan
+    in the week just gone, so roll forward to the upcoming Monday."""
+    today = dt.date.today()
+    if today.weekday() >= 5:
+        return today + dt.timedelta(days=7 - today.weekday())
+    return ops.monday_of(today)
+
+
+def _day_target() -> float:
+    """Hours a person is expected to be booked for on a weekday.
+
+    DAY_TARGET_HOURS is the knob (default 8). WEEK_TARGET_HOURS stays supported
+    as an override for the weeks rollup so existing deploys keep their number.
     """
-    seen = {(r["person_id"], r["project_id"]) for r in existing_rows}
-    empty_cells = {w: 0.0 for w in weeks}
-    placeholders: list[dict] = []
+    return float(os.environ.get("DAY_TARGET_HOURS", "8"))
 
-    def add(pid, pname, prid, prname):
-        key = (pid, prid)
-        if key in seen:
-            return
-        seen.add(key)
-        placeholders.append({
-            "person_id": pid, "person_name": pname,
-            "project_id": prid, "project_name": prname,
-            "cells": dict(empty_cells),
+
+def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
+                   people: list[dict], projects: list[dict],
+                   focus_person: Optional[str], focus_project: Optional[str]) -> list[dict]:
+    """Planner rows: one per person (by="person") or per project, each holding
+    a stack of pills per column.
+
+    Every roster person/project gets a row even with nothing booked — an empty
+    row is what you click to make the first assignment, so the old
+    "add a person/project pair first, then type hours" step disappears.
+    bucket maps an allocation's date to its column (identity for the day
+    planner, the week's Monday for the rollup).
+    """
+    rows: dict = {}
+    # Notion people properties come back as bare user refs with no name, so
+    # pill/row labels for people are resolved against the roster.
+    pnames = {p["id"]: p["name"] for p in people}
+
+    def row_for(rid, name):
+        return rows.setdefault(rid, {
+            "id": rid, "name": name,
+            "days": {c: {"total": 0.0, "pills": []} for c in cols},
+            "total": 0.0,
         })
 
-    if project_filter:
-        proj = next((p for p in projects if p["id"] == project_filter), None)
-        if proj:
-            for mid in proj.get("member_ids", []):
-                if person_scope and mid != person_scope:
-                    continue  # a person filter is also active — only that intersection
-                add(mid, name_map.get(mid, "(unnamed)"), proj["id"], proj["name"])
+    # skeletons first, so people with nothing booked still get a clickable row
+    if by == "person":
+        for p in people:
+            if focus_person and p["id"] != focus_person:
+                continue
+            row_for(p["id"], p["name"])
+    else:
+        for p in projects:
+            if focus_project and p["id"] != focus_project:
+                continue
+            row_for(p["id"], p["name"])
 
-    if person_scope:
-        pname = name_map.get(person_scope, "(unnamed)")
-        for proj in projects:
-            if project_filter and proj["id"] != project_filter:
-                continue  # a project filter is also active — only that intersection
-            if person_scope in proj.get("member_ids", []):
-                add(person_scope, pname, proj["id"], proj["name"])
+    for a in allocs:
+        col = bucket(a["date"])
+        if col not in cols:
+            continue
+        person = pnames.get(a["person_id"], a["person_name"])
+        rid = a["person_id"] if by == "person" else a["project_id"]
+        label = a["project_name"] if by == "person" else person
+        if rid not in rows:
+            # an allocation for somebody off the roster (or an archived
+            # project) — still show it rather than silently hiding hours
+            row_for(rid, person if by == "person" else a["project_name"])
+        cell = rows[rid]["days"][col]
+        pill = next((p for p in cell["pills"]
+                     if p["person_id"] == a["person_id"] and p["project_id"] == a["project_id"]), None)
+        if pill:
+            pill["hours"] += a["hours"]  # duplicate rows for one pair/day fold into one pill
+        else:
+            cell["pills"].append({
+                "person_id": a["person_id"], "project_id": a["project_id"],
+                "label": label, "hours": a["hours"], "swatch": _swatch(a["project_id"]),
+            })
+        cell["total"] += a["hours"]
+        rows[rid]["total"] += a["hours"]
 
-    return placeholders
+    ordered = sorted(rows.values(), key=lambda r: r["name"].lower())
+    for r in ordered:
+        for c in cols:
+            r["days"][c]["pills"].sort(key=lambda p: (-p["hours"], p["label"].lower()))
+    return ordered
 
 
 @app.get("/schedule", response_class=HTMLResponse)
 def schedule_page(request: Request, start: Optional[str] = None, by: str = "person",
                   person: Optional[str] = None, project: Optional[str] = None,
-                  view: str = "weeks"):
+                  view: str = "days"):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    is_admin = auth.is_admin(user)
-    if not is_admin:
+    if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     by = by if by in ("person", "project") else "person"
-    view = view if view in ("weeks", "days") else "weeks"
-    mon = ops.monday_of(_parse_date(start))  # malformed ?start= falls back to today
-    if view == "days":
-        grid = ops.schedule_day_grid(mon, None if is_admin else user.get("id"))
-    else:
-        grid = ops.schedule_grid(mon, 6, None if is_admin else user.get("id"))
-    rows = grid["rows"]
-    if person:
-        rows = [r for r in rows if r["person_id"] == person]
-    if project:
-        rows = [r for r in rows if r["project_id"] == project]
+    view = view if view in ("weeks", "days") else "days"
+    anchor = _parse_date(start)  # malformed ?start= falls back to the current week
+    mon = ops.monday_of(anchor) if anchor else _current_monday()
 
-    people = ops.list_people() if is_admin else []
-    projects = ops.list_projects(include_members=True)
-
-    # Fill in assignments with no logged allocation: a project filter should
-    # list every person on that project, a person filter (or a non-admin's
-    # implicit self-scope) should list every project they're on. The
-    # unfiltered admin view (person_scope and project_filter both unset)
-    # is left untouched — allocation rows only, as today.
-    person_scope = person if is_admin else user.get("id")
-    if project or person_scope:
-        name_map = {p["id"]: p["name"] for p in people} if is_admin else {person_scope: user.get("name")}
-        placeholders = _schedule_placeholder_rows(rows, grid["weeks"], projects, project, person_scope, name_map)
-        if placeholders:
-            rows = sorted(rows + placeholders, key=lambda r: (r["person_name"].lower(), r["project_name"].lower()))
-
-    # group rows by the chosen pivot, with per-group weekly totals
-    groups: dict = {}
-    for r in rows:
-        gid = r["person_id"] if by == "person" else r["project_id"]
-        gname = r["person_name"] if by == "person" else r["project_name"]
-        g = groups.setdefault(gid, {"id": gid, "name": gname, "rows": [],
-                                    "totals": {w: 0.0 for w in grid["weeks"]}})
-        g["rows"].append(r)
-        for w in grid["weeks"]:
-            g["totals"][w] += r["cells"][w]
-    target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
-    # column headers: weeks link into that week's day view; days show the weekday
-    if view == "days":
-        cols = [{"iso": c, "top": dt.date.fromisoformat(c).strftime("%a"), "sub": f"{c[5:7]}/{c[8:10]}", "href": ""}
-                for c in grid["weeks"]]
-        cap = target / 5  # per-day capacity for the heat map
+    if view == "days":  # the planner: Mon–Fri, weekends never shown
+        days = [mon + dt.timedelta(days=i) for i in range(5)]
+        cols = [{"iso": d.isoformat(), "top": d.strftime("%a"),
+                 "sub": d.strftime("%m/%d"), "href": ""} for d in days]
+        range_from, range_to = days[0].isoformat(), days[-1].isoformat()
+        def bucket(iso):
+            return iso
+        cap = _day_target()
         step = dt.timedelta(weeks=1)
-    else:
-        cols = [{"iso": c, "top": f"W{c[5:7]}/{c[8:10]}", "sub": c[:4],
-                 "href": f"/schedule?view=days&start={c}&by={by}"
-                         + (f"&person={person}" if person else "") + (f"&project={project}" if project else "")}
-                for c in grid["weeks"]]
-        cap = target
+    else:  # read-only rollup: six weeks, each column a Monday
+        mondays = [mon + dt.timedelta(weeks=i) for i in range(6)]
+        base = f"&by={by}" + (f"&person={person}" if person else "") + (f"&project={project}" if project else "")
+        cols = [{"iso": m.isoformat(), "top": f"W{m.strftime('%m/%d')}", "sub": m.strftime("%Y"),
+                 "href": f"/schedule?view=days&start={m.isoformat()}{base}"} for m in mondays]
+        range_from = mondays[0].isoformat()
+        range_to = (mondays[-1] + dt.timedelta(days=6)).isoformat()
+        def bucket(iso):
+            return ops.monday_of(dt.date.fromisoformat(iso)).isoformat()
+        cap = float(os.environ.get("WEEK_TARGET_HOURS", str(_day_target() * 5)))
         step = dt.timedelta(weeks=6)
+
+    people = ops.list_people()
+    projects = ops.list_projects(include_members=True)
+    allocs = ops.alloc_rows(range_from, range_to, person)
+    if project:
+        allocs = [a for a in allocs if a["project_id"] == project]
+    col_isos = [c["iso"] for c in cols]
+    rows = _schedule_rows(allocs, col_isos, by, bucket, people, projects, person, project)
+
+    col_totals = {c: sum(r["days"][c]["total"] for r in rows) for c in col_isos}
     return templates.TemplateResponse(request, "schedule.html", {
-        "user": user, "weeks": grid["weeks"], "by": by, "view": view,
-        "scope": "day" if view == "days" else "week",
-        "cols": cols, "cap": cap,
-        "groups": sorted(groups.values(), key=lambda g: g["name"].lower()),
+        "user": user, "by": by, "view": view,
+        "cols": cols, "cap": cap, "rows": rows, "col_totals": col_totals,
+        "grand_total": sum(col_totals.values()),
         "focus_person": person or "", "focus_project": project or "",
-        "is_admin": is_admin, "target": target,
+        "is_admin": True,
         "people": people,
-        "projects": projects,
+        "projects": [{"id": p["id"], "name": p["name"], "member_ids": p.get("member_ids", []),
+                      "swatch": _swatch(p["id"])} for p in projects],
         "prev_start": (mon - step).isoformat(),
         "next_start": (mon + step).isoformat(),
-        "this_start": ops.monday_of().isoformat(),
+        "this_start": _current_monday().isoformat(),
         "start_iso": mon.isoformat(),
+        "last_day": col_isos[-1] if view == "days" else (mon + dt.timedelta(days=4)).isoformat(),
     })
 
 
@@ -829,13 +860,19 @@ def api_assignment(request: Request, a: Assignment):
 class Alloc(BaseModel):
     person_id: str
     project_id: str
-    week: str  # the column date: a Monday (scope=week) or any weekday (scope=day)
-    hours: float = Field(ge=0, le=168, allow_inf_nan=False)
-    scope: str = "week"
+    date: str                       # a weekday ISO date
+    through: Optional[str] = None   # inclusive end of a repeat range; None = just `date`
+    hours: float = Field(ge=0, le=24, allow_inf_nan=False)
+    also_assign: bool = True        # scheduling someone implies project membership
+
+
+_MAX_RANGE_DAYS = 90  # a fat-fingered "through" can't write hundreds of rows
 
 
 @app.post("/api/allocation")
 def api_allocation(request: Request, alloc: Alloc):
+    """Assign (or clear, with hours=0) one project for one person across a day
+    or a weekday range. Day-first: no week scope, weekends are skipped."""
     user = _require_login(request)
     if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
@@ -843,20 +880,34 @@ def api_allocation(request: Request, alloc: Alloc):
         return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
-    day = _parse_date(alloc.week)
+    day = _parse_date(alloc.date)
     if not day:
         return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
-    if alloc.scope == "day":
-        if day.weekday() >= 5:
-            return JSONResponse({"ok": False, "error": "weekday required"}, status_code=400)
-        date_iso, scope = day.isoformat(), "day"
-    else:
-        # normalize: week-scope allocations always live on Mondays
-        date_iso, scope = ops.monday_of(day).isoformat(), "week"
+    if day.weekday() >= 5:
+        return JSONResponse({"ok": False, "error": "weekday required"}, status_code=400)
+    end = _parse_date(alloc.through) if alloc.through else day
+    if not end or end < day:
+        return JSONResponse({"ok": False, "error": "invalid range"}, status_code=400)
+    if (end - day).days > _MAX_RANGE_DAYS:
+        return JSONResponse({"ok": False, "error": f"range longer than {_MAX_RANGE_DAYS} days"},
+                            status_code=400)
     try:
-        return JSONResponse(ops.set_allocation(alloc.person_id, alloc.project_id, date_iso, alloc.hours, scope))
+        res = ops.set_allocation_range(alloc.person_id, alloc.project_id,
+                                       day.isoformat(), end.isoformat(), alloc.hours)
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save allocation"}, status_code=400)
+    if alloc.hours and alloc.also_assign:
+        # keep /assignments honest: booking someone onto a project makes them a
+        # member of it (idempotent, so a re-book is a no-op). Deliberately not
+        # in the try above: the allocation is already written, so failing the
+        # whole response here would show "Save failed" over a saved booking.
+        try:
+            ops.set_project_member(alloc.project_id, alloc.person_id, True)
+            res["assigned"] = True
+        except Exception:
+            logging.exception("Allocation saved but adding %s to project %s failed",
+                              alloc.person_id, alloc.project_id)
+    return JSONResponse(res)
 
 
 class Cell(BaseModel):

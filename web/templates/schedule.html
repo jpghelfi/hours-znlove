@@ -2,15 +2,23 @@
 {% block title %}Schedule · Hours Tracker{% endblock %}
 {% block nav_schedule %}active{% endblock %}
 {% block content %}
+{% set qs_person = '&person=' ~ focus_person if focus_person else '' %}
+{% set qs_project = '&project=' ~ focus_project if focus_project else '' %}
 <div class="week-head">
   <div>
     <h1>Schedule</h1>
-    <div class="subtle">{% if view == 'days' %}Week of {{ start_iso }} — type hours into day cells{% elif is_admin %}{{ 'One section per person, their projects nested' if by == 'person' else 'One section per project, its people nested' }} — type hours into week cells, or click a week header to plan its days{% else %}Your planned weeks{% endif %}</div>
+    <div class="subtle">
+      {%- if view == 'days' -%}
+        Week of {{ start_iso }} — click a day to book a project, {{ '%g'|format(cap) }}h a day, weekends off
+      {%- else -%}
+        Six weeks at a glance — read-only; click a week to plan its days
+      {%- endif -%}
+    </div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}">← Earlier</a>
-    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}">Now</a>
-    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}">Later →</a>
+    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">← Earlier</a>
+    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Now</a>
+    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Later →</a>
   </div>
 </div>
 
@@ -19,30 +27,28 @@
   <div class="seg" role="group" aria-label="View">
     <span class="seg-label">View</span>
     <div class="seg-opts">
-      <a class="seg-opt{{ ' is-on' if view == 'weeks' }}" {% if view == 'weeks' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by={{ by }}&view=weeks{% if focus_person %}&person={{ focus_person }}{% endif %}{% if focus_project %}&project={{ focus_project }}{% endif %}">Weeks</a>
       <a class="seg-opt{{ ' is-on' if view == 'days' }}" {% if view == 'days' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by={{ by }}&view=days{% if focus_person %}&person={{ focus_person }}{% endif %}{% if focus_project %}&project={{ focus_project }}{% endif %}">Days</a>
+         href="/schedule?start={{ start_iso }}&by={{ by }}&view=days{{ qs_person }}{{ qs_project }}">Days</a>
+      <a class="seg-opt{{ ' is-on' if view == 'weeks' }}" {% if view == 'weeks' %}aria-current="page"{% endif %}
+         href="/schedule?start={{ start_iso }}&by={{ by }}&view=weeks{{ qs_person }}{{ qs_project }}">Weeks</a>
     </div>
   </div>
   <div class="seg" role="group" aria-label="Group rows by">
     <span class="seg-label">Group by</span>
     <div class="seg-opts">
       <a class="seg-opt{{ ' is-on' if by == 'person' }}" {% if by == 'person' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by=person&view={{ view }}{% if focus_project %}&project={{ focus_project }}{% endif %}">Person</a>
+         href="/schedule?start={{ start_iso }}&by=person&view={{ view }}{{ qs_person }}{{ qs_project }}">People</a>
       <a class="seg-opt{{ ' is-on' if by == 'project' }}" {% if by == 'project' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by=project&view={{ view }}{% if focus_project %}&project={{ focus_project }}{% endif %}">Project</a>
+         href="/schedule?start={{ start_iso }}&by=project&view={{ view }}{{ qs_person }}{{ qs_project }}">Projects</a>
     </div>
   </div>
   <span class="seg-label filters-label">Show</span>
   <input type="hidden" name="by" value="{{ by }}">
   <input type="hidden" name="view" value="{{ view }}">
-  {% if is_admin %}
   <select name="person" onchange="this.form.submit()">
     <option value="">Everyone</option>
     {% for p in people %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_person }}>{{ p.name }}</option>{% endfor %}
   </select>
-  {% endif %}
   <select name="project" onchange="this.form.submit()">
     <option value="">All projects</option>
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
@@ -50,155 +56,256 @@
 </form>
 
 <div class="grid-wrap">
-<table class="grid">
+<table class="grid plan {{ 'plan-days' if view == 'days' else 'plan-weeks' }}">
   <thead>
     <tr>
-      <th class="col-project">{{ 'Person ▸ projects' if by == 'person' else 'Project ▸ people' }}</th>
+      <th class="col-project">{{ 'Person' if by == 'person' else 'Project' }}</th>
       {% for c in cols %}
       <th class="col-day">{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span></th>
       {% endfor %}
       <th class="col-total">Total</th>
     </tr>
   </thead>
-  {% for g in groups %}
-  <tbody data-group="{{ g.id }}">
-    <tr class="group-row">
-      <td class="col-project">{{ g.name }}</td>
+  <tbody>
+  {% for r in rows %}
+    <tr data-row="{{ r.id }}">
+      <td class="col-project col-person">{{ r.name }}</td>
       {% for c in cols %}
-      {% set v = g.totals[c.iso] %}
-      <td class="{{ ('heat ' ~ ('heat-over' if v > cap else ('heat-full' if v >= cap * 0.8 else 'heat-ok'))) if by == 'person' and v else '' }}">
-        {{ '%g'|format(v) if v else '' }}</td>
-      {% endfor %}
-      <td class="col-total">{{ '%g'|format(g.totals.values()|sum) }}</td>
-    </tr>
-    {% for r in g.rows %}
-    <tr data-person="{{ r.person_id }}" data-project="{{ r.project_id }}">
-      <td class="col-project sub">{{ r.project_name if by == 'person' else r.person_name }}</td>
-      {% for c in cols %}
-      <td class="cell"><input type="number" step="1" min="0" inputmode="decimal" value="{{ '%g'|format(r.cells[c.iso]) if r.cells[c.iso] else '' }}"
-          aria-label="{{ r.person_name }} · {{ r.project_name }} — {{ 'on' if view == 'days' else 'week of' }} {{ c.iso }}"
-          data-week="{{ c.iso }}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)" {% if not is_admin %}disabled{% endif %}></td>
-      {% endfor %}
-      <td class="col-total rowtotal">{{ '%g'|format(r.cells.values()|sum) }}</td>
-    </tr>
-    {% endfor %}
-    {% if is_admin %}
-    <tr class="group-add">
-      <td class="col-project" colspan="{{ cols|length + 2 }}">
-        <select onchange="addToGroup(this, '{{ g.id }}')">
-          <option value="" disabled selected>+ Add {{ 'project to ' ~ g.name if by == 'person' else 'person to ' ~ g.name }}…</option>
-          {% if by == 'person' %}
-            {% for p in projects %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
-          {% else %}
-            {% for p in people %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
-          {% endif %}
-        </select>
+      {% set d = r.days[c.iso] %}
+      {% if view == 'days' %}
+      <td class="plan-cell{{ ' is-empty' if not d.pills }}" data-date="{{ c.iso }}" data-total="{{ d.total }}"
+          onclick="openPop(this, null)">
+        {% if by == 'person' %}
+        <div class="cap {{ 'cap-over' if d.total > cap else ('cap-full' if d.total >= cap else 'cap-ok') }}" aria-hidden="true">
+          <i style="width: {{ [100, (d.total / cap * 100)|round(0, 'ceil')|int]|min }}%"></i>
+        </div>
+        {% endif %}
+        <div class="cap-num">{% if d.total %}{{ '%g'|format(d.total) }}{% if by == 'person' %}<span class="cap-of">/{{ '%g'|format(cap) }}</span>{% endif %}{% endif %}</div>
+        <div class="pills">
+          {% for p in d.pills %}
+          <button type="button" class="pill s{{ p.swatch }}" data-person="{{ p.person_id }}" data-project="{{ p.project_id }}"
+                  data-hours="{{ p.hours }}" data-label="{{ p.label }}"
+                  onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), this)"
+                  title="{{ p.label }} — {{ '%g'|format(p.hours) }}h">
+            <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
+          </button>
+          {% endfor %}
+        </div>
+        <span class="addbtn" aria-hidden="true">+</span>
       </td>
+      {% else %}
+      <td class="{{ ('heat ' ~ ('heat-over' if d.total > cap else ('heat-full' if d.total >= cap * 0.8 else 'heat-ok'))) if by == 'person' and d.total else '' }}">
+        {{ '%g'|format(d.total) if d.total else '' }}</td>
+      {% endif %}
+      {% endfor %}
+      <td class="col-total rowtotal">{{ '%g'|format(r.total) }}</td>
     </tr>
-    {% endif %}
-  </tbody>
   {% endfor %}
-  {% if not groups %}
-  <tbody><tr class="empty"><td colspan="{{ cols|length + 2 }}">No allocations here yet.{% if is_admin %} Start one below.{% endif %}</td></tr></tbody>
+  {% if not rows %}
+    <tr class="empty"><td colspan="{{ cols|length + 2 }}">Nobody on the roster yet — add people in Notion’s People database.</td></tr>
   {% endif %}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td class="col-project">All</td>
+      {% for c in cols %}<td class="coltotal" data-date="{{ c.iso }}">{{ '%g'|format(col_totals[c.iso]) if col_totals[c.iso] else '' }}</td>{% endfor %}
+      <td class="col-total grandtotal">{{ '%g'|format(grand_total) }}</td>
+    </tr>
+  </tfoot>
 </table>
 </div>
 
-{% if is_admin %}
-<div class="addrow card">
-  <strong>Start a new {{ 'person' if by == 'person' else 'project' }}</strong>
-  <div class="row2 row3">
-    <select id="new-a"><option value="" disabled selected>{{ 'Person…' if by == 'person' else 'Project…' }}</option>
-      {% if by == 'person' %}{% for p in people %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
-      {% else %}{% for p in projects %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}{% endif %}
-    </select>
-    <select id="new-b"><option value="" disabled selected>{{ 'Project…' if by == 'person' else 'Person…' }}</option>
-      {% if by == 'person' %}{% for p in projects %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}
-      {% else %}{% for p in people %}<option value="{{ p.id }}" data-name="{{ p.name }}">{{ p.name }}</option>{% endfor %}{% endif %}
-    </select>
-    <button class="btn" onclick="newPair()">Add</button>
+{% if view == 'days' %}
+<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date.</p>
+
+<dialog class="pop" id="pop">
+  <div class="pop-head"><strong id="pop-title">Assign</strong>
+    <button type="button" class="pop-x" onclick="closePop()" aria-label="Close">×</button></div>
+  <label>{{ 'Project' if by == 'person' else 'Person' }}
+    <select id="pop-what"></select>
+  </label>
+  <label>Hours a day
+    <input type="number" id="pop-hours" step="0.5" min="0" max="24" inputmode="decimal">
+    <span class="subtle" id="pop-free"></span>
+  </label>
+  <label>Repeat through
+    <input type="date" id="pop-through">
+    <span class="subtle">weekdays only</span>
+  </label>
+  <div class="pop-actions">
+    <button type="button" class="btn danger" id="pop-del" onclick="savePop(0)">Remove</button>
+    <button type="button" class="btn primary" onclick="savePop()">Save</button>
   </div>
-  <div class="subtle">Blank a cell to remove that allocation.
-    {% if view == 'days' %}Editing a week cell (in the Weeks view) replaces the whole week; hours planned by week sit in Monday's cell until spread across days here. Group rows show daily totals{% if by == 'person' %} colored against {{ '%g'|format(cap) }}h/day capacity{% endif %}.
-    {% else %}Group rows show weekly totals{% if by == 'person' %} colored against {{ '%g'|format(target) }}h capacity{% endif %}.{% endif %}</div>
-</div>
+  <div class="pop-err" id="pop-err" hidden></div>
+</dialog>
 {% endif %}
 
 <script>
-const COLS = {{ cols|map(attribute='iso')|list|tojson }};
 const BY = {{ by|tojson }};
-const SCOPE = {{ scope|tojson }};
-const CELL_WORD = SCOPE === 'day' ? 'on' : 'week of';
+const CAP = {{ cap|tojson }};
+const PROJECTS = {{ projects|tojson }};
+const PEOPLE = {{ people|tojson }};
+{% if view == 'days' %}
+let POP = null;  // {cell, row, date, personId, projectId, editing}
 
-async function saveAlloc(input) {
-  const tr = input.closest('tr');
-  const hours = parseFloat(input.value) || 0;
-  if (!hours && parseFloat(input.dataset.prev)) {
-    const msg = SCOPE === 'week'
-      ? 'Remove this allocation? This clears the whole week, including any day-by-day plan.'
-      : 'Remove this allocation?';
-    if (!confirm(msg)) { input.value = input.dataset.prev; return; }
+function fmt(n) { return (Math.round(n * 100) / 100).toString(); }
+
+function openPop(cell, pill) {
+  const row = cell.closest('tr');
+  const rowId = row.dataset.row;
+  const date = cell.dataset.date;
+  POP = {
+    cell, row, date, editing: !!pill,
+    personId: BY === 'person' ? rowId : (pill ? pill.dataset.person : ''),
+    projectId: BY === 'person' ? (pill ? pill.dataset.project : '') : rowId,
+  };
+  const d = new Date(date + 'T00:00:00');
+  document.getElementById('pop-title').textContent =
+    row.querySelector('.col-person').textContent.trim() + ' · '
+    + d.toLocaleDateString(undefined, {weekday: 'short', month: 'short', day: 'numeric'});
+
+  // the row pins down one side of the pair; the select offers the other
+  const sel = document.getElementById('pop-what');
+  sel.innerHTML = '';
+  const assigned = [], other = [];
+  if (BY === 'person') {
+    PROJECTS.forEach(p => (p.member_ids.includes(POP.personId) ? assigned : other).push(p));
+  } else {
+    const proj = PROJECTS.find(p => p.id === POP.projectId);
+    PEOPLE.forEach(p => ((proj && proj.member_ids.includes(p.id)) ? assigned : other).push(p));
   }
-  input.classList.add('saving');
+  const group = (label, items) => {
+    if (!items.length) return;
+    const g = document.createElement('optgroup'); g.label = label;
+    items.forEach(i => { const o = document.createElement('option'); o.value = i.id; o.textContent = i.name; g.appendChild(o); });
+    sel.appendChild(g);
+  };
+  group('Assigned', assigned);
+  group(BY === 'person' ? 'Other projects' : 'Other people', other);
+  // editing pins the pair; a fresh booking just keeps the first option selected
+  if (POP.editing) sel.value = BY === 'person' ? POP.projectId : POP.personId;
+  sel.disabled = POP.editing;  // changing who/what = remove it and add the other
+
+  // In the People grouping the cell total is one person's day, so a new
+  // booking can default to what's left of their capacity. In the Projects
+  // grouping it's the project's total across everyone — that says nothing
+  // about the person being booked, so just offer a full day.
+  const booked = parseFloat(cell.dataset.total) || 0;
+  const mine = pill ? parseFloat(pill.dataset.hours) : 0;
+  const free = Math.max(0, CAP - (booked - mine));
+  const hours = document.getElementById('pop-hours');
+  hours.value = pill ? fmt(mine) : fmt(BY === 'person' ? (free || CAP) : CAP);
+  document.getElementById('pop-free').textContent =
+    BY === 'person' ? fmt(free) + 'h free of ' + fmt(CAP) : fmt(booked) + 'h booked that day';
+  const through = document.getElementById('pop-through');
+  through.value = date; through.min = date;
+  document.getElementById('pop-del').hidden = !POP.editing;
+  document.getElementById('pop-err').hidden = true;
+  document.getElementById('pop').showModal();
+  (POP.editing ? hours : sel).focus();
+}
+
+function closePop() { const p = document.getElementById('pop'); if (p.open) p.close(); POP = null; }
+
+async function savePop(forceHours) {
+  if (!POP) return;
+  const sel = document.getElementById('pop-what');
+  const personId = BY === 'person' ? POP.personId : sel.value;
+  const projectId = BY === 'person' ? sel.value : POP.projectId;
+  const err = document.getElementById('pop-err');
+  if (!personId || !projectId) {
+    err.textContent = 'Pick one first.'; err.hidden = false; return;
+  }
+  const hours = forceHours === 0 ? 0 : (parseFloat(document.getElementById('pop-hours').value) || 0);
+  const through = document.getElementById('pop-through').value || POP.date;
+  const label = sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '';
+  const swatch = (PROJECTS.find(p => p.id === projectId) || {}).swatch;
   try {
     const res = await fetch('/api/allocation', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({person_id: tr.dataset.person, project_id: tr.dataset.project, week: input.dataset.week, hours, scope: SCOPE})
+      body: JSON.stringify({person_id: personId, project_id: projectId, date: POP.date, through, hours})
     });
     const data = await res.json();
-    input.classList.remove('saving');
-    if (!data.ok) { input.classList.add('err'); alert('Save failed: ' + (data.error||'')); return; }
-    input.classList.remove('err'); input.classList.add('saved');
-    setTimeout(() => input.classList.remove('saved'), 800);
-    let t = 0; tr.querySelectorAll('input').forEach(i => t += parseFloat(i.value)||0);
-    tr.querySelector('.rowtotal').textContent = t ? (Math.round(t*100)/100) : '0';
-  } catch (e) { input.classList.remove('saving'); input.classList.add('err'); }
-}
-
-function makeRow(personId, projectId, label) {
-  const tr = document.createElement('tr');
-  tr.dataset.person = personId; tr.dataset.project = projectId;
-  let cells = '';
-  COLS.forEach(c => { cells += `<td class="cell"><input type="number" step="1" min="0" inputmode="decimal" aria-label="${label} — ${CELL_WORD} ${c}" data-week="${c}" onfocus="this.dataset.prev=this.value" onchange="saveAlloc(this)"></td>`; });
-  tr.innerHTML = `<td class="col-project sub">${label}</td>${cells}<td class="col-total rowtotal">0</td>`;
-  return tr;
-}
-
-function addToGroup(sel, groupId) {
-  if (!sel.value) return;
-  const name = sel.selectedOptions[0].dataset.name;
-  const personId = BY === 'person' ? groupId : sel.value;
-  const projectId = BY === 'person' ? sel.value : groupId;
-  const tbody = sel.closest('tbody');
-  if (tbody.querySelector(`tr[data-person="${personId}"][data-project="${projectId}"]`)) { sel.value = ''; return; }
-  const tr = makeRow(personId, projectId, name);
-  tbody.insertBefore(tr, sel.closest('tr'));
-  sel.value = '';
-  tr.querySelector('input').focus();
-}
-
-function newPair() {
-  const a = document.getElementById('new-a'), b = document.getElementById('new-b');
-  if (!a.value || !b.value) { alert('Pick both'); return; }
-  const personId = BY === 'person' ? a.value : b.value;
-  const projectId = BY === 'person' ? b.value : a.value;
-  // reuse an existing group if present
-  const g = document.querySelector(`tbody[data-group="${a.value}"]`);
-  const label = b.selectedOptions[0].dataset.name;
-  const tr = makeRow(personId, projectId, label);
-  if (g) {
-    const addRow = g.querySelector('.group-add');
-    g.insertBefore(tr, addRow);
-  } else {
-    const table = document.querySelector('table.grid');
-    const tb = document.createElement('tbody');
-    tb.dataset.group = a.value;
-    const head = document.createElement('tr'); head.className = 'group-row';
-    head.innerHTML = `<td class="col-project">${a.selectedOptions[0].dataset.name}</td>` + COLS.map(() => '<td></td>').join('') + '<td class="col-total">0</td>';
-    tb.appendChild(head); tb.appendChild(tr); table.appendChild(tb);
-    const empty = document.querySelector('tr.empty'); if (empty) empty.closest('tbody').remove();
+    if (!data.ok) { err.textContent = 'Save failed: ' + (data.error || ''); err.hidden = false; return; }
+    // the save also made them a project member — record it so the next
+    // popover files them under "Assigned" without needing a reload
+    if (data.assigned) {
+      const proj = PROJECTS.find(p => p.id === projectId);
+      if (proj && !proj.member_ids.includes(personId)) proj.member_ids.push(personId);
+    }
+    const row = POP.row;
+    (data.days || [POP.date]).forEach(day => patchCell(row, day, personId, projectId, label, hours, swatch));
+    retotal();
+    closePop();
+  } catch (e) {
+    err.textContent = 'Save failed — check your connection.'; err.hidden = false;
   }
-  tr.querySelector('input').focus();
 }
+
+/* Redraw one day cell after a save. A "repeat through" can reach days that
+   aren't on screen (next week); those are simply skipped. */
+function patchCell(row, date, personId, projectId, label, hours, swatch) {
+  const cell = row.querySelector(`.plan-cell[data-date="${date}"]`);
+  if (!cell) return;
+  const pills = cell.querySelector('.pills');
+  let pill = pills.querySelector(`.pill[data-person="${personId}"][data-project="${projectId}"]`);
+  if (!hours) {
+    if (pill) pill.remove();
+  } else {
+    if (!pill) {
+      pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'pill s' + (swatch === undefined ? 0 : swatch);
+      pill.dataset.person = personId; pill.dataset.project = projectId;
+      pill.innerHTML = '<span class="pill-name"></span><span class="pill-h"></span>';
+      pill.addEventListener('click', ev => { ev.stopPropagation(); openPop(cell, pill); });
+      pills.appendChild(pill);
+    }
+    pill.dataset.hours = hours; pill.dataset.label = label;
+    pill.title = label + ' — ' + fmt(hours) + 'h';
+    pill.querySelector('.pill-name').textContent = label;
+    pill.querySelector('.pill-h').textContent = fmt(hours);
+  }
+  let total = 0;
+  pills.querySelectorAll('.pill').forEach(p => total += parseFloat(p.dataset.hours) || 0);
+  cell.dataset.total = total;
+  cell.classList.toggle('is-empty', total === 0);
+  const num = cell.querySelector('.cap-num');
+  num.textContent = total ? fmt(total) : '';
+  if (total && BY === 'person') {
+    const of = document.createElement('span');
+    of.className = 'cap-of'; of.textContent = '/' + fmt(CAP);
+    num.appendChild(of);
+  }
+  const cap = cell.querySelector('.cap');
+  if (cap) {
+    cap.className = 'cap ' + (total > CAP ? 'cap-over' : (total >= CAP ? 'cap-full' : 'cap-ok'));
+    cap.querySelector('i').style.width = Math.min(100, Math.ceil(total / CAP * 100)) + '%';
+  }
+}
+
+/* Row, column and grand totals, recomputed from the cells after any change. */
+function retotal() {
+  let grand = 0;
+  const byDate = {};
+  document.querySelectorAll('tbody tr[data-row]').forEach(row => {
+    let t = 0;
+    row.querySelectorAll('.plan-cell').forEach(c => {
+      const v = parseFloat(c.dataset.total) || 0;
+      t += v;
+      byDate[c.dataset.date] = (byDate[c.dataset.date] || 0) + v;
+    });
+    row.querySelector('.rowtotal').textContent = fmt(t);
+    grand += t;
+  });
+  document.querySelectorAll('tfoot .coltotal').forEach(td => {
+    const v = byDate[td.dataset.date] || 0;
+    td.textContent = v ? fmt(v) : '';
+  });
+  document.querySelector('.grandtotal').textContent = fmt(grand);
+}
+
+document.getElementById('pop').addEventListener('close', () => { POP = null; });
+{% endif %}
 </script>
 {% endblock %}

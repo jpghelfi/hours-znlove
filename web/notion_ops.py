@@ -232,6 +232,16 @@ def _project_name_map() -> dict:
     return {p["id"]: p["name"] for p in list_projects(active_only=False)}
 
 
+def _person_name_map() -> dict:
+    """Notion user id -> display name, from the roster.
+
+    People *properties* come back as bare user refs ({"object": "user", "id":
+    …}) with no name, so anything reading a people property has to resolve
+    names itself rather than trusting the payload.
+    """
+    return {p["id"]: p["name"] for p in list_people()}
+
+
 def _row_person(props) -> tuple[str | None, str]:
     """Return (person_id, person_name), preferring Person, falling back to Logged by."""
     people = props.get("Person", {}).get("people", [])
@@ -399,38 +409,24 @@ def week_grid(monday: dt.date, person_id: str) -> dict:
 ALLOC_DS = _ids.get("allocations_ds_id")
 
 
-def schedule_grid(start_monday: dt.date, n_weeks: int = 6, person_id: str | None = None) -> dict:
-    """Allocations grid: rows = person × project, columns = n_weeks Mondays.
+def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
+    """Every allocation in [date_from, date_to] as flat records:
+    {person_id, person_name, project_id, project_name, date, hours}.
 
-    Allocation rows may carry any weekday date (day view writes exact days);
-    each row is bucketed into its week's Monday column, so week cells show the
-    week's sum regardless of how granular the underlying plan is.
+    Allocations are day-dated (the property is still called "Week" for
+    historical reasons). One flat read feeds both schedule views: the day
+    planner groups by date, the weeks rollup buckets each date into its Monday
+    with monday_of(). Rows predating the day-first planner sit on a Monday and
+    simply read as hours on that Monday.
+
+    person_name is only what the people property carries (usually nothing —
+    see _person_name_map), so callers with a roster to hand should prefer it.
     """
-    weeks = [(start_monday + dt.timedelta(weeks=i)).isoformat() for i in range(n_weeks)]
-    last_day = (start_monday + dt.timedelta(weeks=n_weeks - 1, days=6)).isoformat()
-    return _alloc_grid(weeks, weeks[0], last_day,
-                       lambda iso: monday_of(dt.date.fromisoformat(iso)).isoformat(),
-                       person_id)
-
-
-def schedule_day_grid(monday: dt.date, person_id: str | None = None) -> dict:
-    """One week of allocations at day granularity: columns = Mon–Fri.
-
-    Week-view edits consolidate a pair's plan onto the Monday, so hours
-    planned per-week show up in Monday's cell until they're spread out here.
-    """
-    days = [(monday + dt.timedelta(days=i)).isoformat() for i in range(5)]
-    return _alloc_grid(days, days[0], days[-1], lambda iso: iso, person_id)
-
-
-def _alloc_grid(cols: list[str], range_from: str, range_to: str, bucket, person_id: str | None) -> dict:
-    """Shared allocations grid: rows = person × project, columns = cols.
-    bucket maps a row's date iso to its column iso (unknown columns are dropped)."""
     pname = _project_name_map()
-    rows: dict = {}
+    out: list[dict] = []
     kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
-        {"property": "Week", "date": {"on_or_after": range_from}},
-        {"property": "Week", "date": {"on_or_before": range_to}},
+        {"property": "Week", "date": {"on_or_after": date_from}},
+        {"property": "Week", "date": {"on_or_before": date_to}},
     ]}}
     while True:
         res = _notion.data_sources.query(**kwargs)
@@ -438,34 +434,23 @@ def _alloc_grid(cols: list[str], range_from: str, range_to: str, bucket, person_
             props = row["properties"]
             people = props["Person"]["people"]
             pid = people[0]["id"] if people else None
-            pname_person = people[0].get("name", "?") if people else "(unassigned)"
             if person_id and pid != person_id:
                 continue
             rel = props["Project"]["relation"]
             if not rel or not props["Week"]["date"]:
                 continue
-            col = bucket(props["Week"]["date"]["start"][:10])
-            if col not in cols:
-                continue
-            key = (pid, rel[0]["id"])
-            r = rows.setdefault(key, {
-                "person_id": pid, "person_name": pname_person,
-                "project_id": rel[0]["id"], "project_name": pname.get(rel[0]["id"], "(none)"),
-                "cells": {c: 0.0 for c in cols},
+            out.append({
+                "person_id": pid,
+                "person_name": people[0].get("name", "?") if people else "(unassigned)",
+                "project_id": rel[0]["id"],
+                "project_name": pname.get(rel[0]["id"], "(none)"),
+                "date": props["Week"]["date"]["start"][:10],
+                "hours": props["Hours"]["number"] or 0,
             })
-            r["cells"][col] += props["Hours"]["number"] or 0
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
-
-    ordered = sorted(rows.values(), key=lambda r: (r["person_name"].lower(), r["project_name"].lower()))
-    # per-person totals per column for the capacity heat map
-    people_totals: dict = {}
-    for r in ordered:
-        pt = people_totals.setdefault(r["person_name"], {c: 0.0 for c in cols})
-        for c in cols:
-            pt[c] += r["cells"][c]
-    return {"weeks": cols, "rows": ordered, "people_totals": people_totals}
+    return out
 
 
 def set_project_member(project_id: str, person_id: str, add: bool) -> None:
@@ -484,47 +469,50 @@ def set_project_member(project_id: str, person_id: str, add: bool) -> None:
     _notion.pages.update(page_id=project_id, properties={"People": {"people": [{"id": m} for m in members]}})
 
 
-def set_allocation(person_id: str, project_id: str, date_iso: str, hours: float,
-                   scope: str = "week") -> dict:
-    """Upsert the (person, project) allocation for a week or a single day.
-    0 deletes it.
+def set_allocation_range(person_id: str, project_id: str, date_from: str, date_to: str,
+                         hours: float) -> dict:
+    """Upsert the same hours onto the (person, project) pair for every weekday
+    in [date_from, date_to]. 0 hours deletes those days.
 
-    scope="week": date_iso is the Monday; the pair's whole week (any day-dated
-    rows included) is replaced by one Monday-dated row, so a week-cell edit is
-    authoritative for that week.
-    scope="day": exact-date upsert; other days of the week are untouched.
+    Allocations are day-first: each day is an exact-date upsert and other days
+    are untouched, so several projects can share one day — the whole point of
+    the planner. A single-day save is just date_from == date_to.
+
+    Weekends are skipped (nobody is scheduled on them). Takes _write_lock once
+    for the whole range rather than per day, so a "repeat through Friday" is
+    one burst instead of five racing upserts.
     """
+    start = dt.date.fromisoformat(date_from)
+    end = dt.date.fromisoformat(date_to)
+    days = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+        d += dt.timedelta(days=1)
     with _write_lock:
-        return _set_allocation_locked(person_id, project_id, date_iso, hours, scope)
+        for iso in days:
+            _set_allocation_locked(person_id, project_id, iso, hours)
+    return {"ok": True, "hours": hours, "days": days}
 
 
-def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float,
-                           scope: str) -> dict:
-    if scope == "week":
-        sunday = (dt.date.fromisoformat(date_iso) + dt.timedelta(days=6)).isoformat()
-        date_filter = [{"property": "Week", "date": {"on_or_after": date_iso}},
-                       {"property": "Week", "date": {"on_or_before": sunday}}]
-    else:
-        date_filter = [{"property": "Week", "date": {"equals": date_iso}}]
+def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float) -> dict:
     matches = _query_all({
         "data_source_id": ALLOC_DS, "page_size": 100,
-        "filter": {"and": date_filter + [
+        "filter": {"and": [
+            {"property": "Week", "date": {"equals": date_iso}},
             {"property": "Project", "relation": {"contains": project_id}},
             {"property": "Person", "people": {"contains": person_id}},
         ]}})
     match = matches[0] if matches else None
-    for extra in matches[1:]:
+    for extra in matches[1:]:  # duplicates from old races: fold into one
         _notion.pages.update(extra["id"], archived=True)
     if not hours:
         if match:
             _notion.pages.update(match["id"], archived=True)
         return {"ok": True, "hours": 0}
     if match:
-        # week scope may keep a day-dated row — re-date it to the Monday too
-        _notion.pages.update(match["id"], properties={
-            "Hours": {"number": hours},
-            "Week": {"date": {"start": date_iso}},
-        })
+        _notion.pages.update(match["id"], properties={"Hours": {"number": hours}})
     else:
         pmap = _project_name_map()
         _notion.pages.create(
@@ -548,6 +536,7 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
     week was planned as one week cell or spread across days.
     """
     pname = _project_name_map()
+    person_names = _person_name_map()
     out = []
     # day rows can sit up to 6 days after their Monday; filter query wide, bucket below
     query_to = (dt.date.fromisoformat(date_to) + dt.timedelta(days=6)).isoformat()
@@ -571,7 +560,7 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
                 continue
             out.append({
                 "person_id": pid,
-                "person": people[0].get("name", "(unassigned)") if people else "(unassigned)",
+                "person": person_names.get(pid, "(unassigned)"),
                 "project": pname.get(rel[0]["id"], "(none)"),
                 "hours": props["Hours"]["number"] or 0,
             })
