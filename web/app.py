@@ -992,6 +992,35 @@ def api_copy_week(request: Request, c: CopyWeek):
     return JSONResponse(res)
 
 
+class EntryHours(BaseModel):
+    entry_id: str
+    hours: float = Field(ge=0, le=24, allow_inf_nan=False)
+
+
+@app.post("/api/entry/hours")
+def api_entry_hours(request: Request, e: EntryHours):
+    """Correct one logged entry from the report it shows up in (admins).
+
+    /api/cell deliberately writes only the caller's own hours; this is the
+    admin counterpart, addressed by entry id so someone else's row can be
+    fixed without guessing which of their entries to fold it into.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        return JSONResponse(ops.set_entry_hours(e.entry_id, e.hours))
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "not a time entry"}, status_code=400)
+    except Exception:
+        logging.exception("Editing entry %s failed", e.entry_id)
+        return JSONResponse({"ok": False, "error": "could not save that entry"}, status_code=400)
+
+
 class Cell(BaseModel):
     project_id: str
     date: str

@@ -272,6 +272,9 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
             rel = props["Project"]["relation"]
             desc = props["Description"]["rich_text"]
             out.append({
+                # the entry's own page id, so a reader can offer to edit that
+                # exact row (see set_entry_hours)
+                "id": row["id"],
                 "person_id": pid, "person": person,
                 # project_id as well as the name: /project's All view groups by
                 # id, so two projects sharing a name can't be merged into one
@@ -309,6 +312,7 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
             pid, person = _row_person(props)
             desc = props["Description"]["rich_text"]
             out.append({
+                "id": row["id"],
                 "person_id": pid, "person": person,
                 "date": date["start"][:10],
                 "hours": props["Hours"]["number"] or 0,
@@ -626,6 +630,34 @@ def _query_all(kwargs: dict) -> list:
             break
         kwargs["start_cursor"] = res["next_cursor"]
     return out
+
+
+def set_entry_hours(entry_id: str, hours: float) -> dict:
+    """Set one existing entry's Hours by page id. 0 removes the entry.
+
+    Editing by page id (rather than the (person, project, date) upsert set_cell
+    does) is what lets an admin correct a single row of a report without
+    touching the day's other entries or their descriptions.
+
+    The id comes from the client, so the page is retrieved and its parent
+    checked first: a request may only ever touch Time Entries, never some other
+    page the integration happens to have access to.
+    """
+    with _write_lock:
+        page = _notion.pages.retrieve(entry_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(TIME_DS):
+            raise ValueError("not a time entry")
+        if not hours:  # 0, None -> remove, like a blanked cell on the weekly grid
+            _notion.pages.update(entry_id, archived=True)
+            return {"ok": True, "hours": 0, "deleted": True}
+        _notion.pages.update(entry_id, properties={"Hours": {"number": hours}})
+        return {"ok": True, "hours": hours, "deleted": False}
+
+
+def _bare(notion_id: str | None) -> str:
+    """Notion ids compare equal with or without dashes (env vars carry either)."""
+    return (notion_id or "").replace("-", "").lower()
 
 
 def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
