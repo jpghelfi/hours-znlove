@@ -696,7 +696,7 @@ def _day_target() -> float:
 
 def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
                    people: list[dict], projects: list[dict],
-                   focus_person: Optional[str], focus_project: Optional[str]) -> list[dict]:
+                   focus_people: set, focus_project: Optional[str]) -> list[dict]:
     """Planner rows: one per person (by="person") or per project, each holding
     a stack of pills per column.
 
@@ -721,7 +721,7 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
     # skeletons first, so people with nothing booked still get a clickable row
     if by == "person":
         for p in people:
-            if focus_person and p["id"] != focus_person:
+            if focus_people and p["id"] not in focus_people:
                 continue
             row_for(p["id"], p["name"])
     else:
@@ -763,13 +763,15 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
 
 @app.get("/schedule", response_class=HTMLResponse)
 def schedule_page(request: Request, start: Optional[str] = None, by: str = "person",
-                  person: Optional[str] = None, project: Optional[str] = None,
+                  person: list[str] = Query(default=[]), project: Optional[str] = None,
                   view: str = "days"):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
+    # repeated ?person= like /reports — an empty pick means everyone
+    picked = [p for p in person if p]
     by = by if by in ("person", "project") else "person"
     view = view if view in ("weeks", "days") else "days"
     anchor = _parse_date(start)  # malformed ?start= falls back to the current week
@@ -786,7 +788,8 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         step = dt.timedelta(weeks=1)
     else:  # read-only rollup: six weeks, each column a Monday
         mondays = [mon + dt.timedelta(weeks=i) for i in range(6)]
-        base = f"&by={by}" + (f"&person={person}" if person else "") + (f"&project={project}" if project else "")
+        base = (f"&by={by}" + "".join(f"&person={p}" for p in picked)
+                + (f"&project={project}" if project else ""))
         cols = [{"iso": m.isoformat(), "top": f"W{m.strftime('%m/%d')}", "sub": m.strftime("%Y"),
                  "href": f"/schedule?view=days&start={m.isoformat()}{base}"} for m in mondays]
         range_from = mondays[0].isoformat()
@@ -798,18 +801,23 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
 
     people = ops.list_people()
     projects = ops.list_projects(include_members=True)
-    allocs = ops.alloc_rows(range_from, range_to, person)
+    # the Notion query is unfiltered either way (alloc_rows filters in Python),
+    # so a multi-person pick costs nothing extra — same as /reports
+    allocs = ops.alloc_rows(range_from, range_to)
+    focus_people = set(picked)
+    if focus_people:
+        allocs = [a for a in allocs if a["person_id"] in focus_people]
     if project:
         allocs = [a for a in allocs if a["project_id"] == project]
     col_isos = [c["iso"] for c in cols]
-    rows = _schedule_rows(allocs, col_isos, by, bucket, people, projects, person, project)
+    rows = _schedule_rows(allocs, col_isos, by, bucket, people, projects, focus_people, project)
 
     col_totals = {c: sum(r["days"][c]["total"] for r in rows) for c in col_isos}
     return templates.TemplateResponse(request, "schedule.html", {
         "user": user, "by": by, "view": view,
         "cols": cols, "cap": cap, "rows": rows, "col_totals": col_totals,
         "grand_total": sum(col_totals.values()),
-        "focus_person": person or "", "focus_project": project or "",
+        "focus_people": picked, "focus_project": project or "",
         "is_admin": True,
         "people": people,
         "projects": [{"id": p["id"], "name": p["name"], "member_ids": p.get("member_ids", []),
@@ -818,6 +826,11 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         "next_start": (mon + step).isoformat(),
         "this_start": _current_monday().isoformat(),
         "start_iso": mon.isoformat(),
+        # "Copy last week" always means the week before the one on screen,
+        # whatever `step` is doing for the Earlier/Later nav
+        "copy_from": (mon - dt.timedelta(weeks=1)).isoformat(),
+        "week_label": mon.strftime("%b %-d"),
+        "copy_from_label": (mon - dt.timedelta(weeks=1)).strftime("%b %-d"),
         "last_day": col_isos[-1] if view == "days" else (mon + dt.timedelta(days=4)).isoformat(),
     })
 
@@ -907,6 +920,44 @@ def api_allocation(request: Request, alloc: Alloc):
         except Exception:
             logging.exception("Allocation saved but adding %s to project %s failed",
                               alloc.person_id, alloc.project_id)
+    return JSONResponse(res)
+
+
+class CopyWeek(BaseModel):
+    from_start: str                     # any date in the source week
+    to_start: str                       # any date in the target week
+    person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter
+    project_id: Optional[str] = None
+
+
+@app.post("/api/allocation/copy-week")
+def api_copy_week(request: Request, c: CopyWeek):
+    """Duplicate a week of bookings onto another week — "plan next week like
+    last week". Additive: nothing in the target week is removed."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    src, dst = _parse_date(c.from_start), _parse_date(c.to_start)
+    if not src or not dst:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    src, dst = ops.monday_of(src), ops.monday_of(dst)
+    if src == dst:
+        return JSONResponse({"ok": False, "error": "that's the same week"}, status_code=400)
+    if abs((dst - src).days) > 366:
+        return JSONResponse({"ok": False, "error": "weeks are more than a year apart"},
+                            status_code=400)
+    try:
+        res = ops.copy_week_allocations(src.isoformat(), dst.isoformat(),
+                                        c.person_ids, c.project_id)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Copying week %s onto %s failed", src, dst)
+        return JSONResponse({"ok": False, "error": "could not copy that week"}, status_code=400)
     return JSONResponse(res)
 
 
