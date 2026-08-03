@@ -7,7 +7,9 @@
   <div class="subtle">Logging as <strong>{{ user.name }}</strong></div>
   {% if ok %}<div class="flash">✓ Entry saved to Notion.</div>{% endif %}
   {% if err %}<div class="deny">{{ err }}</div>{% endif %}
-  <form method="post" action="/entry" class="entry-form">
+  {# data-lock: the POST writes to Notion and takes seconds — a second click
+     would file the same entry twice, so base.html locks the form on submit #}
+  <form method="post" action="/entry" class="entry-form" data-lock>
     <label>Project
       <select name="project_id" required>
         <option value="" disabled selected>Select a project…</option>
@@ -33,7 +35,7 @@
       <textarea name="description" rows="3" placeholder="What did you work on?"></textarea>
     </label>
 
-    <button type="submit">Save entry</button>
+    <button type="submit" data-busy="Saving to Notion…">Save entry</button>
   </form>
 </div>
 
