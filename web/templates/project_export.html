@@ -20,6 +20,9 @@
 </div>
 
 <div class="card wide sendbox">
+  {# The email fields only exist once a transport is configured — an inert To
+     field and a dead Send button are worse than no email UI at all. #}
+  {% if mail_ready %}
   <div class="sendbox-grid">
     <label>To
       <input type="text" id="to" value="{{ recipients }}" autocomplete="off"
@@ -32,15 +35,18 @@
   <label class="sendbox-msg">Message
     <textarea id="message" rows="3" placeholder="Leave blank for a short default note…"></textarea>
   </label>
+  {% endif %}
   <div class="sendbox-actions">
     <div class="subtle" id="sendfrom">
       {%- if mail_ready %}Sends from {{ sender or 'your Google account' }}{% if via == 'gmail' %} · via Gmail{% endif %}
-      {%- else %}Email isn't set up yet — add {{ missing_vars|join(', ') }} in Render{% endif %}
+      {%- else %}Download the workbook, or copy these rows straight into a Google Sheet{% endif %}
     </div>
     <div class="sendbox-btns">
-      <button type="button" class="btn" onclick="downloadBook()">⬇ Download Excel</button>
-      <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendBook()"
-              {{ 'disabled' if not mail_ready }}>✉ Send by email</button>
+      <button type="button" class="btn" onclick="copyToSheets(this)">⧉ Copy &amp; open Google Sheets</button>
+      <button type="button" class="btn {{ 'btn-primary' if not mail_ready }}" onclick="downloadBook()">⬇ Download Excel</button>
+      {% if mail_ready %}
+      <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendBook()">✉ Send by email</button>
+      {% endif %}
     </div>
   </div>
   <div class="sendresult" id="sendresult" hidden role="status"></div>
@@ -124,6 +130,49 @@ function payload() {
 function downloadBook() {
   document.getElementById('dlpayload').value = payload();
   document.getElementById('dlform').submit();
+}
+
+/* Google Sheets has no "create a sheet with this data" URL, and the app is
+   behind a login so IMPORTDATA can't reach it either. Clipboard + a blank
+   sheet is the one path that needs no extra authorization: copy the rows as
+   TSV (what Sheets pastes into columns), then open sheets.new. */
+function tsv() {
+  const head = ['Project', 'Date', 'Person', 'Hours', 'Comment'].join('\t');
+  const body = rows().filter(r => r.hours).map(r => [
+    r.project, r.date, r.person, r.hours,
+    (r.description || '').replace(/[\t\r\n]+/g, ' ')
+  ].join('\t'));
+  return [head].concat(body).join('\n');
+}
+
+function copyText(text) {
+  // execCommand runs synchronously, so the click is still "user activation"
+  // when the new tab opens right after; the async API is the fallback
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  if (!ok && navigator.clipboard) { navigator.clipboard.writeText(text); ok = true; }
+  return ok;
+}
+
+function copyToSheets() {
+  const n = rows().filter(r => r.hours).length;
+  if (!n) { say('Nothing to copy — every row is 0.', false); return; }
+  if (!copyText(tsv())) {
+    say('Could not reach the clipboard — download the Excel file instead.', false);
+    return;
+  }
+  const win = window.open('https://sheets.new', '_blank', 'noopener');
+  say(n + ' rows copied' + (win
+      ? ' — press ⌘V in the blank sheet that just opened'
+      : ' — your browser blocked the new tab, open sheets.new and paste'), true);
 }
 
 function say(msg, ok) {
