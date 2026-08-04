@@ -40,7 +40,7 @@ services:
       # Emailing a report goes through the Gmail API over HTTPS, not SMTP:
       # free Render instances block outbound ports 25/465/587, so an SMTP send
       # can never connect from here. Mint the refresh token with
-      # `python src/gmail_oauth_setup.py` (see its docstring for the Google
+      # `python src/google_oauth_setup.py` (see its docstring for the Google
       # Cloud steps) and paste the three values in.
       - key: GOOGLE_CLIENT_ID
         sync: false

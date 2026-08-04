@@ -42,7 +42,12 @@
       {%- else %}Download the workbook, or copy these rows straight into a Google Sheet{% endif %}
     </div>
     <div class="sendbox-btns">
-      <button type="button" class="btn" onclick="copyToSheets(this)">⧉ Copy &amp; open Google Sheets</button>
+      {% if gsheet_ready %}
+      <button type="button" class="btn" id="sheetbtn" onclick="makeSheet()">⊞ Create Google Sheet</button>
+      {% else %}
+      {# no Google connection: the clipboard is the only way into a sheet #}
+      <button type="button" class="btn" onclick="copyToSheets()">⧉ Copy &amp; open Google Sheets</button>
+      {% endif %}
       <button type="button" class="btn {{ 'btn-primary' if not mail_ready }}" onclick="downloadBook()">⬇ Download Excel</button>
       {% if mail_ready %}
       <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendBook()">✉ Send by email</button>
@@ -175,11 +180,44 @@ function copyToSheets() {
       : ' — your browser blocked the new tab, open sheets.new and paste'), true);
 }
 
-function say(msg, ok) {
+function say(msg, ok, href) {
   const box = document.getElementById('sendresult');
   box.hidden = false;
   box.className = 'sendresult ' + (ok ? 'is-ok' : 'is-err');
   box.textContent = msg;
+  if (href) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = ' Open it ↗';
+    box.appendChild(a);
+  }
+}
+
+/* With Google connected the app makes the file itself: named
+   "<Project> - Hours - <Period>", a tab per project, and no pasting. */
+async function makeSheet() {
+  const btn = document.getElementById('sheetbtn');
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Creating…';
+  try {
+    const res = await fetch('/project/export.gsheet', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: payload()
+    });
+    const data = await res.json();
+    if (data.ok) {
+      window.open(data.url, '_blank', 'noopener');
+      say('Created “' + data.title + '”.', true, data.url);
+    } else {
+      say('Not created: ' + (data.error || 'unknown error'), false);
+    }
+  } catch (e) {
+    say('Not created: network error', false);
+  }
+  btn.disabled = false;
+  btn.textContent = original;
 }
 
 async function sendBook() {

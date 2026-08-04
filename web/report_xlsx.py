@@ -31,7 +31,7 @@ _HOURS_FMT = "0.##"
 _BAD_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
 
 
-def _sheet_title(name: str, used: set) -> str:
+def sheet_title(name: str, used: set) -> str:
     """A legal, unique sheet name for a project. Long project names collide once
     truncated to 31 chars, so uniqueness is enforced with a numeric suffix."""
     base = _BAD_SHEET_CHARS.sub(" ", name).strip() or "Project"
@@ -50,7 +50,7 @@ def _widths(ws, widths: dict) -> None:
         ws.column_dimensions[col].width = w
 
 
-def _group(entries: list[dict]) -> list[dict]:
+def group(entries: list[dict]) -> list[dict]:
     """entries -> one record per project, each with its people and its log.
 
     Grouped by project *id* (two projects may share a name), ordered by hours
@@ -115,7 +115,7 @@ def _summary_sheet(wb: Workbook, groups: list[dict], period_label: str) -> None:
 
 
 def _project_sheet(wb: Workbook, g: dict, period_label: str, used: set) -> None:
-    ws = wb.create_sheet(_sheet_title(g["name"], used))
+    ws = wb.create_sheet(sheet_title(g["name"], used))
     ws["A1"] = g["name"]
     ws["A1"].font = _TITLE_FONT
     n = len(g["people"])
@@ -164,7 +164,7 @@ def build(entries: list[dict], period_label: str, scope_label: str) -> bytes:
     """The workbook as bytes: a Summary sheet (when more than one project) plus
     one sheet per project. An empty period still yields a valid one-sheet file —
     Excel refuses to open a workbook with no sheets."""
-    groups = _group(entries)
+    groups = group(entries)
     wb = Workbook()
     wb.remove(wb.active)  # drop the default sheet; every sheet here is named
     if not groups:
