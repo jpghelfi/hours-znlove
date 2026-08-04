@@ -897,10 +897,11 @@ def api_report_email(request: Request, req: EmailRequest):
         res = mailer.send_report(to, subject, body, book, fname)
     except mailer.NotConfigured as e:
         return JSONResponse({"ok": False, "error": f"missing {e}"}, status_code=503)
-    except Exception:
+    except Exception as e:
         logging.exception("Sending the report to %s failed", to)
-        return JSONResponse({"ok": False, "error": "the mail server rejected the send"},
-                            status_code=502)
+        # the screen is admin-only, so hand back what the mail server actually
+        # said — "rejected" alone can't tell a bad password from a bad address
+        return JSONResponse({"ok": False, "error": mailer.explain(e)}, status_code=502)
     return JSONResponse(res)
 
 

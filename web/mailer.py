@@ -61,6 +61,30 @@ def clean_recipients(raw: str | list[str]) -> list[str]:
     return out
 
 
+def explain(exc: BaseException) -> str:
+    """A short, admin-facing reason a send failed.
+
+    SMTP exceptions carry the server's own words (535 for bad credentials, 550
+    for a refused relay); without them the screen can only say "rejected",
+    which is no help at all when the fix is a different app password.
+    """
+    refused = getattr(exc, "recipients", None)
+    if refused:  # SMTPRecipientsRefused: name the address the server bounced
+        addr, (rcode, rmsg) = next(iter(refused.items()))
+        if isinstance(rmsg, bytes):
+            rmsg = rmsg.decode("utf-8", "replace")
+        return " ".join(f"{rcode} {rmsg} ({addr})".split())[:300]
+    code = getattr(exc, "smtp_code", None)
+    raw = getattr(exc, "smtp_error", None)
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    detail = f"{code} {raw}".strip() if code else (str(exc).strip() or type(exc).__name__)
+    detail = " ".join(detail.split())[:300]
+    if code == 535 or "Username and Password not accepted" in detail:
+        detail += " — SMTP_PASSWORD has to be a Google app password, not the account password"
+    return detail
+
+
 def send_report(to: list[str], subject: str, body: str,
                 attachment: bytes, filename: str) -> dict:
     """Send one message with the workbook attached. Returns {"ok", "to", "from"}."""
