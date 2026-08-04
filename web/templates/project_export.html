@@ -34,8 +34,8 @@
   </label>
   <div class="sendbox-actions">
     <div class="subtle" id="sendfrom">
-      {%- if mail_ready %}Sends from {{ sender }}
-      {%- else %}Email isn't set up yet — add {{ missing_vars|join(' and ') }} in Render{% endif %}
+      {%- if mail_ready %}Sends from {{ sender or 'your Google account' }}{% if via == 'gmail' %} · via Gmail{% endif %}
+      {%- else %}Email isn't set up yet — add {{ missing_vars|join(', ') }} in Render{% endif %}
     </div>
     <div class="sendbox-btns">
       <button type="button" class="btn" onclick="downloadBook()">⬇ Download Excel</button>
