@@ -1,10 +1,16 @@
-"""Sending a report by email, over plain SMTP.
+"""Sending a report by email, as the sender rather than as a robot.
 
-The app has no mail provider of its own: it authenticates to the sender's own
-mailbox (SMTP_USER / SMTP_PASSWORD — for a Google Workspace account that's an
-app password), so the report arrives *from* that person rather than from a
-no-reply robot. Nothing is queued or retried: a send either works while the
-request is open or it reports why it didn't.
+Two transports, picked in this order:
+
+1. **Gmail API over HTTPS** (`gmail_api.py`) — what production uses. Render's
+   free instances block outbound SMTP ports, so an SMTP send from the deployed
+   app can never connect; the Gmail API is plain HTTPS. It also needs no app
+   password (this Workspace has them disabled) and files the message in the
+   sender's Sent folder.
+2. **SMTP** — kept for a paid instance or a local run, where ports are open.
+
+Either way the message goes out from a person's own mailbox. Nothing is queued
+or retried: a send either works while the request is open or it reports why not.
 """
 from __future__ import annotations
 
@@ -13,13 +19,15 @@ import re
 import smtplib
 from email.message import EmailMessage
 
+from . import gmail_api
+
 _XLSX_TYPE = ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 MAX_RECIPIENTS = 10
 
 
 class NotConfigured(RuntimeError):
-    """SMTP credentials are missing — the caller should say which ones."""
+    """No transport is configured — the caller should say what's missing."""
 
 
 def default_recipients() -> list[str]:
@@ -27,16 +35,29 @@ def default_recipients() -> list[str]:
     return _split(os.environ.get("REPORT_TO", "zarco@znlove.xyz,angie@znlove.xyz"))
 
 
+def transport() -> str:
+    """Which transport a send would use: "gmail", "smtp", or "" for none."""
+    if gmail_api.configured():
+        return "gmail"
+    if os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
+        return "smtp"
+    return ""
+
+
 def sender() -> str:
+    """The From address. Gmail fills it in from the authorized account when
+    REPORT_FROM isn't set, so an empty string here is not an error."""
     return os.environ.get("REPORT_FROM") or os.environ.get("SMTP_USER", "")
 
 
 def configured() -> bool:
-    return bool(os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
+    return bool(transport())
 
 
 def missing_vars() -> list[str]:
-    return [v for v in ("SMTP_USER", "SMTP_PASSWORD") if not os.environ.get(v)]
+    """What to set to make a send possible — the Gmail path, since that's the
+    one that works on Render."""
+    return gmail_api.missing_vars()
 
 
 def _split(raw: str) -> list[str]:
@@ -64,10 +85,16 @@ def clean_recipients(raw: str | list[str]) -> list[str]:
 def explain(exc: BaseException) -> str:
     """A short, admin-facing reason a send failed.
 
-    SMTP exceptions carry the server's own words (535 for bad credentials, 550
-    for a refused relay); without them the screen can only say "rejected",
-    which is no help at all when the fix is a different app password.
+    Gmail and SMTP both say something useful when they refuse (a Google error
+    message, 535 for bad credentials, 550 for a refused relay); without it the
+    screen can only say "rejected", which is no help when the fix is a
+    different credential — or a port that was never open in the first place.
     """
+    if isinstance(exc, gmail_api.GmailError):
+        return " ".join(str(exc).split())[:300]
+    if isinstance(exc, OSError) and exc.errno in (101, 111, 110):
+        return ("the mail port is blocked from this server — Render's free instances "
+                "can't open SMTP connections, so send through the Gmail API instead")
     refused = getattr(exc, "recipients", None)
     if refused:  # SMTPRecipientsRefused: name the address the server bounced
         addr, (rcode, rmsg) = next(iter(refused.items()))
@@ -85,25 +112,37 @@ def explain(exc: BaseException) -> str:
     return detail
 
 
-def send_report(to: list[str], subject: str, body: str,
-                attachment: bytes, filename: str) -> dict:
-    """Send one message with the workbook attached. Returns {"ok", "to", "from"}."""
-    if not configured():
-        raise NotConfigured(", ".join(missing_vars()))
-    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    user = os.environ["SMTP_USER"]
-    password = os.environ["SMTP_PASSWORD"]
-    from_addr = sender()
-
+def build_message(to: list[str], subject: str, body: str,
+                  attachment: bytes, filename: str, from_addr: str = "") -> EmailMessage:
     msg = EmailMessage()
-    msg["From"] = from_addr
+    if from_addr:  # Gmail fills this in itself when it isn't set
+        msg["From"] = from_addr
     msg["To"] = ", ".join(to)
     msg["Subject"] = subject
     msg.set_content(body)
     msg.add_attachment(attachment, maintype=_XLSX_TYPE[0], subtype=_XLSX_TYPE[1],
                        filename=filename)
+    return msg
 
+
+def send_report(to: list[str], subject: str, body: str,
+                attachment: bytes, filename: str) -> dict:
+    """Send one message with the workbook attached, over whichever transport is
+    configured. Returns {"ok", "to", "from", "via"}."""
+    via = transport()
+    if not via:
+        raise NotConfigured(", ".join(missing_vars()))
+    from_addr = sender()
+    msg = build_message(to, subject, body, attachment, filename, from_addr)
+
+    if via == "gmail":
+        gmail_api.send(msg)
+        return {"ok": True, "to": to, "from": from_addr or "your Google account",
+                "via": "gmail"}
+
+    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user, password = os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"]
     if port == 465:
         with smtplib.SMTP_SSL(host, port, timeout=30) as s:
             s.login(user, password)
@@ -113,4 +152,4 @@ def send_report(to: list[str], subject: str, body: str,
             s.starttls()
             s.login(user, password)
             s.send_message(msg)
-    return {"ok": True, "to": to, "from": from_addr}
+    return {"ok": True, "to": to, "from": from_addr, "via": "smtp"}

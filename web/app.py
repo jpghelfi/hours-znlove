@@ -825,7 +825,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         "groups": groups, "total": round(sum(r["hours"] for r in rows), 2),
         "recipients": ", ".join(mailer.default_recipients()),
         "sender": mailer.sender(), "mail_ready": mailer.configured(),
-        "missing_vars": mailer.missing_vars(),
+        "missing_vars": mailer.missing_vars(), "via": mailer.transport(),
         "sent": sent, "err": err,
     })
 
@@ -876,7 +876,7 @@ def api_report_email(request: Request, req: EmailRequest):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
     if not mailer.configured():
         return JSONResponse({"ok": False, "error": "email isn't set up yet — add "
-                             + " and ".join(mailer.missing_vars())
+                             + ", ".join(mailer.missing_vars())
                              + " to the environment"}, status_code=503)
     try:
         to = mailer.clean_recipients(req.to or mailer.default_recipients())

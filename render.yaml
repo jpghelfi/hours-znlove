@@ -37,16 +37,18 @@ services:
         sync: false
       - key: SESSION_SECRET
         generateValue: true
-      # Emailing a report signs in to the sender's own mailbox, so the file
-      # arrives from a person rather than a no-reply robot. For Google
-      # Workspace, SMTP_PASSWORD is an app password, not the account password.
-      - key: SMTP_USER
+      # Emailing a report goes through the Gmail API over HTTPS, not SMTP:
+      # free Render instances block outbound ports 25/465/587, so an SMTP send
+      # can never connect from here. Mint the refresh token with
+      # `python src/gmail_oauth_setup.py` (see its docstring for the Google
+      # Cloud steps) and paste the three values in.
+      - key: GOOGLE_CLIENT_ID
         sync: false
-      - key: SMTP_PASSWORD
+      - key: GOOGLE_CLIENT_SECRET
         sync: false
-      - key: SMTP_HOST
-        value: smtp.gmail.com
-      - key: SMTP_PORT
-        value: "587"
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: REPORT_FROM
+        sync: false
       - key: REPORT_TO
         value: zarco@znlove.xyz,angie@znlove.xyz
