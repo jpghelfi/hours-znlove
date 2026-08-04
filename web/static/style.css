@@ -113,7 +113,7 @@ button.is-busy::before, .btn.is-busy::before {
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-button:disabled, .btn:disabled { cursor: not-allowed; }
+button:disabled, .btn:disabled { cursor: not-allowed; opacity: .55; }
 /* a busy dialog: inputs greyed so it reads as "in flight", not "broken" */
 dialog.pop.is-busy label { opacity: .6; }
 
@@ -605,6 +605,44 @@ dialog.pop label .subtle { font-size: 11.5px; }
 /* the editable Hours cell is denser here than on the weekly grid */
 .entrylist .cell { padding: 2px 4px; }
 .entrylist .cell input { padding: 6px 4px; font-size: 13.5px; min-width: 60px; border-color: var(--line); }
+
+/* ---- export & send screen ---- */
+.notebar {
+  margin: 0 0 16px; padding: 12px 14px; font-size: 13.5px; line-height: 1.5;
+  background: var(--head); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 10px; color: var(--ink);
+}
+.notebar a { color: var(--accent); }
+.sendbox { margin-bottom: 16px; }
+.sendbox-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sendbox label, .sendbox-msg { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.sendbox input[type=text], .sendbox textarea {
+  width: 100%; padding: 9px 10px; font: inherit; font-size: 14px; font-weight: 500;
+  text-transform: none; letter-spacing: 0; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 9px;
+}
+.sendbox-msg { margin-top: 12px; }
+.sendbox-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.sendbox-btns { display: flex; gap: 8px; }
+.sendresult { margin-top: 12px; padding: 10px 12px; border-radius: 9px; font-size: 13.5px; font-weight: 600; }
+.sendresult[hidden] { display: none; }
+.sendresult.is-ok { background: var(--okbg); color: var(--ok); }
+.sendresult.is-err { background: var(--err); color: var(--err-ink); }
+.exportgroup { margin-bottom: 14px; }
+.exportgroup-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.exporttable th, .exporttable td { font-size: 13.5px; padding: 6px 10px; }
+.exporttable .cell { padding: 2px 4px; }
+.exporttable .cell input { padding: 6px 4px; font-size: 13.5px; min-width: 60px; border-color: var(--line); }
+.exporttable .xdesc {
+  width: 100%; min-width: 260px; padding: 6px 8px; font: inherit; font-size: 13.5px;
+  color: var(--ink); background: transparent; border: 1px solid transparent; border-radius: 7px;
+}
+.exporttable .xdesc:hover { border-color: var(--line); }
+.exporttable .xdesc:focus { background: var(--bg); border-color: var(--accent); }
+@media (max-width: 720px) {
+  .sendbox-grid { grid-template-columns: 1fr; }
+  .sendbox-actions { flex-direction: column; align-items: stretch; }
+}
 
 /* an inline edit leaves the server-rendered sums above it one save out of date */
 .stalebar {

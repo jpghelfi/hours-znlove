@@ -23,7 +23,9 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
+from . import mailer
 from . import notion_ops as ops
+from . import report_xlsx
 
 BASE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
@@ -663,6 +665,28 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     })
 
 
+def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict) -> list[dict]:
+    """The entries behind the current period + project picks, shared by every
+    export. One project reads through the Notion-side relation filter; a pick of
+    several (or none) narrows the single period read in memory."""
+    if sel:
+        return [dict(e, project=sel["name"], project_id=sel["id"])
+                for e in ops.project_entries(sel["id"], rng["from"], rng["to"])]
+    entries = ops.entries_between(rng["from"], rng["to"])
+    if sel_ids:
+        keep = set(sel_ids)
+        entries = [e for e in entries if e["project_id"] in keep]
+    return entries
+
+
+def _export_label(sel: Optional[dict], sel_ids: list) -> str:
+    return sel["name"] if sel else (f"{len(sel_ids)} projects" if sel_ids else "All projects")
+
+
+def _export_slug(label: str) -> str:
+    return "".join(c if c.isalnum() else "-" for c in label).strip("-").lower() or "project"
+
+
 @app.get("/project.csv")
 def project_csv(request: Request, project: list[str] = Query(default=[]),
                 period: str = "monthly", start: Optional[str] = None):
@@ -675,14 +699,7 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     projects = ops.list_projects(include_members=True)
     sel_ids, sel = _project_picks(projects, project)
     rng = _period_range(period, _project_anchor(period, start))
-    if sel:
-        entries = [dict(e, project=sel["name"])
-                   for e in ops.project_entries(sel["id"], rng["from"], rng["to"])]
-    else:  # several projects (or all): the same rows the rollup is built from
-        entries = ops.entries_between(rng["from"], rng["to"])
-        if sel_ids:
-            keep = set(sel_ids)
-            entries = [e for e in entries if e["project_id"] in keep]
+    entries = _period_entries(sel, sel_ids, rng)
     import csv
     import io
     buf = io.StringIO()
@@ -691,11 +708,200 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     for e in sorted(entries, key=lambda e: (e["date"], e["project"], e["person"])):
         w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"]])
     from fastapi.responses import Response
-    label = sel["name"] if sel else (f"{len(sel_ids)}-projects" if sel_ids else "all-projects")
-    slug = "".join(c if c.isalnum() else "-" for c in label).strip("-").lower()
-    fname = f"{slug or 'project'}_{rng['from']}_{rng['to']}.csv"
+    fname = f"{_export_slug(_export_label(sel, sel_ids))}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+# ---- the shareable export: grouped workbook, adjustable, emailable ------
+
+_XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_MAX_EXPORT_ROWS = 5000
+
+
+def _xlsx_response(book: bytes, label: str, rng: dict):
+    from fastapi.responses import Response
+    fname = f"hours_{_export_slug(label)}_{rng['from']}_{rng['to']}.xlsx"
+    return Response(book, media_type=_XLSX_TYPE,
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+def _export_rows(entries: list[dict], name_map: dict) -> list[dict]:
+    """Entries trimmed to what the workbook shows, with names resolved against
+    the roster (people properties come back nameless — see notion_ops)."""
+    return [{
+        "id": e.get("id"),
+        "project_id": e.get("project_id"),
+        "project": e.get("project") or "(none)",
+        "person_id": e.get("person_id"),
+        "person": name_map.get(e.get("person_id")) or e.get("person") or "(unassigned)",
+        "date": e["date"],
+        "hours": e["hours"],
+        "description": e.get("description") or "",
+    } for e in entries]
+
+
+def _rows_from_payload(rows: list) -> list[dict]:
+    """Rows as the export screen posts them back — hours and comments possibly
+    edited there. Deliberately *not* written anywhere: they exist for the length
+    of this request, so a client-facing tweak never rewrites a logged entry."""
+    if len(rows) > _MAX_EXPORT_ROWS:
+        raise ValueError("too many rows")
+    out = []
+    for r in rows:
+        try:
+            hours = float(r.get("hours") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("invalid hours")
+        if not 0 <= hours <= 24:
+            raise ValueError("hours out of range")
+        if not hours:  # a row zeroed on the export screen is left out of the file
+            continue
+        date = str(r.get("date") or "")[:10]
+        if not _parse_date(date):
+            raise ValueError("invalid date")
+        out.append({
+            "project_id": str(r.get("project_id") or "")[:64] or None,
+            "project": str(r.get("project") or "(none)")[:200],
+            "person": str(r.get("person") or "(unassigned)")[:200],
+            "date": date,
+            "hours": round(hours, 2),
+            "description": str(r.get("description") or "")[:2000],
+        })
+    return out
+
+
+@app.get("/project.xlsx")
+def project_xlsx(request: Request, project: list[str] = Query(default=[]),
+                 period: str = "monthly", start: Optional[str] = None):
+    """The report as a workbook — a sheet per project, people then their log."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    period = period if period in _PERIODS else "monthly"
+    projects = ops.list_projects(include_members=True)
+    sel_ids, sel = _project_picks(projects, project)
+    rng = _period_range(period, _project_anchor(period, start))
+    name_map = {p["id"]: p["name"] for p in ops.list_people()}
+    rows = _export_rows(_period_entries(sel, sel_ids, rng), name_map)
+    label = _export_label(sel, sel_ids)
+    return _xlsx_response(report_xlsx.build(rows, rng["label"], label), label, rng)
+
+
+@app.get("/project/export", response_class=HTMLResponse)
+def project_export_page(request: Request, project: list[str] = Query(default=[]),
+                        period: str = "monthly", start: Optional[str] = None,
+                        sent: Optional[str] = None, err: Optional[str] = None):
+    """Adjust the numbers for the copy that leaves the building, then download
+    or email it. Edits here never touch the logged hours — that is the whole
+    point of the screen: the inline editor on /project corrects what was logged,
+    this one prepares what a client sees."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    period = period if period in _PERIODS else "monthly"
+    projects = ops.list_projects(include_members=True)
+    sel_ids, sel = _project_picks(projects, project)
+    rng = _period_range(period, _project_anchor(period, start))
+    name_map = {p["id"]: p["name"] for p in ops.list_people()}
+    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng), name_map),
+                  key=lambda r: (r["project"].lower(), r["date"], r["person"].lower()))
+    groups = []
+    for r in rows:  # rows arrive project-sorted, so a running group is enough
+        if not groups or groups[-1]["name"] != r["project"]:
+            groups.append({"name": r["project"], "rows": []})
+        groups[-1]["rows"].append(r)
+    for g in groups:
+        g["hours"] = round(sum(r["hours"] for r in g["rows"]), 2)
+    return templates.TemplateResponse(request, "project_export.html", {
+        "user": user, "is_admin": True,
+        "projects": projects, "sel": sel, "sel_ids": sel_ids,
+        "period": period, "rng": rng, "start_iso": rng["from"],
+        "label": _export_label(sel, sel_ids),
+        "groups": groups, "total": round(sum(r["hours"] for r in rows), 2),
+        "recipients": ", ".join(mailer.default_recipients()),
+        "sender": mailer.sender(), "mail_ready": mailer.configured(),
+        "missing_vars": mailer.missing_vars(),
+        "sent": sent, "err": err,
+    })
+
+
+class ExportRequest(BaseModel):
+    rows: list[dict] = Field(default_factory=list)
+    label: str = "Hours"
+    period_label: str = ""
+    date_from: str = ""
+    date_to: str = ""
+
+
+class EmailRequest(ExportRequest):
+    to: str = ""
+    subject: str = ""
+    message: str = ""
+
+
+@app.post("/project/export.xlsx")
+def project_export_xlsx(request: Request, payload: str = Form(...)):
+    """Download the workbook built from the (possibly adjusted) rows on screen."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        req = ExportRequest.model_validate_json(payload)
+        rows = _rows_from_payload(req.rows)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    rng = {"from": req.date_from or "", "to": req.date_to or ""}
+    return _xlsx_response(report_xlsx.build(rows, req.period_label, req.label),
+                          req.label, rng)
+
+
+@app.post("/api/report/email")
+def api_report_email(request: Request, req: EmailRequest):
+    """Email the workbook from the sender's own mailbox (SMTP_USER)."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not mailer.configured():
+        return JSONResponse({"ok": False, "error": "email isn't set up yet — add "
+                             + " and ".join(mailer.missing_vars())
+                             + " to the environment"}, status_code=503)
+    try:
+        to = mailer.clean_recipients(req.to or mailer.default_recipients())
+        rows = _rows_from_payload(req.rows)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    if not rows:
+        return JSONResponse({"ok": False, "error": "nothing to send — every row is 0"},
+                            status_code=400)
+    book = report_xlsx.build(rows, req.period_label, req.label)
+    fname = f"hours_{_export_slug(req.label)}_{req.date_from}_{req.date_to}.xlsx"
+    subject = req.subject.strip() or f"Hours — {req.label} — {req.period_label}"
+    body = req.message.strip() or (
+        f"Hi,\n\nAttached are the hours for {req.label} — {req.period_label}: "
+        f"{round(sum(r['hours'] for r in rows), 2):g} h across {len(rows)} entries.\n\n"
+        f"— {user.get('name') or user.get('email') or 'Hours Tracker'}\n")
+    try:
+        res = mailer.send_report(to, subject, body, book, fname)
+    except mailer.NotConfigured as e:
+        return JSONResponse({"ok": False, "error": f"missing {e}"}, status_code=503)
+    except Exception:
+        logging.exception("Sending the report to %s failed", to)
+        return JSONResponse({"ok": False, "error": "the mail server rejected the send"},
+                            status_code=502)
+    return JSONResponse(res)
 
 
 _PALETTE_SIZE = 8  # .pill.s0 … .pill.s7 (--s0 … --s7) in style.css
