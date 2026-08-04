@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""One-time: authorize the app to send Gmail as you, and print the refresh token.
+"""One-time: authorize the app to send mail and create sheets as you.
 
 Run this on your own machine — it opens a browser for consent and catches the
 redirect on localhost. Nothing is stored: it prints the three values to paste
 into Render, and the refresh token is the only long-lived secret.
 
-    ./.venv/bin/python src/gmail_oauth_setup.py
+    ./.venv/bin/python src/google_oauth_setup.py
 
 Before running, in console.cloud.google.com (as jp.ghelfi@znlove.xyz):
   1. Create a project (any name).
-  2. APIs & Services → Library → enable **Gmail API**.
+  2. APIs & Services → Library → enable **Gmail API** *and* **Google Sheets API**.
   3. OAuth consent screen → **Internal** (Workspace only — this matters: an
      External app in "testing" hands out refresh tokens that die after 7 days).
   4. Credentials → Create credentials → OAuth client ID → **Desktop app**.
@@ -29,7 +29,10 @@ import webbrowser
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-SCOPE = "https://www.googleapis.com/auth/gmail.send"
+SCOPES = " ".join((
+    "https://www.googleapis.com/auth/gmail.send",   # send the report
+    "https://www.googleapis.com/auth/drive.file",   # create the sheet it makes
+))
 PORT = 8765
 REDIRECT = f"http://localhost:{PORT}/"
 
@@ -73,13 +76,13 @@ def main() -> None:
         "client_id": client_id,
         "redirect_uri": REDIRECT,
         "response_type": "code",
-        "scope": SCOPE,
+        "scope": SCOPES,
         "access_type": "offline",     # ask for a refresh token
         "prompt": "consent",          # and force one even on a repeat run
         "state": state,
     })
-    print("\nOpening the consent screen. Sign in as the account the reports "
-          "should come FROM.\nIf no browser opens, paste this URL yourself:\n\n" + url + "\n")
+    print("\nOpening the consent screen. Sign in as the account the reports should "
+          "come FROM\nand own the sheets.\nIf no browser opens, paste this URL yourself:\n\n" + url + "\n")
     webbrowser.open(url)
 
     socketserver.TCPServer.allow_reuse_address = True

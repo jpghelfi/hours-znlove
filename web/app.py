@@ -23,8 +23,10 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
+from . import google_auth
 from . import mailer
 from . import notion_ops as ops
+from . import report_gsheet
 from . import report_xlsx
 
 BASE = Path(__file__).resolve().parent
@@ -826,6 +828,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         "recipients": ", ".join(mailer.default_recipients()),
         "sender": mailer.sender(), "mail_ready": mailer.configured(),
         "missing_vars": mailer.missing_vars(), "via": mailer.transport(),
+        "gsheet_ready": google_auth.configured(),
         "sent": sent, "err": err,
     })
 
@@ -862,6 +865,38 @@ def project_export_xlsx(request: Request, payload: str = Form(...)):
     rng = {"from": req.date_from or "", "to": req.date_to or ""}
     return _xlsx_response(report_xlsx.build(rows, req.period_label, req.label),
                           req.label, rng)
+
+
+@app.post("/project/export.gsheet")
+def project_export_gsheet(request: Request, req: ExportRequest):
+    """Create the report as a named Google Sheet and return its URL."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not google_auth.configured():
+        return JSONResponse({"ok": False, "error": "Google isn't connected yet — add "
+                             + ", ".join(google_auth.missing_vars())
+                             + " to the environment"}, status_code=503)
+    try:
+        rows = _rows_from_payload(req.rows)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    if not rows:
+        return JSONResponse({"ok": False, "error": "nothing to put in a sheet — every row is 0"},
+                            status_code=400)
+    try:
+        res = report_gsheet.create(rows, req.period_label, req.label)
+    except google_auth.GoogleError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+    except Exception:
+        logging.exception("Creating the sheet for %s failed", req.label)
+        return JSONResponse({"ok": False, "error": "could not create that sheet"},
+                            status_code=502)
+    return JSONResponse({"ok": True, **res})
 
 
 @app.post("/api/report/email")
