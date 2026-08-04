@@ -35,8 +35,20 @@ def default_recipients() -> list[str]:
     return _split(os.environ.get("REPORT_TO", "zarco@znlove.xyz,angie@znlove.xyz"))
 
 
+def enabled() -> bool:
+    """Whether the email feature is switched on at all (REPORT_EMAIL_ENABLED).
+
+    Off by default, and deliberately separate from having credentials: the
+    Google authorization exists for the Sheets export too, so configuring that
+    must not make an email UI reappear on the export screen uninvited.
+    """
+    return os.environ.get("REPORT_EMAIL_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def transport() -> str:
     """Which transport a send would use: "gmail", "smtp", or "" for none."""
+    if not enabled():
+        return ""
     if gmail_api.configured():
         return "gmail"
     if os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
@@ -56,8 +68,8 @@ def configured() -> bool:
 
 def missing_vars() -> list[str]:
     """What to set to make a send possible — the Gmail path, since that's the
-    one that works on Render."""
-    return gmail_api.missing_vars()
+    one that works on Render, plus the switch that turns the feature on."""
+    return ([] if enabled() else ["REPORT_EMAIL_ENABLED=1"]) + gmail_api.missing_vars()
 
 
 def _split(raw: str) -> list[str]:

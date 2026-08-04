@@ -909,6 +909,11 @@ def api_report_email(request: Request, req: EmailRequest):
         return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not mailer.enabled():
+        # the switch, not just the credentials: the endpoint stays shut even
+        # when Google is connected for the Sheets export
+        return JSONResponse({"ok": False, "error": "emailing reports is turned off"},
+                            status_code=403)
     if not mailer.configured():
         return JSONResponse({"ok": False, "error": "email isn't set up yet — add "
                              + ", ".join(mailer.missing_vars())
