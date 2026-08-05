@@ -52,7 +52,12 @@ Rules the parser enforces, each learned from a real URL shape:
 
 The picker opens on **your** tickets before you type a thing: one query per
 ticket board, filtered on that board's own assignee property, freshest first
-(`my_tasks`). Typing searches every connected board by title (`search_tasks`,
+(`my_tasks`). Only boards that are actually *queried* count against the
+fan-out cap — capping the raw board list instead spends the budget on boards
+with no assignee column at all, which with 27 connected boards and 11 usable
+ones left 8 of the 11 unread. The opening list is cached per person for 60s,
+since it runs on focus and a dozen sequential board queries is a slow way to
+open a dropdown twice. Typing searches every connected board by title (`search_tasks`,
 through Notion's workspace-wide `search` — the right endpoint precisely because
 the tickets are scattered across boards), keeping only results that are rows on
 a known ticket board. That's what separates a ticket from a loose document that

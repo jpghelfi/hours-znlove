@@ -962,19 +962,42 @@ def _task_result(page: dict, person_id: str | None, email: str | None) -> dict:
     }
 
 
+_MY_TASKS_TTL = 60.0
+_MAX_BOARDS_QUERIED = 12
+_my_tasks_cache: dict = {}   # person key -> (fetched_at, results)
+
+
 def my_tasks(person_id: str | None, email: str | None, limit: int = 8) -> list[dict]:
     """The picker's opening list: tickets assigned to this person, freshest
     first. One query per board, filtered on that board's own assignee property,
-    so the list is short and personal before anyone types a thing."""
+    so the list is short and personal before anyone types a thing.
+
+    Only boards that actually get *queried* count against the fan-out cap.
+    Capping the raw board list instead would spend the budget on boards with no
+    assignee column at all — with 27 connected boards and 11 usable ones, that
+    left 8 of the 11 unread. Results are cached briefly because this runs when
+    the field is focused, and a dozen sequential board queries is a slow way to
+    open a dropdown twice.
+    """
+    key = f"{person_id}|{(email or '').lower()}|{limit}"
+    now = time.time()
+    hit = _my_tasks_cache.get(key)
+    if hit and now - hit[0] < _MY_TASKS_TTL:
+        return hit[1]
+
     out: list[dict] = []
-    for ds_id in task_sources()[:8]:   # bound the fan-out — these are other teams' boards
+    queried = 0
+    for ds_id in task_sources():
+        if queried >= _MAX_BOARDS_QUERIED or len(out) >= limit:
+            break
         schema = _task_schema(ds_id)
         if schema["people"] and person_id:
             flt = {"property": schema["people"], "people": {"contains": person_id}}
         elif schema["email"] and email:
             flt = {"property": schema["email"], "email": {"equals": email}}
         else:
-            continue
+            continue          # no assignee column: nothing to scope by, not a query
+        queried += 1
         try:
             res = _notion.data_sources.query(
                 data_source_id=ds_id, page_size=limit, filter=flt,
@@ -983,7 +1006,9 @@ def my_tasks(person_id: str | None, email: str | None, limit: int = 8) -> list[d
             logging.warning("Ticket board %s wouldn't answer an assignee query", ds_id)
             continue
         out.extend(_task_result(p, person_id, email) for p in res["results"])
-    return out[:limit]
+    out = out[:limit]
+    _my_tasks_cache[key] = (now, out)
+    return out
 
 
 def search_tasks(query: str, person_id: str | None, email: str | None,
@@ -1038,6 +1063,122 @@ def resolve_task(page_id: str) -> dict | None:
     ours = _bare(parent.get("data_source_id") or parent.get("database_id") or "") in _OWN_DS
     return {"id": page["id"], "title": _page_title(page), "ours": ours,
             "url": page.get("url") or f"https://www.notion.so/{_bare(page_id)}"}
+
+
+# ---- invoices ----------------------------------------------------------
+#
+# An invoice records a decision *about* logged hours — "for July we billed
+# Auter 138 of the 142 hours tracked" — and never rewrites a Time Entry. That
+# keeps the three layers distinct: set_entry_hours fixes what was *logged*, the
+# export screen adjusts what a client *sees* for one send, and this records
+# what was *billed*.
+
+INVOICES_DS = _ids.get("invoices_ds_id")   # optional: unset until set up
+
+
+def invoices_enabled() -> bool:
+    return bool(INVOICES_DS)
+
+
+def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
+    props = page["properties"]
+    rel = props.get("Project", {}).get("relation") or []
+    pid = rel[0]["id"] if rel else None
+    month = (props.get("Month", {}).get("date") or {}).get("start") or ""
+    issued = (props.get("Issued", {}).get("date") or {}).get("start") or ""
+    saved = props.get("Saved by", {}).get("people") or []
+    note = props.get("Note", {}).get("rich_text") or []
+    return {
+        "id": page["id"],
+        "project_id": pid,
+        "project": pname.get(pid, "(unknown project)") if pid else "(none)",
+        "month": month[:10],
+        "hours_tracked": props.get("Hours tracked", {}).get("number") or 0,
+        "hours_billed": props.get("Hours billed", {}).get("number") or 0,
+        "issued": issued[:10],
+        # people properties come back nameless, so resolve against the roster
+        "saved_by": people.get(saved[0]["id"], "") if saved else "",
+        "note": "".join(t.get("plain_text", "") for t in note),
+        "url": page.get("url", ""),
+    }
+
+
+def find_invoice(project_id: str, month: str) -> dict | None:
+    """The invoice already filed for this project and month, if any."""
+    if not INVOICES_DS:
+        return None
+    res = _notion.data_sources.query(data_source_id=INVOICES_DS, page_size=2, filter={"and": [
+        {"property": "Project", "relation": {"contains": project_id}},
+        {"property": "Month", "date": {"equals": month}},
+    ]})
+    if not res["results"]:
+        return None
+    return _invoice_row(res["results"][0], _project_name_map(), _person_name_map())
+
+
+def list_invoices(project_id: str | None = None, limit: int = 200) -> list[dict]:
+    """Every invoice, newest month first, optionally for one project."""
+    if not INVOICES_DS:
+        return []
+    kwargs = {"data_source_id": INVOICES_DS, "page_size": 100,
+              "sorts": [{"property": "Month", "direction": "descending"}]}
+    if project_id:
+        kwargs["filter"] = {"property": "Project", "relation": {"contains": project_id}}
+    pname, people = _project_name_map(), _person_name_map()
+    out = []
+    for page in _query_all(kwargs):
+        out.append(_invoice_row(page, pname, people))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed: float,
+                 issued: str, note: str = "", person_id: str | None = None) -> dict:
+    """File (or correct) the invoice for one project and one month.
+
+    Upserts on (project, month), the same discipline as set_cell: saving July
+    for a project twice is nearly always a correction, not a second bill. On a
+    correction `Issued` keeps whatever it already said unless a new date is
+    passed — Notion's own page history is the audit trail.
+    """
+    if not INVOICES_DS:
+        raise RuntimeError("Invoices database isn't configured (INVOICES_DS_ID).")
+    pname = _project_name_map()
+    label = pname.get(project_id, "Project")
+    title = f"{label} — {dt.date.fromisoformat(month).strftime('%B %Y')}"
+    props = {
+        "Invoice": {"title": [{"text": {"content": title}}]},
+        "Project": {"relation": [{"id": project_id}]},
+        "Month": {"date": {"start": month}},
+        "Hours tracked": {"number": round(hours_tracked, 2)},
+        "Hours billed": {"number": round(hours_billed, 2)},
+        "Note": {"rich_text": [{"text": {"content": note[:1900]}}]},
+    }
+    if issued:
+        props["Issued"] = {"date": {"start": issued}}
+    if person_id:
+        props["Saved by"] = {"people": [{"id": person_id}]}
+
+    with _write_lock:
+        matches = _query_all({
+            "data_source_id": INVOICES_DS, "page_size": 100,
+            "filter": {"and": [
+                {"property": "Project", "relation": {"contains": project_id}},
+                {"property": "Month", "date": {"equals": month}},
+            ]},
+        })
+        keep = matches[0] if matches else None
+        for extra in matches[1:]:   # duplicates from an old race: fold into one
+            _notion.pages.update(extra["id"], archived=True)
+        if keep:
+            _notion.pages.update(keep["id"], properties=props)
+            page = _notion.pages.retrieve(keep["id"])
+        else:
+            page = _notion.pages.create(
+                parent={"type": "data_source_id", "data_source_id": INVOICES_DS},
+                properties=props)
+    return dict(_invoice_row(page, pname, _person_name_map()), replaced=bool(keep))
 
 
 def entry_task(props: dict) -> dict:

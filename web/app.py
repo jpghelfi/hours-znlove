@@ -726,6 +726,7 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids, "is_all": is_all,
         "period": period, "rng": rng,
+        "can_invoice": bool(ops.invoices_enabled() and sel and period == "monthly"),
         "d": data, "start_iso": rng["from"],
     })
 
@@ -889,11 +890,17 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         groups[-1]["rows"].append(r)
     for g in groups:
         g["hours"] = round(sum(r["hours"] for r in g["rows"]), 2)
+    # An invoice is one project's month, so the screen only offers it when
+    # that's what you're looking at; the POST re-checks both (see _invoicable).
+    can_invoice = bool(ops.invoices_enabled() and sel and period == "monthly")
+    existing = ops.find_invoice(sel["id"], rng["from"]) if can_invoice else None
     return templates.TemplateResponse(request, "project_export.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids,
         "period": period, "rng": rng, "start_iso": rng["from"],
         "label": _export_label(sel, sel_ids),
+        "can_invoice": can_invoice, "existing_invoice": existing,
+        "today_iso": dt.date.today().isoformat(),
         "groups": groups, "total": round(sum(r["hours"] for r in rows), 2),
         "recipients": ", ".join(mailer.default_recipients()),
         "sender": mailer.sender(), "mail_ready": mailer.configured(),
@@ -909,6 +916,126 @@ class ExportRequest(BaseModel):
     period_label: str = ""
     date_from: str = ""
     date_to: str = ""
+
+
+class InvoiceRequest(ExportRequest):
+    project_id: str = ""
+    month: str = ""
+    issued: str = ""
+    note: str = ""
+
+
+# ---- invoices ----------------------------------------------------------
+
+@app.post("/api/invoice")
+def api_save_invoice(request: Request, req: InvoiceRequest):
+    """Record what we billed for one project, one month.
+
+    The billed hours come from the screen — that's the human decision. The
+    *tracked* hours are re-read from Notion rather than taken from the payload:
+    a row zeroed on the export screen drops out of the file, so trusting the
+    browser's total would quietly shrink what we say was tracked.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not ops.invoices_enabled():
+        return JSONResponse({"ok": False, "error": "the Invoices database isn't set up yet"},
+                            status_code=503)
+
+    month = _parse_date(req.month)
+    if not month or month.day != 1:
+        return JSONResponse({"ok": False, "error": "an invoice covers a calendar month"},
+                            status_code=400)
+    projects = {p["id"]: p for p in ops.list_projects(include_members=True)}
+    project = projects.get(req.project_id)
+    if not project:
+        return JSONResponse({"ok": False, "error": "pick one project to invoice"},
+                            status_code=400)
+    issued = _parse_date(req.issued) or dt.date.today()
+    try:
+        rows = _rows_from_payload(req.rows)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    rng = _period_range("monthly", month)
+    tracked = sum(e["hours"] for e in _period_entries(project, [project["id"]], rng))
+    billed = sum(r["hours"] for r in rows)
+    try:
+        saved = ops.save_invoice(project["id"], month.isoformat(), tracked, billed,
+                                 issued.isoformat(), req.note[:500], user.get("id"))
+    except Exception:
+        logging.exception("Saving the invoice for %s %s failed", project["name"], req.month)
+        return JSONResponse({"ok": False, "error": "could not save that invoice"},
+                            status_code=502)
+    return JSONResponse({"ok": True, "invoice": saved})
+
+
+_STALE_MONTHS = 4
+
+
+def _mark_stale(rows: list[dict]) -> None:
+    """Flag invoices whose month has been logged against since they were saved.
+
+    Someone always logs late, and without this nobody finds out. Checked only
+    for the last few months, and with a *single* read of that window rather
+    than one query per invoice — an invoice list two years long would otherwise
+    cost two years of round trips to draw.
+    """
+    if not rows:
+        return
+    cutoff = _add_months(dt.date.today().replace(day=1), -(_STALE_MONTHS - 1))
+    recent = [r for r in rows if (_parse_date(r["month"]) or dt.date.min) >= cutoff]
+    if not recent:
+        return
+    to = _add_months(cutoff, _STALE_MONTHS) - dt.timedelta(days=1)
+    logged: dict = {}
+    for e in ops.entries_between(cutoff.isoformat(), to.isoformat()):
+        day = _parse_date(e["date"])
+        if day:
+            key = (e.get("project_id"), day.replace(day=1).isoformat())
+            logged[key] = logged.get(key, 0) + e["hours"]
+    for r in recent:
+        now = round(logged.get((r["project_id"], r["month"]), 0), 2)
+        r["hours_now"] = now
+        r["stale"] = abs(now - round(r["hours_tracked"], 2)) >= 0.01
+
+
+@app.get("/invoices", response_class=HTMLResponse)
+def invoices_page(request: Request, project: list[str] = Query(default=[])):
+    """What we've billed, newest month first (admins).
+
+    Shows tracked next to billed so the gap is visible, and flags a month whose
+    logged hours have moved since it was invoiced — which happens whenever
+    somebody logs late.
+    """
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    projects = ops.list_projects(include_members=True, active_only=False)
+    sel_ids, sel = _project_picks(projects, project)
+    rows = ops.list_invoices(sel["id"] if sel else None)
+    if sel_ids and not sel:          # several picked: filter the one read in memory
+        keep = set(sel_ids)
+        rows = [r for r in rows if r["project_id"] in keep]
+    _mark_stale(rows)
+    for r in rows:
+        month = _parse_date(r["month"])
+        r["month_label"] = month.strftime("%B %Y") if month else r["month"]
+    return templates.TemplateResponse(request, "invoices.html", {
+        "user": user, "is_admin": True,
+        "projects": projects, "sel": sel, "sel_ids": sel_ids,
+        "rows": rows,
+        "enabled": ops.invoices_enabled(),
+        "total_billed": round(sum(r["hours_billed"] for r in rows), 2),
+        "total_tracked": round(sum(r["hours_tracked"] for r in rows), 2),
+    })
 
 
 class EmailRequest(ExportRequest):

@@ -104,6 +104,8 @@
       } catch (e) { if (seq === mine) { close(); setHint('Could not read that link.'); } }
       return;
     }
+    // the opening list queries a board at a time, so say something first
+    if (!text && !items.length) setHint('Finding your tickets…');
     try {
       const res = await fetch('/api/tasks/search?q=' + encodeURIComponent(text) + '&mine=0');
       const data = await res.json();

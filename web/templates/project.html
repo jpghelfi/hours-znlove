@@ -41,8 +41,10 @@
   {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
   <a class="btn" href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}">⬇ CSV</a>
   <a class="btn" href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}">⬇ Excel</a>
+  {# one project + a whole month is exactly what an invoice is, so the same
+     screen is offered under its real name; anything else is still an export #}
   <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}"
-     title="Adjust the numbers, then download, copy to Sheets or email">⧉ Export</a>
+     title="{% if can_invoice %}Set the hours to bill, then save the invoice{% else %}Adjust the numbers, then download, copy to Sheets or email{% endif %}">{% if can_invoice %}🧾 Invoice{% else %}⧉ Export{% endif %}</a>
 </form>
 
 {% macro share_cell(pct, share) %}
