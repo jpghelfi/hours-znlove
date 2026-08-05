@@ -35,7 +35,10 @@
   const urlIn = document.getElementById('turl'), labelIn = document.getElementById('tlabel');
   let timer = null, seq = 0, items = [], cursor = -1;
 
-  const isLink = s => /notion\.(so|site)\//i.test(s || '');
+  // the same three domains parse_task_url accepts — app.notion.com is what
+  // Notion hands out today, so leaving it out here sends a pasted link down
+  // the search path instead of resolving it
+  const isLink = s => /\bnotion\.(com|so|site)\//i.test(s || '');
 
   function setHint(text) { hint.textContent = text || ''; hint.hidden = !text; }
 
