@@ -4,142 +4,146 @@
 
 ## What's being asked
 
-When logging hours, optionally attach the Notion ticket the work was for. Two ways in:
-a search box that finds tickets by name, or pasting a Notion ticket URL. The link
-then travels with the entry — visible in reports and in the client-facing export.
+When logging hours, optionally attach the Notion ticket the work was for — by pasting a
+ticket URL, or by searching for it. The link then travels with the entry: visible in the
+reports and in the client-facing export.
 
-## The blocker to clear first: the integration can't see your tickets
+Tickets at znlove are **not in one database** — they're spread across many pages and
+boards in the workspace. That single fact drives most of what follows.
 
-The app reads and writes Notion with one internal integration token (`NOTION_TOKEN`).
-An internal integration only sees pages **explicitly shared with it**. Right now it sees
-exactly four data sources — everything under the Hours Tracker page:
+## The phases
+
+| | What the user gets | What it needs from Notion | Effort |
+|---|---|---|---|
+| **1 — paste a link** | Paste a ticket URL on the log form; it's stored, shown, exported | **Nothing. No sharing, no admin, no re-auth.** | ~130 lines |
+| **2 — search** | A search box that finds tickets by name, real titles, links verified | The integration added to the top-level pages / teamspaces (admin, one-off) | ~150 more |
+| **3 — per-user scope** | Search shows each person only what *they* can see in Notion | Each user re-authorizes and hand-picks pages | ~60 more, high friction |
+
+Phase 1 first is the right call, and for a better reason than "it's smaller": it is the
+only version that needs **no permission grant at all**, so it can't be blocked, can't
+half-work when a board is missed, and never shows anyone a "that page isn't shared" error.
+
+## Phase 1 — paste a link (no Notion permissions involved)
+
+The trick is that **a Notion URL already contains the title**. Everything needed is in
+the string the user pastes; the app never has to read the page:
 
 ```
-Allocations    b75e776e-…
-Time Entries   22a4c841-…
-Projects       7609423c-…
-People         f6c8e667-…
+https://www.notion.so/znlove/Fix-checkout-race-condition-3b101234695c81d5a9ebd56e145122f4?pvs=4
+                             └────── title slug ──────┘ └─────── page id (32 hex) ──────┘
 ```
 
-No tasks/tickets database is among them. Until the ticket database is shared with the
-integration (Notion → open the ticket DB → ••• → Connections → add "Hours Tracker"),
-**both** entry paths fail identically: search returns nothing, and a pasted link 404s
-on `pages.retrieve`. This is a one-click change by a Notion admin, but it is a
-prerequisite, not a detail — and it's the only part of this that isn't code.
+Parsed (verified against real URL shapes):
 
-Second-order consequence worth deciding on deliberately: sharing the ticket DB gives
-this app read access to every ticket in it, and the app searches with the *integration's*
-eyes, not the logged-in user's. Someone could therefore find and link a ticket they
-personally can't open in Notion. Inside one company that's usually fine — but it's a
-real widening of what this app can see, so it should be a conscious yes.
+| Pasted | id | label |
+|---|---|---|
+| `…/Fix-checkout-race-condition-3b10…f4?pvs=4` | `3b10…f4` | `Fix checkout race condition` |
+| `…/Ticket-with-ñ-and-spaces-3b10…f4#4a1b2c3d` | `3b10…f4` | `Ticket with ñ and spaces` (block fragment ignored) |
+| `…/3b101234695c81d5a9ebd56e145122f4` | `3b10…f4` | *(none — user types one)* |
+| `…/Sprint-board-3970…18?v=<view>` | — | rejected: `?v=` means a board, not a ticket |
+| `https://example.com/nope` | — | rejected: not a Notion URL |
 
-## Where the link gets stored
+Two parsing gotchas worth writing down now, both found by testing:
 
-Two options on the Time Entries schema. They are not equivalent.
+- Anchor the id at the **end** of the last path segment (`([0-9a-f]{32})$` after stripping
+  dashes). Searching the segment loosely mis-slices the id by a character when the slug
+  itself ends in hex-ish text.
+- A side-peek link (`…/Tickets-board?p=<ticket id>`) carries the *board's* slug in the
+  path, not the ticket's — so take the id from `?p=` and leave the label blank rather
+  than labelling the ticket with its board's name.
 
-### Option A — a real `Task` relation (recommended if tickets live in ONE database)
+**Storage:** two plain properties on Time Entries — `Task URL` (url) and `Task`
+(rich text, the label). No relation (a relation targets exactly one database, and znlove's
+tickets aren't in one). The label is editable in the picker, so a bare-id link still gets a
+human name, and a Notion rename doesn't need the app to notice.
 
-Add a relation property on Time Entries pointing at the tickets data source.
+**UI:** under Description on `/entry`, an optional "Link a Notion task" field — paste,
+and it resolves to a removable chip. `POST /entry` re-parses server-side (never trusts
+what the browser sends) and rejects anything that isn't a notion.so page URL.
 
-- Notion-native: the ticket page gets a backlink, and you can put a **rollup on the
-  ticket showing total hours logged against it** — which is the thing people actually
-  want out of this, and it comes free, in Notion, with no work in this app.
-- Filterable in the Notion query (`{"property": "Task", "relation": {"contains": id}}`),
-  same as Project is today — so "all hours for ticket X" is one cheap query.
-- Hard limit: **a relation targets exactly one data source.** If znlove's tickets live
-  in several boards (one per client/project), a single relation cannot span them.
-- A dual (two-way) relation writes a new column into the tickets database, visible to
-  everyone in that workspace. A single (one-way) relation doesn't, but then no rollup.
+**What phase 1 does not give you:** no verification the ticket exists, no live title, no
+hours-per-ticket rollup inside Notion. The label is a snapshot taken at logging time.
 
-### Option B — `Task URL` (url) + `Task` (rich text, cached title)
+## Phase 2 — search across the workspace
 
-- Works for tickets scattered across any number of databases, and even for links the
-  integration can't resolve (store the URL, skip the title).
-- No backlink, no rollup, no relation filter — grouping by ticket becomes a Python
-  string-match on the URL.
+Search needs the app to actually *read* tickets, and today it can't: the internal
+integration sees exactly four data sources — everything under the Hours Tracker page and
+nothing else.
 
-### Recommendation
+```
+Allocations   ·   Time Entries   ·   Projects   ·   People
+```
 
-Ask which shape the tickets are in first. If it's one board: **Option A**, dual relation.
-If it's many: store both — resolve the pasted/selected page, and if its parent matches a
-configured tickets data source, write the relation; always write URL + title as well. The
-extra two properties cost nothing and make the export readable without a second Notion read.
+### How to grant it for everyone at once
 
-## Finding the ticket
+Notion access for an integration is granted **per page, and inherits to every child** —
+so this is not per-user work, and it does not have to be repeated for new tickets:
 
-### Search box (the main path)
+1. A workspace admin opens each **top-level page / teamspace root** that holds tickets.
+2. ••• → Connections → add **Hours Tracker**.
+3. Every board, sub-page and ticket underneath — including ones created next year — is
+   readable from then on.
 
-`GET /api/tasks/search?q=…` → HTMX-debounced (300 ms, min 2 chars), returns a small
-`<ul>` of results, same shape as the filters already in `web/templates/`.
+That's a handful of clicks, once, covering everyone. (Workspace admins separately control
+which connections are *allowed* to exist at all, in Settings → Connections; that approval
+is not the same as page access — the add-to-page step above is what grants reading.)
 
-Implementation: `data_sources.query` on the tickets DS with a title `contains` filter,
-sorted by `last_edited_time` desc, `page_size` ~10, and — if the board has a status
-column — an `and` clause dropping Done/Archived so the list stays useful. One round
-trip, ~200–400 ms.
+The consequence to accept deliberately: the app then searches with **its own** uniform
+view, not the asking person's. Anyone who can log hours could find and link a ticket they
+personally can't open in Notion. Inside one company that's normally fine — but it should
+be a conscious yes, and it's exactly what phase 3 exists to undo.
 
-Do **not** use Notion's `search` endpoint for this if there's a single tickets DB: it's
-workspace-wide, matches titles only, and has no parent filter, so you'd fetch broadly
-and discard in Python. It becomes the right tool only in the many-boards case, where
-you'd filter results against an allowlist of parent data source ids.
+### How the search works
 
-### Paste a link (the escape hatch)
+With tickets spread across many databases, Notion's `search` endpoint is the right tool
+(it's workspace-wide and matches titles): `search(query=q, filter={object: page})`, then
+in Python keep the pages whose parent is a `data_source` — that's what separates database
+rows (tickets) from loose documents — sort by `last_edited_time`, take ~10.
 
-Extract the trailing 32-hex id from the URL (`…/Ticket-name-<32hex>`, also `?p=<id>`
-for side-peek links), strip any `#block-id` fragment and `?pvs=` junk, then
-`pages.retrieve` to get the real title and parent.
+`GET /api/tasks/search?q=…`, HTMX-debounced at 300 ms and 2 characters minimum, rendering
+the same little `<ul>` the existing filter partials use. One round trip, ~300–600 ms.
 
-Failure modes to handle explicitly, each with its own sentence:
-- 404 → "that page isn't shared with the Hours Tracker integration" (the common one)
-- URL is a database/view, not a page → "that's a board link, open the ticket itself"
-- a valid page whose parent isn't a known tickets DS → accept as URL-only, or reject,
-  depending on which storage option is chosen
+Phase 2 also upgrades phase 1's links for free: a pasted URL can now be resolved through
+`pages.retrieve` to confirm it exists and pull the *real* title, and the stored label can
+be refreshed on read — the "sync" half of the ask. Old phase-1 entries keep working
+untouched; they just start showing verified titles.
 
-## Where the picker appears
+## Phase 3 — per-user permissions (only if it's a hard requirement)
 
-| Surface | Verdict |
-|---|---|
-| `/entry` log form | **Yes** — the primary place. An optional "Link a Notion task" button under Description, opening a popover with the search box + a paste field; picking one shows a removable chip and fills hidden `task_id` / `task_url` / `task_title` inputs. |
-| Timer flow | Free — the timer only fills the Hours field on the same form. |
-| `/week` grid cells | **No, not in v1.** A cell is an upsert keyed on (person, project, date) and can aggregate several sittings; which ticket would it carry? Adding it here means designing multi-entry-per-cell first. |
-| `/project` entry list | **Yes, read-only** — show the ticket as a link next to each row's Description. |
-| Exports (csv / xlsx / gsheet / email) | **Yes** — a Task column. This is the client-facing payoff: "these 3h went to *this* ticket". |
+The app already runs a full Notion OAuth dance at login and **throws the access token
+away** after reading the person's identity (`web/auth.py:exchange_code`). Keeping that
+token in the session and searching with it would give true per-user scope — no new
+storage, it dies with the session, ~60 lines.
 
-## What has to change in the code
+The catch is Notion's consent screen: the user **hand-picks which pages** to grant, so
+each person's search only covers what they selected, and widening it means re-authorizing.
+That friction is why this is phase 3 and not phase 2 — worth it only if "one person must
+not see another's tickets" is a real requirement rather than a preference.
 
-- `web/notion_ops.py`
-  - `ensure_task_property()` alongside the existing `ensure_person_property` /
-    `ensure_admin_property` startup hooks — creates the property if missing.
-    (The 2025-09-03 relation-creation payload keys off `data_source_id`, not
-    `database_id`; verify that against a scratch database before pointing it at
-    Time Entries.)
-  - `create_entry(...)` grows optional `task_id` / `task_url` / `task_title`.
-  - `entries_between` and `project_entries` return the task fields — tolerantly.
-    Both read properties by name, and a rename in the Notion UI has taken pages down
-    here before (see the `val` incident in CLAUDE.md — and note the `Logged by` column
-    is *currently* renamed to `melisa`, so Notion-form entries are already losing their
-    submitter). Read the task property through the same schema-resolution trick
-    `alloc_person_prop` uses, or at minimum `.get()` everything.
-  - `search_tasks(q)` — the query above, plus `resolve_task_url(url)`.
-- `web/app.py` — `GET /api/tasks/search`, `POST /entry` accepting the three new fields
-  (validating that `task_id` is a real page in an allowed DS, exactly as
-  `set_entry_hours` refuses pages whose parent isn't Time Entries — the id is
-  client-supplied), and the Task column threaded into `_period_entries` consumers.
-- Templates — a new `_task_picker.html` partial included by `form.html`; a link column
-  in `project.html` and `project_export.html`.
-- `web/report_xlsx.py` / `report_gsheet.py` / the CSV route — one extra column each.
-- Config — `TASKS_DS_ID` (or a comma-separated list), wired into both the
-  `databases.json` and env paths in `src/config.py`, per the existing rule that new
-  databases must land in both.
+## Code shape (both phases)
 
-Roughly 250–350 lines across those files. No migration: old entries simply have no
-task, and every reader must treat the property as optional forever.
+- `web/notion_ops.py` — `ensure_task_properties()` beside the existing
+  `ensure_person_property` / `ensure_admin_property` startup hooks; `create_entry()` grows
+  optional `task_url` / `task_label`; `entries_between` / `project_entries` return them.
+  Read the new properties **tolerantly** — a rename in the Notion UI has taken pages down
+  here before (the `val` incident in CLAUDE.md; and note `Logged by` on Time Entries is
+  *currently* renamed to `melisa`, so Notion-form entries are already losing their
+  submitter). Phase 2 adds `search_tasks(q)` and `resolve_task(url)`.
+- `web/app.py` — task fields on `POST /entry` (re-parsed server-side), plus
+  `GET /api/tasks/search` in phase 2.
+- Templates — `_task_picker.html` included by `form.html`; a ticket link column in
+  `project.html` and `project_export.html`.
+- `web/report_xlsx.py`, `report_gsheet.py`, the CSV route — one extra column each.
+- **Not `/week`.** A grid cell is an upsert keyed on (person, project, date) and can
+  aggregate several sittings, so it has no single ticket. Adding it there means designing
+  multi-entry cells first — a separate piece of work.
 
-## Open questions (these change the design, not just the effort)
+No migration: entries logged before this simply have no task, and every reader must treat
+the property as optional forever.
 
-1. **One tickets database, or one board per client/project?** Decides relation vs URL,
-   and search-endpoint vs data-source-query. This is the question to answer first.
-2. **May the app write a backlink column into the tickets database?** (dual relation →
-   hours-per-ticket rollup for free; single relation → nothing lands in their board)
-3. Should the ticket be *required* for some projects, or optional everywhere? Optional
-   everywhere is assumed above.
-4. Ticket on the weekly grid later, or is the log form enough?
+## Open questions
+
+1. Phase 1 now, phase 2 after someone shares the teamspace roots — agreed? (Assumed yes.)
+2. Should the picker also offer a free-text ticket label with no URL at all (for tickets
+   that live in Jira/Linear/somewhere else)? Cheap to add in phase 1, easy to regret.
+3. Ticket on the weekly grid eventually, or is the log form enough?
