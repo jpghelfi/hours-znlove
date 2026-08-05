@@ -21,6 +21,22 @@
   </div>
 </div>
 
+{# both carry the **billed** hours, with unbilled lines left out — this is the
+   copy that goes to the client, not the internal tracked/billed comparison #}
+<div class="card wide sendbox">
+  <div class="sendbox-actions">
+    <div class="subtle">
+      {{ sheet_rows|length }} billed line{{ '' if sheet_rows|length == 1 else 's' }} ·
+      {{ '%g'|format(now_billed) }} h — the hours as invoiced, without the lines billed at nothing
+    </div>
+    <div class="sendbox-btns">
+      <button type="button" class="btn" onclick="copyToSheets()">⧉ Copy &amp; open Google Sheets</button>
+      <a class="btn btn-primary" href="/invoices/{{ invoice.id }}.xlsx">⬇ Download Excel</a>
+    </div>
+  </div>
+  <div class="sendresult" id="sendresult" hidden role="status"></div>
+</div>
+
 {% if invoice.note %}<div class="notebar">{{ invoice.note }}</div>{% endif %}
 
 {% if legacy %}
@@ -107,4 +123,58 @@
     {% endif %}
   </table>
 </div>
+
+<script>
+const SHEET_ROWS = {{ sheet_rows|tojson }};
+
+/* Google publishes no URL that creates a spreadsheet holding your data, and
+   this app sits behind a login so IMPORTDATA can't fetch from it either — so
+   the clipboard plus a blank sheet is the one path needing no extra
+   authorization. Same approach as the export screen. */
+function tsv() {
+  const head = ['Project', 'Date', 'Person', 'Hours', 'Comment', 'Ticket'].join('\t');
+  const body = SHEET_ROWS.map(r => [
+    r.project, r.date, r.person, r.hours,
+    (r.description || '').replace(/[\t\r\n]+/g, ' '),
+    r.task_url || ''
+  ].join('\t'));
+  return [head].concat(body).join('\n');
+}
+
+function copyText(text) {
+  // execCommand runs synchronously, so the click still counts as user
+  // activation when the new tab opens right after; the async API is a fallback
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  if (!ok && navigator.clipboard) { navigator.clipboard.writeText(text); ok = true; }
+  return ok;
+}
+
+function say(msg, ok) {
+  const box = document.getElementById('sendresult');
+  box.hidden = false;
+  box.className = 'sendresult ' + (ok ? 'is-ok' : 'is-err');
+  box.textContent = msg;
+}
+
+function copyToSheets() {
+  if (!SHEET_ROWS.length) { say('Nothing to copy — no line on this invoice was billed.', false); return; }
+  if (!copyText(tsv())) {
+    say('Could not reach the clipboard — download the Excel file instead.', false);
+    return;
+  }
+  const win = window.open('https://sheets.new', '_blank', 'noopener');
+  say(SHEET_ROWS.length + ' rows copied' + (win
+      ? ' — press ⌘V in the blank sheet that just opened'
+      : ' — your browser blocked the new tab, open sheets.new and paste'), true);
+}
+</script>
 {% endblock %}
