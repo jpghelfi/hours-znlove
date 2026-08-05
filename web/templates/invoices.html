@@ -40,12 +40,15 @@
         <th class="left">Issued</th>
         <th class="left">Saved by</th>
         <th class="left">Note</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
       {% for r in rows %}
       {% set diff = (r.hours_billed - r.hours_tracked)|round(2) %}
-      <tr>
+      {# the whole row opens the invoice: a link on the project name alone was
+         missed, and this is a list whose only action is "look at one" #}
+      <tr class="rowlink" data-href="/invoices/{{ r.id }}">
         {# into the invoice itself — the days as they were billed — rather than
            the live report, which shows what was logged instead #}
         <td class="left"><a href="/invoices/{{ r.id }}">{{ r.project }}</a></td>
@@ -67,9 +70,12 @@
             now {{ '%g'|format(r.hours_now) }} h logged</span>
           {%- endif %}
         </td>
+        {# a real link as well as the row handler: keyboard, middle-click and
+           "open in new tab" all have to keep working #}
+        <td class="nowrap"><a class="btn btn-sm" href="/invoices/{{ r.id }}">Details →</a></td>
       </tr>
       {% else %}
-      <tr class="empty"><td colspan="8">
+      <tr class="empty"><td colspan="9">
         No invoices yet. Open <a href="/project">By project</a>, pick one project and a month,
         then use the Invoice button.
       </td></tr>
@@ -77,4 +83,16 @@
     </tbody>
   </table>
 </div>
+
+<script>
+// Clicking anywhere on a row opens that invoice — except on a link or on a
+// text selection, where the click meant something else.
+document.querySelectorAll('tr.rowlink').forEach(tr => {
+  tr.addEventListener('click', e => {
+    if (e.target.closest('a')) return;
+    if (window.getSelection && String(window.getSelection())) return;
+    window.location = tr.dataset.href;
+  });
+});
+</script>
 {% endblock %}
