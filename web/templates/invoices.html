@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Invoices · Hours Tracker{% endblock %}
+{% block nav_invoices %}active{% endblock %}
+{% block content %}
+{% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
+
+<div class="week-head">
+  <div>
+    <h1>Invoices</h1>
+    <div class="subtle">
+      {{ rows|length }} invoice{{ '' if rows|length == 1 else 's' }} ·
+      <strong>{{ '%g'|format(total_billed) }}</strong> h billed of
+      {{ '%g'|format(total_tracked) }} h tracked
+    </div>
+  </div>
+  <form method="get" action="/invoices" class="range-form">
+    {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
+    <button type="submit" class="btn">Apply</button>
+  </form>
+</div>
+
+{% if not enabled %}
+<div class="card wide">
+  <div class="notebar warn">
+    The Invoices database isn't set up yet. Run <code>src/setup_invoices_db.py</code>, then set
+    <code>INVOICES_DB_ID</code> and <code>INVOICES_DS_ID</code> on the deploy host.
+  </div>
+</div>
+{% endif %}
+
+<div class="card wide">
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Project</th>
+        <th class="left">Month</th>
+        <th>Tracked</th>
+        <th>Billed</th>
+        <th>Difference</th>
+        <th class="left">Issued</th>
+        <th class="left">Saved by</th>
+        <th class="left">Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      {% set diff = (r.hours_billed - r.hours_tracked)|round(2) %}
+      <tr>
+        <td class="left">
+          {# straight back to the month this invoice was cut from #}
+          <a href="/project?period=monthly&start={{ r.month }}&project={{ r.project_id }}">{{ r.project }}</a>
+        </td>
+        <td class="left nowrap">{{ r.month_label }}</td>
+        <td class="tracked">{{ '%g'|format(r.hours_tracked) }}</td>
+        <td><strong>{{ '%g'|format(r.hours_billed) }}</strong></td>
+        <td>
+          {%- if diff %}<span class="chip {{ 'chip-over' if diff > 0 else 'chip-under' }}">
+            {{ '+' if diff > 0 }}{{ '%g'|format(diff) }}</span>{% else %}<span class="subtle">—</span>{% endif %}
+        </td>
+        <td class="left nowrap">{{ r.issued or '—' }}</td>
+        <td class="left">{{ r.saved_by or '—' }}</td>
+        <td class="left desc">
+          {{ r.note }}
+          {%- if r.stale %}
+          {# the logged hours moved after this was invoiced — which happens
+             every time somebody logs late, and nobody would otherwise notice #}
+          <span class="chip chip-over" title="Logged hours have changed since this invoice was saved">
+            now {{ '%g'|format(r.hours_now) }} h logged</span>
+          {%- endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="8">
+        No invoices yet. Open <a href="/project">By project</a>, pick one project and a month,
+        then use the Invoice button.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

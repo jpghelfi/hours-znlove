@@ -1,12 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Export · {{ label }} · Hours Tracker{% endblock %}
+{% block title %}{{ 'Invoice' if can_invoice else 'Export' }} · {{ label }} · Hours Tracker{% endblock %}
 {% block nav_project %}active{% endblock %}
 {% block content %}
 {% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
 <div class="week-head">
   <div>
-    <h1>Export · {{ label }}</h1>
-    <div class="subtle">{{ rng.label }} · {{ '%g'|format(total) }} h · what you change here goes in the file only</div>
+    <h1>{{ 'Invoice' if can_invoice else 'Export' }} · {{ label }}</h1>
+    <div class="subtle">{{ rng.label }} · {{ '%g'|format(total) }} h ·
+      {{ 'set the hours to bill, then save the month' if can_invoice
+         else 'what you change here goes in the file only' }}</div>
   </div>
   <div class="weeknav">
     <a class="btn" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">← Back to the report</a>
@@ -14,10 +16,51 @@
 </div>
 
 <div class="notebar">
-  <strong>Nothing here is saved back.</strong> Adjust hours or reword a comment for the copy you send —
-  the logged entries in Notion keep their original values. To correct what was actually logged,
-  edit it in the entry list on <a href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">the report</a>.
+  <strong>Adjusting hours here never changes what was logged.</strong> The entries in Notion keep their
+  original values{% if can_invoice %}; saving an invoice records what you billed, not a correction to
+  anyone's timesheet{% endif %}. To fix what was actually logged, edit it in the entry list on
+  <a href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">the report</a>.
 </div>
+
+{% if can_invoice %}
+<div class="card wide invoicebox">
+  <div class="exportgroup-head">
+    <strong>🧾 Invoice · {{ label }} · {{ rng.label }}</strong>
+    <span class="subtle" id="invtotals">
+      tracked <strong>{{ '%g'|format(total) }}</strong> h · billing <strong class="ibill">{{ '%g'|format(total) }}</strong> h
+    </span>
+  </div>
+  {% if existing_invoice %}
+  {# saving again is nearly always a correction, so say what's already on file
+     rather than silently replacing it #}
+  <div class="notebar warn">
+    Already invoiced on <strong>{{ existing_invoice.issued }}</strong> for
+    <strong>{{ '%g'|format(existing_invoice.hours_billed) }}</strong> h
+    {%- if existing_invoice.saved_by %} by {{ existing_invoice.saved_by }}{% endif %}.
+    Saving replaces that record.
+  </div>
+  {% endif %}
+  <div class="sendbox-grid">
+    <label>Issued
+      <input type="date" id="issued" value="{{ existing_invoice.issued or today_iso }}">
+    </label>
+    {# caption and hint wrapped together: labels are column-flex app-wide, so a
+       bare span alongside the text would drop onto its own line #}
+    <label><span>Note <span class="subtle">— optional, internal</span></span>
+      <input type="text" id="invnote" value="{{ existing_invoice.note or '' }}"
+             placeholder="e.g. wrote off 3h of rework" maxlength="200">
+    </label>
+  </div>
+  <div class="sendbox-actions">
+    <div class="subtle">Records the month against {{ label }} — it doesn't send anything</div>
+    <div class="sendbox-btns">
+      <button type="button" class="btn btn-primary" id="invbtn" onclick="saveInvoice()">
+        {{ 'Update invoice' if existing_invoice else 'Save invoice' }}</button>
+    </div>
+  </div>
+  <div class="sendresult" id="invresult" hidden role="status"></div>
+</div>
+{% endif %}
 
 <div class="card wide sendbox">
   {# The email fields only exist once a transport is configured — an inert To
@@ -70,7 +113,7 @@
   </div>
   <div class="entrylist-scroll">
   <table class="grid flat exporttable">
-    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Hours</th><th class="left">Comment</th><th class="left">Ticket</th></tr></thead>
+    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Tracked</th><th>To bill</th><th class="left">Comment</th><th class="left">Ticket</th></tr></thead>
     <tbody>
       {% for r in g.rows %}
       <tr data-project-id="{{ r.project_id or '' }}" data-project="{{ r.project }}"
@@ -78,9 +121,13 @@
           data-task="{{ r.task }}" data-task-url="{{ r.task_url }}">
         <td class="left nowrap">{{ r.date }}</td>
         <td class="left">{{ r.person }}</td>
+        {# tracked is what Notion holds — shown, never edited here; the inline
+           editor on /project is where a wrong number gets corrected #}
+        <td class="tracked">{{ '%g'|format(r.hours) }}</td>
         <td class="cell"><input type="number" step="0.25" min="0" max="24" inputmode="decimal"
                                 class="xhours" value="{{ '%g'|format(r.hours) }}"
-                                aria-label="Hours for the export — {{ r.person }}, {{ r.date }}"
+                                data-tracked="{{ '%g'|format(r.hours) }}"
+                                aria-label="Hours to bill — {{ r.person }}, {{ r.date }}"
                                 oninput="recalc()"></td>
         <td class="left"><input type="text" class="xdesc" value="{{ r.description }}"
                                 aria-label="Comment for the export — {{ r.person }}, {{ r.date }}"></td>
@@ -127,6 +174,8 @@ function recalc() {
   });
   const head = document.querySelector('.week-head .subtle');
   head.textContent = head.textContent.replace(/[\d.]+ h/, (Math.round(grand * 100) / 100) + ' h');
+  const bill = document.querySelector('#invtotals .ibill');
+  if (bill) bill.textContent = (Math.round(grand * 100) / 100).toString();
 }
 
 function payload() {
@@ -205,6 +254,53 @@ function say(msg, ok, href) {
 
 /* With Google connected the app makes the file itself: named
    "<Project> - Hours - <Period>", a tab per project, and no pasting. */
+{% if can_invoice %}
+async function saveInvoice() {
+  const btn = document.getElementById('invbtn');
+  const box = document.getElementById('invresult');
+  const billed = document.querySelector('#invtotals .ibill').textContent;
+  const prompt = {{ 'true' if existing_invoice else 'false' }}
+    ? 'Replace the saved invoice for {{ label }}, {{ rng.label }} with ' + billed + ' h?'
+    : 'Record {{ label }}, {{ rng.label }} as invoiced for ' + billed + ' h?';
+  if (!confirm(prompt)) return;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Saving…';
+  try {
+    const body = JSON.parse(payload());
+    body.project_id = {{ (sel.id if sel else '')|tojson }};
+    body.month = {{ rng.from|tojson }};
+    body.issued = document.getElementById('issued').value;
+    body.note = document.getElementById('invnote').value;
+    const res = await fetch('/api/invoice', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    box.hidden = false;
+    if (data.ok) {
+      const i = data.invoice;
+      box.className = 'sendresult is-ok';
+      box.textContent = (i.replaced ? 'Invoice updated: ' : 'Invoiced: ') + i.hours_billed
+        + ' h billed of ' + i.hours_tracked + ' h tracked, issued ' + i.issued + '.';
+      const a = document.createElement('a');
+      a.href = '/invoices'; a.textContent = ' See all invoices →';
+      box.appendChild(a);
+      btn.textContent = 'Update invoice';
+    } else {
+      box.className = 'sendresult is-err';
+      box.textContent = 'Not saved: ' + (data.error || 'unknown error');
+      btn.textContent = original;
+    }
+  } catch (e) {
+    box.hidden = false;
+    box.className = 'sendresult is-err';
+    box.textContent = 'Not saved: network error';
+    btn.textContent = original;
+  }
+  btn.disabled = false;
+}
+{% endif %}
+
 async function makeSheet() {
   const btn = document.getElementById('sheetbtn');
   btn.disabled = true;
