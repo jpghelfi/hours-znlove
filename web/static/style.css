@@ -740,6 +740,14 @@ dialog.pop label .subtle { font-size: 11.5px; }
    decision — so tracked reads back a step */
 .tracked { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .invoicebox { border: 1px solid var(--accent); }
+/* invoice detail: a line billed at less than it was logged, and one billed at
+   nothing — the second reads as struck through rather than merely faded, since
+   "not on this bill" is a different statement from "small" */
+.adjusted { color: var(--over); }
+.row-unbilled td { opacity: .55; }
+.row-unbilled .desc { text-decoration: line-through; }
+a.plain { color: inherit; text-decoration: none; }
+a.plain:hover { text-decoration: underline; }
 .notebar.warn { background: var(--saving); color: var(--ink); }
 /* the linked ticket where an entry is listed (reports, export screen) */
 .tlink { display: inline-block; font-size: 12.5px; font-weight: 600; color: var(--accent); white-space: nowrap; }

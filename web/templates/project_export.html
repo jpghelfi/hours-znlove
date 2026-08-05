@@ -116,7 +116,10 @@
     <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Tracked</th><th>To bill</th><th class="left">Comment</th><th class="left">Ticket</th></tr></thead>
     <tbody>
       {% for r in g.rows %}
-      <tr data-project-id="{{ r.project_id or '' }}" data-project="{{ r.project }}"
+      {# the entry id rides along so an invoice can record which lines were
+         billed at something other than their logged hours #}
+      <tr data-entry-id="{{ r.id or '' }}"
+          data-project-id="{{ r.project_id or '' }}" data-project="{{ r.project }}"
           data-person="{{ r.person }}" data-date="{{ r.date }}"
           data-task="{{ r.task }}" data-task-url="{{ r.task_url }}">
         <td class="left nowrap">{{ r.date }}</td>
@@ -151,6 +154,7 @@ function rows() {
   document.querySelectorAll('.exporttable tbody tr').forEach(tr => {
     const hours = parseFloat(tr.querySelector('.xhours').value) || 0;
     out.push({
+      id: tr.dataset.entryId || null,
       project_id: tr.dataset.projectId || null,
       project: tr.dataset.project,
       person: tr.dataset.person,

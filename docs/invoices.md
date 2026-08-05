@@ -39,6 +39,7 @@ and wired into both id paths in `src/config.py` — `databases.json` locally,
 | `Issued` | date | defaults to today, editable — July is usually invoiced in August |
 | `Saved by` | people | who pressed the button |
 | `Note` | rich text | internal, one line |
+| `Adjustments` | rich text | `{entry id: billed hours}` for the lines billed at something other than their logged hours (added on startup by `ensure_invoice_properties`) |
 
 Everything degrades quietly when it isn't configured: `invoices_enabled()` is
 False, the Invoice button never appears, and `/invoices` explains what to run
@@ -60,6 +61,38 @@ claim was tracked. Billed is a human decision, tracked is a fact.
 
 Both the month (must be the 1st) and the project are re-validated server-side —
 the button that was rendered is not evidence of anything.
+
+## Opening an invoice: the days as they were billed
+
+Clicking an invoice opens `/invoices/{id}` — the month day by day, showing
+**Tracked** next to **Billed** for every entry, with a subtotal per day. A line
+billed at less than it was logged is marked; a line billed at nothing is struck
+through, because "not on this bill" is a different statement from "small".
+
+Making that possible meant storing something the first version deliberately
+didn't. The compromise is to store **only the lines that differ** — an
+`Adjustments` property holding `{entry id: billed hours}` for the handful that
+were changed, chunked across rich-text objects if a month ever needs more than
+one. Opening an invoice then re-reads the month's entries and lays those
+overrides back over them.
+
+Two consequences of reconstructing rather than snapshotting, both deliberate:
+
+- The detail shows **today's** entries — current comments, and anything logged
+  after the invoice was saved. That's the same reason the list can flag a month
+  that has moved, and it's the honest reading: an invoice records what was
+  billed, not a frozen copy of the timesheet.
+- The adjustments are **rewritten on every save**, so a line billed back at its
+  logged hours stops being an adjustment instead of lingering as one.
+
+Invoices saved *before* this existed have no breakdown, and their days would
+add up to the tracked figure while the header says something else. Rather than
+show that contradiction, the page says so and offers to re-invoice — which
+records the breakdown properly.
+
+The invoice id comes out of a URL, so `get_invoice` refuses any page whose
+parent isn't the Invoices data source: a project row or a time entry pasted
+into the path lands back on the list, not on a half-rendered invoice.
 
 ## The list
 
