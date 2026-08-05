@@ -28,9 +28,22 @@ def _project_tab(g: dict, period_label: str) -> list[list]:
         ["Person", "Hours", "Days", "Entries"],
     ]
     rows += [[p["name"], p["hours"], p["days"], p["entries"]] for p in g["people"]]
-    rows += [["Total", g["hours"]], [], ["Log"], ["Date", "Person", "Hours", "Comment"]]
-    rows += [[e["date"], e["person"], e["hours"], e["description"]] for e in g["log"]]
+    rows += [["Total", g["hours"]], [], ["Log"],
+             ["Date", "Person", "Hours", "Comment", "Ticket"]]
+    rows += [[e["date"], e["person"], e["hours"], e["description"], _ticket(e)]
+             for e in g["log"]]
     return rows
+
+
+def _ticket(entry: dict) -> str:
+    """The linked Notion ticket as a clickable cell (the values write goes in as
+    USER_ENTERED, so a formula lands as a formula). Quotes in a ticket name
+    would end the string early, so they're doubled."""
+    url = entry.get("task_url")
+    if not url:
+        return ""
+    label = (entry.get("task") or "Notion ticket").replace('"', '""')
+    return f'=HYPERLINK("{url}","{label}")'
 
 
 def _summary_tab(groups: list[dict], period_label: str) -> list[list]:
@@ -94,7 +107,7 @@ def create(entries: list[dict], period_label: str, label: str) -> dict:
                 requests.append(_bold(sid, i))
         requests.append({"autoResizeDimensions": {"dimensions": {
             "sheetId": sid, "dimension": "COLUMNS",
-            "startIndex": 0, "endIndex": 5}}})
+            "startIndex": 0, "endIndex": 6}}})
     if requests:
         call("POST", f"{CREATE_URL}/{made['spreadsheetId']}:batchUpdate",
              json={"requests": requests})

@@ -697,3 +697,44 @@ dialog.pop label .subtle { font-size: 11.5px; }
   letter-spacing: .03em; padding: 3px 9px; border-radius: 7px; cursor: pointer;
 }
 .expand-all:hover { color: var(--ink); background: var(--active-bg); }
+
+/* Notion ticket picker on the log form: a search box whose results drop over
+   the Save button, plus the chosen ticket as a chip. */
+.tpick { position: relative; display: flex; flex-direction: column; gap: 6px; }
+/* labels are column-flex app-wide; this one is a caption plus a hint, which
+   belong on one line */
+.tpick > label { flex-direction: row; align-items: baseline; gap: 5px; padding: 0; }
+.tpick-list {
+  position: absolute; z-index: 30; top: 100%; left: 0; right: 0; margin: 4px 0 0;
+  padding: 6px; list-style: none; max-height: 260px; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.16);
+}
+.tpick-opt {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-radius: 8px; font-size: 14px; font-weight: 500; color: var(--ink);
+  cursor: pointer; min-width: 0;
+}
+.tpick-opt.on, .tpick-opt:hover { background: var(--head); }
+.tpick-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpick-mine {
+  flex: none; font-size: 11px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .03em; padding: 2px 7px; border-radius: 999px;
+  background: var(--okbg); color: var(--ok);
+}
+.tpick-chip {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  /* an explicit display beats the UA's [hidden] rule, which would leave the
+     empty chip on screen before a ticket is chosen */
+  padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg);
+}
+.tpick-chip a {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 600; color: var(--ink);
+}
+.tpick-ico { flex: none; }
+.tpick-hint { font-size: 12.5px; }
+.tpick [hidden] { display: none; }
+/* the linked ticket where an entry is listed (reports, export screen) */
+.tlink { display: inline-block; font-size: 12.5px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+td.desc .tlink { margin-left: 8px; }

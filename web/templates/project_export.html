@@ -70,11 +70,12 @@
   </div>
   <div class="entrylist-scroll">
   <table class="grid flat exporttable">
-    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Hours</th><th class="left">Comment</th></tr></thead>
+    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Hours</th><th class="left">Comment</th><th class="left">Ticket</th></tr></thead>
     <tbody>
       {% for r in g.rows %}
       <tr data-project-id="{{ r.project_id or '' }}" data-project="{{ r.project }}"
-          data-person="{{ r.person }}" data-date="{{ r.date }}">
+          data-person="{{ r.person }}" data-date="{{ r.date }}"
+          data-task="{{ r.task }}" data-task-url="{{ r.task_url }}">
         <td class="left nowrap">{{ r.date }}</td>
         <td class="left">{{ r.person }}</td>
         <td class="cell"><input type="number" step="0.25" min="0" max="24" inputmode="decimal"
@@ -83,6 +84,10 @@
                                 oninput="recalc()"></td>
         <td class="left"><input type="text" class="xdesc" value="{{ r.description }}"
                                 aria-label="Comment for the export — {{ r.person }}, {{ r.date }}"></td>
+        {# read-only: the ticket is what the work was filed against, so unlike
+           the hours and the comment it isn't the sender's to reword #}
+        <td class="left">{% if r.task_url %}<a class="tlink" href="{{ r.task_url }}"
+             target="_blank" rel="noopener noreferrer">{{ r.task or 'Notion ticket' }}</a>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -105,6 +110,8 @@ function rows() {
       date: tr.dataset.date,
       hours: hours,
       description: tr.querySelector('.xdesc').value,
+      task: tr.dataset.task || '',
+      task_url: tr.dataset.taskUrl || '',
     });
   });
   return out;
@@ -142,10 +149,11 @@ function downloadBook() {
    sheet is the one path that needs no extra authorization: copy the rows as
    TSV (what Sheets pastes into columns), then open sheets.new. */
 function tsv() {
-  const head = ['Project', 'Date', 'Person', 'Hours', 'Comment'].join('\t');
+  const head = ['Project', 'Date', 'Person', 'Hours', 'Comment', 'Ticket'].join('\t');
   const body = rows().filter(r => r.hours).map(r => [
     r.project, r.date, r.person, r.hours,
-    (r.description || '').replace(/[\t\r\n]+/g, ' ')
+    (r.description || '').replace(/[\t\r\n]+/g, ' '),
+    r.task_url || ''
   ].join('\t'));
   return [head].concat(body).join('\n');
 }

@@ -1,0 +1,132 @@
+{# Optional Notion ticket on a logged entry.
+
+   Two ways in, and they fail independently on purpose: searching needs the
+   Hours Tracker integration to be connected to the ticket boards, while
+   pasting a link needs nothing at all (a Notion URL carries the page id and
+   the title in its slug). So when search isn't available the box still works
+   as a paste field rather than looking broken. #}
+<div class="tpick" id="tpick">
+  <label for="tq">Notion ticket <span class="subtle">— optional</span></label>
+
+  <div class="tpick-chip" id="tchip" hidden>
+    <span class="tpick-ico" aria-hidden="true">🔗</span>
+    <a id="tchipLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+    <button type="button" class="linkbtn" id="tclear">remove</button>
+  </div>
+
+  <div id="tbox">
+    <input type="search" id="tq" autocomplete="off" spellcheck="false"
+           placeholder="Search your tickets, or paste a Notion link"
+           aria-label="Find a Notion ticket" aria-expanded="false"
+           aria-controls="tlist" role="combobox">
+    <ul class="tpick-list" id="tlist" hidden role="listbox"></ul>
+    <div class="subtle tpick-hint" id="thint" hidden></div>
+  </div>
+
+  <input type="hidden" name="task_url" id="turl">
+  <input type="hidden" name="task_label" id="tlabel">
+</div>
+
+<script>
+(function () {
+  const q = document.getElementById('tq'), list = document.getElementById('tlist');
+  const hint = document.getElementById('thint'), box = document.getElementById('tbox');
+  const chip = document.getElementById('tchip'), chipLink = document.getElementById('tchipLink');
+  const urlIn = document.getElementById('turl'), labelIn = document.getElementById('tlabel');
+  let timer = null, seq = 0, items = [], cursor = -1;
+
+  // the same three domains parse_task_url accepts — app.notion.com is what
+  // Notion hands out today, so leaving it out here sends a pasted link down
+  // the search path instead of resolving it
+  const isLink = s => /\bnotion\.(com|so|site)\//i.test(s || '');
+
+  function setHint(text) { hint.textContent = text || ''; hint.hidden = !text; }
+
+  function pick(item) {
+    urlIn.value = item.url; labelIn.value = item.title;
+    chipLink.textContent = item.title; chipLink.href = item.url;
+    chip.hidden = false; box.hidden = true; close();
+  }
+
+  function clear() {
+    urlIn.value = ''; labelIn.value = '';
+    chip.hidden = true; box.hidden = false; q.value = ''; setHint(''); close();
+    q.focus();
+  }
+  document.getElementById('tclear').addEventListener('click', clear);
+
+  function close() { list.hidden = true; list.innerHTML = ''; items = []; cursor = -1; q.setAttribute('aria-expanded', 'false'); }
+
+  function render(results, connected) {
+    items = results; cursor = -1; list.innerHTML = '';
+    if (!results.length) {
+      close();
+      setHint(connected === false
+        ? 'Ticket search needs a Notion board connected to Hours Tracker — paste a ticket link instead.'
+        : (q.value.trim() ? 'No ticket matched.' : 'No tickets assigned to you — search by name, or paste a link.'));
+      return;
+    }
+    setHint('');
+    results.forEach((r, i) => {
+      const li = document.createElement('li');
+      li.className = 'tpick-opt'; li.setAttribute('role', 'option'); li.tabIndex = -1;
+      const name = document.createElement('span');
+      name.className = 'tpick-nm'; name.textContent = r.title;
+      li.appendChild(name);
+      if (r.mine) { const b = document.createElement('span'); b.className = 'tpick-mine'; b.textContent = 'yours'; li.appendChild(b); }
+      li.addEventListener('mousedown', e => { e.preventDefault(); pick({url: r.url, title: r.title}); });
+      li.addEventListener('mousemove', () => move(i - cursor));
+      list.appendChild(li);
+    });
+    list.hidden = false; q.setAttribute('aria-expanded', 'true');
+  }
+
+  function move(delta) {
+    if (!items.length) return;
+    const rows = list.children;
+    if (cursor >= 0) rows[cursor].classList.remove('on');
+    cursor = Math.max(0, Math.min(items.length - 1, cursor + delta));
+    rows[cursor].classList.add('on');
+  }
+
+  async function run() {
+    const text = q.value.trim();
+    const mine = seq += 1;
+    if (isLink(text)) {                      // a pasted link resolves on its own
+      setHint('Reading that link…');
+      try {
+        const res = await fetch('/api/tasks/resolve?url=' + encodeURIComponent(text));
+        const data = await res.json();
+        if (seq !== mine) return;
+        if (!data.ok) { close(); setHint("That isn't a link to a Notion page."); return; }
+        render([{title: data.label, url: data.url, mine: false}], true);
+        if (!data.verified) setHint("Link accepted. (This app can't open that page, so the name comes from the link itself.)");
+      } catch (e) { if (seq === mine) { close(); setHint('Could not read that link.'); } }
+      return;
+    }
+    try {
+      const res = await fetch('/api/tasks/search?q=' + encodeURIComponent(text) + '&mine=0');
+      const data = await res.json();
+      if (seq !== mine) return;
+      if (!data.ok) { close(); setHint('Ticket search is unavailable right now — paste a link instead.'); return; }
+      render(data.results, data.connected);
+    } catch (e) { if (seq === mine) { close(); setHint('Ticket search is unavailable right now — paste a link instead.'); } }
+  }
+
+  function schedule(delay) { clearTimeout(timer); timer = setTimeout(run, delay); }
+
+  q.addEventListener('focus', () => { if (!items.length) schedule(0); });   // opens on "your tickets"
+  q.addEventListener('input', () => schedule(isLink(q.value) ? 0 : 250));
+  q.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      // this input lives inside the entry form: Enter must choose a ticket,
+      // never submit the hours
+      e.preventDefault();
+      if (items.length) pick(items[Math.max(0, cursor)]);
+    } else if (e.key === 'ArrowDown') { e.preventDefault(); move(cursor < 0 ? 0 : 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+    else if (e.key === 'Escape') { close(); }
+  });
+  document.addEventListener('click', e => { if (!document.getElementById('tpick').contains(e.target)) close(); });
+})();
+</script>
