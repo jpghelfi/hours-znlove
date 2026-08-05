@@ -962,19 +962,42 @@ def _task_result(page: dict, person_id: str | None, email: str | None) -> dict:
     }
 
 
+_MY_TASKS_TTL = 60.0
+_MAX_BOARDS_QUERIED = 12
+_my_tasks_cache: dict = {}   # person key -> (fetched_at, results)
+
+
 def my_tasks(person_id: str | None, email: str | None, limit: int = 8) -> list[dict]:
     """The picker's opening list: tickets assigned to this person, freshest
     first. One query per board, filtered on that board's own assignee property,
-    so the list is short and personal before anyone types a thing."""
+    so the list is short and personal before anyone types a thing.
+
+    Only boards that actually get *queried* count against the fan-out cap.
+    Capping the raw board list instead would spend the budget on boards with no
+    assignee column at all — with 27 connected boards and 11 usable ones, that
+    left 8 of the 11 unread. Results are cached briefly because this runs when
+    the field is focused, and a dozen sequential board queries is a slow way to
+    open a dropdown twice.
+    """
+    key = f"{person_id}|{(email or '').lower()}|{limit}"
+    now = time.time()
+    hit = _my_tasks_cache.get(key)
+    if hit and now - hit[0] < _MY_TASKS_TTL:
+        return hit[1]
+
     out: list[dict] = []
-    for ds_id in task_sources()[:8]:   # bound the fan-out — these are other teams' boards
+    queried = 0
+    for ds_id in task_sources():
+        if queried >= _MAX_BOARDS_QUERIED or len(out) >= limit:
+            break
         schema = _task_schema(ds_id)
         if schema["people"] and person_id:
             flt = {"property": schema["people"], "people": {"contains": person_id}}
         elif schema["email"] and email:
             flt = {"property": schema["email"], "email": {"equals": email}}
         else:
-            continue
+            continue          # no assignee column: nothing to scope by, not a query
+        queried += 1
         try:
             res = _notion.data_sources.query(
                 data_source_id=ds_id, page_size=limit, filter=flt,
@@ -983,7 +1006,9 @@ def my_tasks(person_id: str | None, email: str | None, limit: int = 8) -> list[d
             logging.warning("Ticket board %s wouldn't answer an assignee query", ds_id)
             continue
         out.extend(_task_result(p, person_id, email) for p in res["results"])
-    return out[:limit]
+    out = out[:limit]
+    _my_tasks_cache[key] = (now, out)
+    return out
 
 
 def search_tasks(query: str, person_id: str | None, email: str | None,
