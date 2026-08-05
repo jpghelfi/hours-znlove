@@ -178,7 +178,12 @@
                  value="{{ '%g'|format(e.hours) }}"
                  onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
         </td>
-        <td class="left desc">{{ e.description }}</td>
+        {# the ticket rides in the description cell rather than its own column:
+           the table's colspans already flex on is_all, and an extra column
+           would be empty for every entry logged before this existed #}
+        <td class="left desc">{{ e.description }}{% if e.task_url %}
+          <a class="tlink" href="{{ e.task_url }}" target="_blank" rel="noopener noreferrer">🔗 {{ e.task or 'Notion ticket' }}</a>
+        {% endif %}</td>
       </tr>
       {% else %}
       <tr class="empty"><td colspan="{{ 5 if is_all else 4 }}">No entries logged in this period.</td></tr>

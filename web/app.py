@@ -96,6 +96,7 @@ async def _static_cache_headers(request: Request, call_next):
 def _startup() -> None:
     ops.ensure_person_property()
     ops.ensure_admin_property()
+    ops.ensure_task_properties()
 
 
 @app.get("/healthz")
@@ -215,6 +216,7 @@ _ENTRY_ERRORS = {
     "hours": "Hours must be between 0.25 and 24.",
     "project": "Pick one of your projects.",
     "save": "Couldn't save the entry — try again.",
+    "task": "That doesn't look like a link to a Notion page.",
 }
 
 
@@ -225,6 +227,8 @@ def submit_entry(
     date: str = Form(...),
     hours: float = Form(...),
     description: str = Form(""),
+    task_url: str = Form(""),
+    task_label: str = Form(""),
 ):
     user = _require_login(request)
     if not user:
@@ -237,11 +241,69 @@ def submit_entry(
         return RedirectResponse(url="/?err=hours", status_code=303)
     if project_id not in _member_project_ids(user.get("id")):
         return RedirectResponse(url="/?err=project", status_code=303)
+    # The ticket link is re-parsed here rather than trusted: the browser sends
+    # it, so a junk or non-Notion URL must never reach the entry.
+    task = ops.parse_task_url(task_url) if task_url else None
+    if task_url and not task:
+        return RedirectResponse(url="/?err=task", status_code=303)
+    if task and (ops.resolve_task(task["id"]) or {}).get("ours"):
+        # the picker already refuses these; this catches a hand-made POST
+        return RedirectResponse(url="/?err=task", status_code=303)
+    # the label the picker resolved, else the one in the link's own slug
+    label = (task_label.strip() or task["label"] or "Notion ticket") if task else ""
     try:
-        ops.create_entry(user.get("id"), project_id, date, hours, description)
+        ops.create_entry(user.get("id"), project_id, date, hours, description,
+                         task_url=task["url"] if task else "", task_label=label)
     except Exception:
         return RedirectResponse(url="/?err=save", status_code=303)
     return RedirectResponse(url="/?ok=1", status_code=303)
+
+
+@app.get("/api/tasks/search")
+def api_tasks_search(request: Request, q: str = "", mine: int = 0):
+    """Ticket picker: tickets assigned to the caller, or a title search.
+
+    Scoped by the ticket's assignee, matched against the caller's own Notion
+    identity — the id they logged in with, or their email for boards that keep
+    the assignee in an email column. An empty q lists just their tickets; a
+    query searches every connected board, theirs sorted first.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "login required"}, status_code=401)
+    if not ops.task_sources():
+        # No ticket board is connected to the integration yet — say so plainly
+        # instead of returning an empty list that reads like "no tickets".
+        return JSONResponse({"ok": True, "results": [], "connected": False})
+    try:
+        results = ops.search_tasks(q[:100], user.get("id"), user.get("email"),
+                                   mine_only=bool(mine))
+    except Exception:
+        logging.exception("Ticket search failed for %s", user.get("email"))
+        return JSONResponse({"ok": False, "error": "search failed"}, status_code=502)
+    return JSONResponse({"ok": True, "results": results, "connected": True})
+
+
+@app.get("/api/tasks/resolve")
+def api_tasks_resolve(request: Request, url: str = ""):
+    """A pasted link -> the ticket to attach.
+
+    Parsing is offline and always works; the Notion read only *upgrades* the
+    label to the ticket's real title, and its failure is not an error — it just
+    means the page isn't shared with this app.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "login required"}, status_code=401)
+    task = ops.parse_task_url(url[:600])
+    if not task:
+        return JSONResponse({"ok": False, "error": "not a Notion page link"}, status_code=400)
+    live = ops.resolve_task(task["id"])
+    if live and live.get("ours"):
+        return JSONResponse({"ok": False, "error": "that's an Hours Tracker page, not a ticket"},
+                            status_code=400)
+    return JSONResponse({"ok": True, "url": task["url"], "verified": bool(live),
+                         "label": (live or {}).get("title") or task["label"] or "Notion ticket"})
 
 
 @app.get("/week", response_class=HTMLResponse)
@@ -439,9 +501,10 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
     import io
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["date", "person", "project", "hours", "description"])
+    w.writerow(["date", "person", "project", "hours", "description", "task", "task_url"])
     for e in sorted(data["entries"], key=lambda e: (e["date"], e["person"])):
-        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"]])
+        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"],
+                    e.get("task", ""), e.get("task_url", "")])
     from fastapi.responses import Response
     fname = f"hours_{data['from']}_{data['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
@@ -706,9 +769,10 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     import io
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["date", "person", "project", "hours", "description"])
+    w.writerow(["date", "person", "project", "hours", "description", "task", "task_url"])
     for e in sorted(entries, key=lambda e: (e["date"], e["project"], e["person"])):
-        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"]])
+        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"],
+                    e.get("task", ""), e.get("task_url", "")])
     from fastapi.responses import Response
     fname = f"{_export_slug(_export_label(sel, sel_ids))}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
@@ -740,6 +804,8 @@ def _export_rows(entries: list[dict], name_map: dict) -> list[dict]:
         "date": e["date"],
         "hours": e["hours"],
         "description": e.get("description") or "",
+        "task": e.get("task") or "",
+        "task_url": e.get("task_url") or "",
     } for e in entries]
 
 
@@ -769,6 +835,10 @@ def _rows_from_payload(rows: list) -> list[dict]:
             "date": date,
             "hours": round(hours, 2),
             "description": str(r.get("description") or "")[:2000],
+            # the ticket rides along read-only, but it still arrives from the
+            # browser, so the URL is re-parsed rather than trusted into a file
+            "task": str(r.get("task") or "")[:200],
+            "task_url": (ops.parse_task_url(str(r.get("task_url") or "")[:600]) or {}).get("url", ""),
         })
     return out
 

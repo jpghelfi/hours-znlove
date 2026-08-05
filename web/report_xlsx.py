@@ -141,7 +141,7 @@ def _project_sheet(wb: Workbook, g: dict, period_label: str, used: set) -> None:
 
     log_head = row + 3
     ws.cell(row=log_head - 1, column=1, value="Log").font = _SECTION_FONT
-    for i, h in enumerate(["Date", "Person", "Hours", "Comment"], start=1):
+    for i, h in enumerate(["Date", "Person", "Hours", "Comment", "Ticket"], start=1):
         c = ws.cell(row=log_head, column=i, value=h)
         c.font, c.fill, c.border = _TH_FONT, _HEAD_FILL, _RULE
     row = log_head + 1
@@ -152,10 +152,15 @@ def _project_sheet(wb: Workbook, g: dict, period_label: str, used: set) -> None:
         c = ws.cell(row=row, column=4, value=e["description"])
         # comments are free text and often long: wrap rather than run off the page
         c.alignment = Alignment(wrap_text=True, vertical="top")
+        if e.get("task_url"):
+            # the linked Notion ticket, clickable — the column stays empty for
+            # every entry logged without one
+            t = ws.cell(row=row, column=5, value=e.get("task") or "Notion ticket")
+            t.hyperlink, t.style = e["task_url"], "Hyperlink"
         row += 1
     if g["log"]:
-        ws.auto_filter.ref = f"A{log_head}:D{row - 1}"
-    _widths(ws, {"A": 12, "B": 24, "C": 9, "D": 90})
+        ws.auto_filter.ref = f"A{log_head}:E{row - 1}"
+    _widths(ws, {"A": 12, "B": 24, "C": 9, "D": 90, "E": 34})
     # keep the log's header visible while scrolling a long month
     ws.freeze_panes = f"A{log_head + 1}"
 

@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
+import re
 import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 # reuse the existing client/config from src/
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -32,6 +35,23 @@ def ensure_person_property() -> None:
     ds = _notion.data_sources.retrieve(TIME_DS)
     if "Person" not in ds["properties"]:
         _notion.data_sources.update(TIME_DS, properties={"Person": {"people": {}}})
+
+
+def ensure_task_properties() -> None:
+    """Make sure Time Entries can hold the Notion ticket an entry was for.
+
+    Two plain properties, deliberately not a relation: znlove's tickets are
+    spread across many boards, and a Notion relation targets exactly one data
+    source. `Task URL` is the link, `Task` the label shown in reports/exports.
+    """
+    ds = _notion.data_sources.retrieve(TIME_DS)
+    missing = {}
+    if "Task" not in ds["properties"]:
+        missing["Task"] = {"rich_text": {}}
+    if "Task URL" not in ds["properties"]:
+        missing["Task URL"] = {"url": {}}
+    if missing:
+        _notion.data_sources.update(TIME_DS, properties=missing)
 
 
 def ensure_admin_property() -> None:
@@ -283,6 +303,7 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
                 "date": date["start"][:10] if date else None,
                 "hours": props["Hours"]["number"] or 0,
                 "description": desc[0]["plain_text"] if desc else "",
+                **entry_task(props),
             })
         if not res.get("has_more"):
             break
@@ -317,6 +338,7 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
                 "date": date["start"][:10],
                 "hours": props["Hours"]["number"] or 0,
                 "description": desc[0]["plain_text"] if desc else "",
+                **entry_task(props),
             })
         if not res.get("has_more"):
             break
@@ -326,7 +348,8 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
 
 # ---- writes ------------------------------------------------------------
 
-def create_entry(person_id: str | None, project_id: str, date: str, hours: float, description: str = "") -> None:
+def create_entry(person_id: str | None, project_id: str, date: str, hours: float,
+                 description: str = "", task_url: str = "", task_label: str = "") -> None:
     pname_map = _project_name_map()
     props = {
         "Entry": {"title": [{"text": {"content": f"{pname_map.get(project_id, 'Entry')} — {date}"}}]},
@@ -337,6 +360,11 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     }
     if person_id:
         props["Person"] = {"people": [{"id": person_id}]}
+    if task_url:
+        # Written only when there is a link: an entry with no ticket leaves both
+        # properties untouched, so nothing changes for the CLI or Notion forms.
+        props[_TASK_URL_PROP] = {"url": task_url}
+        props[_TASK_PROP] = {"rich_text": [{"text": {"content": task_label[:200]}}]}
     _notion.pages.create(parent={"type": "data_source_id", "data_source_id": TIME_DS}, properties=props)
 
 
@@ -731,3 +759,292 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
         else:
             create_entry(person_id, project_id, date, hours)
         return {"ok": True, "hours": hours}
+
+
+# ---- Notion tickets ----------------------------------------------------
+#
+# An entry can optionally point at the Notion ticket the work was for. The two
+# ways in need very different things from Notion:
+#
+#   * paste a link — needs nothing at all. A Notion URL carries the page id
+#     *and* the title in its slug, so parse_task_url resolves it offline. That
+#     works for every page in the workspace, shared with us or not.
+#   * search — needs the Hours Tracker integration to actually read the ticket
+#     boards (an admin adds the connection to the top-level pages; access
+#     inherits to every child). Until that happens task_sources() is empty and
+#     the picker degrades to paste-only rather than erroring.
+#
+# Search is scoped to the asking person by the ticket's *assignee*: their
+# Notion user id is the same id a people property returns, and their email
+# covers boards that keep the assignee in an email column instead.
+
+_TASK_PROP = "Task"
+_TASK_URL_PROP = "Task URL"
+
+# What a ticket board might call its assignee column, best match first.
+_ASSIGNEE_NAMES = ("assignee", "assigned to", "assigned", "owner", "responsible",
+                   "person", "people", "developer")
+
+# Our own databases are data sources too — never offer them as ticket boards,
+# and never accept one of their rows as a "ticket". Both id flavours are listed
+# because a page's parent is reported as a data source or as a database
+# depending on how it was created.
+_OWN_DS = {_bare(v) for k, v in _ids.items()
+           if v and (k.endswith("_ds_id") or k.endswith("_db_id"))}
+
+_TASK_SRC_TTL = 300.0
+_task_src_cache: dict = {"at": 0.0, "sources": None}
+_task_schema_cache: dict = {}   # ds id -> (fetched_at, {title, people, email})
+
+_HEX32 = re.compile(r"^[0-9a-f]{32}$")
+_ID_TAIL = re.compile(r"^(.*?)-?([0-9a-fA-F]{32})$")
+
+
+def parse_task_url(url: str) -> dict | None:
+    """A pasted Notion URL -> {"id", "url", "label"} without calling Notion.
+
+    Notion links carry the page id as 32 hex at the end of the last path
+    segment and the page title as the slug before it, so a paste resolves with
+    no permission on the page whatsoever. Returns None for anything that isn't
+    a link to a Notion *page*.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    try:
+        u = urlparse(url)
+    except ValueError:
+        return None
+    # notion.com is what Notion hands out today (app.notion.com/p/<slug>-<id>);
+    # notion.so is the older domain still in everyone's bookmarks, and
+    # notion.site covers a published page. Matched as whole labels, not by
+    # suffix: a plain endswith would also welcome evilnotion.com, and these
+    # links get clicked out of client-facing reports.
+    host = (u.netloc or "").lower().split("@")[-1].split(":")[0].rstrip(".")
+    if not any(host == d or host.endswith("." + d)
+               for d in ("notion.com", "notion.so", "notion.site")):
+        return None
+
+    q = parse_qs(u.query)
+    if "v" in q and "p" not in q:
+        # ?v=<view id> is a board link, and its trailing id is the database's —
+        # accepting it would file hours against a whole board.
+        return None
+
+    seg = unquote((u.path or "").rstrip("/").split("/")[-1])
+    page_id, label = None, ""
+    if "p" in q:
+        # Side-peek link: the ticket is in ?p=, and the slug in the path
+        # belongs to the *board*, so it must not be used as the label.
+        cand = q["p"][0].replace("-", "").lower()
+        page_id = cand if _HEX32.match(cand) else None
+    if not page_id:
+        # Anchor at the end of the segment: searching it loosely mis-slices the
+        # id when the slug itself ends in hex-ish text.
+        cand = seg.replace("-", "").lower()[-32:]
+        if _HEX32.match(cand):
+            page_id = cand
+            m = _ID_TAIL.match(seg)
+            if m:
+                label = m.group(1).replace("-", " ").strip()
+    if not page_id:
+        return None
+    return {"id": page_id, "url": url.split("#")[0], "label": label[:200]}
+
+
+def task_sources() -> list[str]:
+    """The ticket boards to search: TASKS_DS_IDS if set, else everything the
+    integration can see minus our own four. Empty until a board is connected."""
+    now = time.time()
+    if _task_src_cache["sources"] is not None and now - _task_src_cache["at"] < _TASK_SRC_TTL:
+        return _task_src_cache["sources"]
+    named = [s.strip() for s in os.environ.get("TASKS_DS_IDS", "").split(",") if s.strip()]
+    if named:
+        # Naming the boards outright skips discovery entirely — which also makes
+        # this work the moment a board is connected, rather than whenever
+        # Notion's search index catches up with it.
+        _task_src_cache.update(at=now, sources=named)
+        return named
+    out: list[str] = []
+    try:
+        cursor = None
+        while True:
+            kwargs = {"filter": {"property": "object", "value": "data_source"}, "page_size": 100}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            res = _notion.search(**kwargs)
+            for o in res["results"]:
+                if _bare(o["id"]) in _OWN_DS:
+                    continue
+                out.append(o["id"])
+            if not res.get("has_more"):
+                break
+            cursor = res["next_cursor"]
+    except Exception:
+        logging.exception("Listing ticket boards failed — ticket search stays off")
+        out = []
+    _task_src_cache.update(at=now, sources=out)
+    return out
+
+
+def _task_schema(ds_id: str) -> dict:
+    """Which property on a ticket board is its title, and which its assignee.
+
+    Ticket boards belong to other teams and get renamed freely, so nothing is
+    addressed by a hardcoded name here — the lesson from alloc_person_prop.
+    """
+    now = time.time()
+    hit = _task_schema_cache.get(ds_id)
+    if hit and now - hit[0] < _TASK_SRC_TTL:
+        return hit[1]
+    info = {"title": None, "people": None, "email": None}
+    try:
+        props = _notion.data_sources.retrieve(ds_id)["properties"]
+    except Exception:
+        _task_schema_cache[ds_id] = (now, info)
+        return info
+
+    def rank(name: str) -> int:
+        low = name.lower()
+        for i, want in enumerate(_ASSIGNEE_NAMES):
+            if want in low:
+                return i
+        return len(_ASSIGNEE_NAMES)
+
+    for name, p in props.items():
+        if p.get("type") == "title":
+            info["title"] = name
+    people = [n for n, p in props.items() if p.get("type") == "people"]
+    emails = [n for n, p in props.items() if p.get("type") == "email"]
+    if people:
+        info["people"] = sorted(people, key=rank)[0]
+    if emails:
+        info["email"] = sorted(emails, key=rank)[0]
+    _task_schema_cache[ds_id] = (now, info)
+    return info
+
+
+def _page_title(page: dict) -> str:
+    for prop in (page.get("properties") or {}).values():
+        if prop.get("type") == "title":
+            return "".join(t.get("plain_text", "") for t in prop["title"]).strip()
+    return ""
+
+
+def _assigned_to(page: dict, person_id: str | None, email: str | None) -> bool:
+    """Is this ticket assigned to the asking person? A people property matches
+    on Notion user id (the very id they logged in with); an email or text
+    property matches on address, so boards without a people column work too."""
+    want = (email or "").strip().lower()
+    for prop in (page.get("properties") or {}).values():
+        kind = prop.get("type")
+        if kind == "people" and person_id:
+            if any(_bare(u.get("id")) == _bare(person_id) for u in prop.get("people") or []):
+                return True
+        elif kind == "email" and want:
+            if (prop.get("email") or "").strip().lower() == want:
+                return True
+        elif kind == "rich_text" and want:
+            text = "".join(t.get("plain_text", "") for t in prop.get("rich_text") or [])
+            if want in text.lower():
+                return True
+    return False
+
+
+def _task_result(page: dict, person_id: str | None, email: str | None) -> dict:
+    return {
+        "id": page["id"],
+        "title": _page_title(page) or "(untitled)",
+        "url": page.get("url") or f"https://www.notion.so/{_bare(page['id'])}",
+        "mine": _assigned_to(page, person_id, email),
+    }
+
+
+def my_tasks(person_id: str | None, email: str | None, limit: int = 8) -> list[dict]:
+    """The picker's opening list: tickets assigned to this person, freshest
+    first. One query per board, filtered on that board's own assignee property,
+    so the list is short and personal before anyone types a thing."""
+    out: list[dict] = []
+    for ds_id in task_sources()[:8]:   # bound the fan-out — these are other teams' boards
+        schema = _task_schema(ds_id)
+        if schema["people"] and person_id:
+            flt = {"property": schema["people"], "people": {"contains": person_id}}
+        elif schema["email"] and email:
+            flt = {"property": schema["email"], "email": {"equals": email}}
+        else:
+            continue
+        try:
+            res = _notion.data_sources.query(
+                data_source_id=ds_id, page_size=limit, filter=flt,
+                sorts=[{"timestamp": "last_edited_time", "direction": "descending"}])
+        except Exception:
+            logging.warning("Ticket board %s wouldn't answer an assignee query", ds_id)
+            continue
+        out.extend(_task_result(p, person_id, email) for p in res["results"])
+    return out[:limit]
+
+
+def search_tasks(query: str, person_id: str | None, email: str | None,
+                 mine_only: bool = False, limit: int = 10) -> list[dict]:
+    """Tickets whose title matches `query`, the asking person's own first.
+
+    Notion's search endpoint is the right tool precisely because the tickets
+    are scattered: it is workspace-wide and matches titles. A result is kept
+    only if it is a row on a known ticket board — that is what separates a
+    ticket from a loose document that happens to match.
+    """
+    query = (query or "").strip()
+    if not query:
+        return my_tasks(person_id, email, limit)
+    sources = {_bare(s) for s in task_sources()}
+    if not sources:
+        return []
+    try:
+        res = _notion.search(query=query, page_size=50,
+                             filter={"property": "object", "value": "page"})
+    except Exception:
+        logging.exception("Ticket search failed")
+        return []
+    out = []
+    for page in res["results"]:
+        parent = page.get("parent") or {}
+        if parent.get("type") != "data_source_id":
+            continue
+        if _bare(parent.get("data_source_id")) not in sources:
+            continue
+        out.append(_task_result(page, person_id, email))
+    if mine_only:
+        out = [t for t in out if t["mine"]]
+    out.sort(key=lambda t: (not t["mine"], t["title"].lower()))
+    return out[:limit]
+
+
+def resolve_task(page_id: str) -> dict | None:
+    """Confirm a pasted ticket and read its real title. None when the page
+    isn't shared with the integration — the caller then keeps the URL and the
+    label parsed from the slug, so pasting works with no access at all.
+
+    A page from one of our own databases comes back flagged `ours`: pasting a
+    time entry or a project row as the "ticket" for some hours is never what
+    anyone meant, and it reads perfectly plausibly once stored.
+    """
+    try:
+        page = _notion.pages.retrieve(page_id)
+    except Exception:
+        return None
+    parent = page.get("parent") or {}
+    ours = _bare(parent.get("data_source_id") or parent.get("database_id") or "") in _OWN_DS
+    return {"id": page["id"], "title": _page_title(page), "ours": ours,
+            "url": page.get("url") or f"https://www.notion.so/{_bare(page_id)}"}
+
+
+def entry_task(props: dict) -> dict:
+    """The ticket on a Time Entries row, read tolerantly: both properties are
+    optional (every entry logged before this feature has none) and a rename in
+    the Notion UI must not take a report down."""
+    url = props.get(_TASK_URL_PROP, {}).get("url") or ""
+    text = props.get(_TASK_PROP, {}).get("rich_text") or []
+    label = "".join(t.get("plain_text", "") for t in text).strip()
+    return {"task_url": url, "task": label or ("Notion ticket" if url else "")}
