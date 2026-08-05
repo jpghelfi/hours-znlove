@@ -94,6 +94,25 @@ The invoice id comes out of a URL, so `get_invoice` refuses any page whose
 parent isn't the Invoices data source: a project row or a time entry pasted
 into the path lands back on the list, not on a half-rendered invoice.
 
+### Sending it on
+
+Two buttons on the invoice, both carrying the **billed** hours with the lines
+billed at nothing left out — this is the copy that goes to a client, not the
+internal tracked-versus-billed comparison:
+
+- **Download Excel** (`/invoices/{id}.xlsx`) — the same `report_xlsx` workbook
+  the reports use, built from the invoiced rows rather than the logged ones.
+- **Copy & open Google Sheets** — the rows as TSV plus `sheets.new` for a ⌘V,
+  the same clipboard route as the export screen (synchronous `execCommand`
+  first, precisely so the click still counts as user activation when the tab
+  opens; `navigator.clipboard` as fallback; a blocked popup is reported rather
+  than swallowed). Google publishes no URL that creates a spreadsheet holding
+  your data, and the app is behind a login so `IMPORTDATA` can't reach it.
+
+`/invoices/{id}.xlsx` is declared before `/invoices/{id}` — a path parameter
+happily swallows a `.xlsx` suffix, so the generic route would otherwise win and
+render HTML for a download.
+
 ## The list
 
 `/invoices`: project, month, tracked, billed, the difference as a chip, issued

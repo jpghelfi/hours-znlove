@@ -1101,6 +1101,46 @@ def invoices_page(request: Request, project: list[str] = Query(default=[])):
     })
 
 
+def _invoice_export_rows(invoice: dict) -> tuple[list[dict], dict]:
+    """The invoice's lines shaped for a file: billed hours in the `hours` slot,
+    lines billed at nothing left out.
+
+    The file carries what was **billed** — the tracked column is the internal
+    working number, and putting both in front of a client only invites an
+    argument about the difference.
+    """
+    month = _parse_date(invoice["month"])
+    if not month or not invoice["project_id"]:
+        return [], {"from": invoice["month"], "to": invoice["month"], "label": invoice["month"]}
+    rng = _period_range("monthly", month)
+    project = {"id": invoice["project_id"], "name": invoice["project"]}
+    rows = []
+    for r in _invoiced_rows(invoice, _period_entries(project, [project["id"]], rng)):
+        if not r["billed"]:
+            continue
+        rows.append({**r, "hours": round(r["billed"], 2), "project": invoice["project"],
+                     "project_id": invoice["project_id"]})
+    return rows, rng
+
+
+@app.get("/invoices/{invoice_id}.xlsx")
+def invoice_xlsx(request: Request, invoice_id: str):
+    """The invoice as a workbook — the billed hours, ready to send on."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    invoice = ops.get_invoice(invoice_id)
+    if not invoice:
+        return RedirectResponse(url="/invoices", status_code=303)
+    rows, rng = _invoice_export_rows(invoice)
+    month = _parse_date(invoice["month"])
+    label = invoice["project"]
+    period_label = month.strftime("%B %Y") if month else invoice["month"]
+    return _xlsx_response(report_xlsx.build(rows, period_label, label), label, rng)
+
+
 @app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
 def invoice_detail(request: Request, invoice_id: str):
     """One invoice, day by day, as it was billed.
@@ -1127,7 +1167,14 @@ def invoice_detail(request: Request, invoice_id: str):
         rows = _invoiced_rows(invoice, _period_entries(project, [project["id"]], rng))
         days = _invoiced_days(rows)
     now_tracked = round(sum(r["tracked"] for r in rows), 2)
+    # what the clipboard button pastes into a sheet: the billed lines only,
+    # the same set the workbook holds
+    sheet_rows = [{"project": invoice["project"], "date": r["date"], "person": r["person"],
+                   "hours": round(r["billed"], 2), "description": r["description"],
+                   "task_url": r.get("task_url") or ""}
+                  for r in rows if r["billed"]]
     return templates.TemplateResponse(request, "invoice_detail.html", {
+        "sheet_rows": sheet_rows,
         "user": user, "is_admin": True,
         "invoice": invoice, "days": days, "rng": rng,
         "month_label": month.strftime("%B %Y") if month else invoice["month"],
