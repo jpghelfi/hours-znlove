@@ -46,11 +46,10 @@
       {% for r in rows %}
       {% set diff = (r.hours_billed - r.hours_tracked)|round(2) %}
       <tr>
-        <td class="left">
-          {# straight back to the month this invoice was cut from #}
-          <a href="/project?period=monthly&start={{ r.month }}&project={{ r.project_id }}">{{ r.project }}</a>
-        </td>
-        <td class="left nowrap">{{ r.month_label }}</td>
+        {# into the invoice itself — the days as they were billed — rather than
+           the live report, which shows what was logged instead #}
+        <td class="left"><a href="/invoices/{{ r.id }}">{{ r.project }}</a></td>
+        <td class="left nowrap"><a class="plain" href="/invoices/{{ r.id }}">{{ r.month_label }}</a></td>
         <td class="tracked">{{ '%g'|format(r.hours_tracked) }}</td>
         <td><strong>{{ '%g'|format(r.hours_billed) }}</strong></td>
         <td>

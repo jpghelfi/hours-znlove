@@ -6,6 +6,7 @@ reads/writes Time Entries via the 2025-09-03 data-source API.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import re
@@ -1080,6 +1081,49 @@ def invoices_enabled() -> bool:
     return bool(INVOICES_DS)
 
 
+def ensure_invoice_properties() -> None:
+    """Make sure the Invoices db can hold the per-entry adjustments.
+
+    Invoices created before the detail view only stored totals, so add the
+    column on startup the way ensure_person_property does.
+    """
+    if not INVOICES_DS:
+        return
+    ds = _notion.data_sources.retrieve(INVOICES_DS)
+    if _ADJ_PROP not in ds["properties"]:
+        _notion.data_sources.update(INVOICES_DS, properties={_ADJ_PROP: {"rich_text": {}}})
+
+
+# Only the entries whose billed hours differ from what was logged are stored —
+# usually a handful — so reopening an invoice can show exactly what was billed
+# without keeping a copy of every line. A month of overrides can still outgrow
+# one rich-text object, hence the chunking.
+_ADJ_PROP = "Adjustments"
+_CHUNK = 1900
+
+
+def _adjustments_to_rich_text(adjustments: dict) -> list:
+    if not adjustments:
+        return []
+    blob = json.dumps({_bare(k): v for k, v in adjustments.items()}, separators=(",", ":"))
+    chunks = [blob[i:i + _CHUNK] for i in range(0, len(blob), _CHUNK)]
+    if len(chunks) > 100:                     # Notion caps a rich_text array at 100
+        logging.warning("Invoice adjustments too large to store (%d chars)", len(blob))
+        return []
+    return [{"text": {"content": c}} for c in chunks]
+
+
+def _adjustments_from_props(props: dict) -> dict:
+    text = "".join(t.get("plain_text", "") for t in props.get(_ADJ_PROP, {}).get("rich_text") or [])
+    if not text:
+        return {}
+    try:
+        return {k: float(v) for k, v in json.loads(text).items()}
+    except (ValueError, TypeError, AttributeError):
+        logging.warning("Invoice adjustments weren't readable JSON")
+        return {}
+
+
 def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
     props = page["properties"]
     rel = props.get("Project", {}).get("relation") or []
@@ -1099,6 +1143,7 @@ def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
         # people properties come back nameless, so resolve against the roster
         "saved_by": people.get(saved[0]["id"], "") if saved else "",
         "note": "".join(t.get("plain_text", "") for t in note),
+        "adjustments": _adjustments_from_props(props),
         "url": page.get("url", ""),
     }
 
@@ -1133,8 +1178,27 @@ def list_invoices(project_id: str | None = None, limit: int = 200) -> list[dict]
     return out
 
 
+def get_invoice(invoice_id: str) -> dict | None:
+    """One invoice by page id, refusing anything that isn't one.
+
+    The id arrives from a URL, so the parent is checked the same way
+    set_entry_hours checks a time entry's.
+    """
+    if not INVOICES_DS:
+        return None
+    try:
+        page = _notion.pages.retrieve(invoice_id)
+    except Exception:
+        return None
+    parent = page.get("parent") or {}
+    if _bare(parent.get("data_source_id") or "") != _bare(INVOICES_DS):
+        return None
+    return _invoice_row(page, _project_name_map(), _person_name_map())
+
+
 def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed: float,
-                 issued: str, note: str = "", person_id: str | None = None) -> dict:
+                 issued: str, note: str = "", person_id: str | None = None,
+                 adjustments: dict | None = None) -> dict:
     """File (or correct) the invoice for one project and one month.
 
     Upserts on (project, month), the same discipline as set_cell: saving July
@@ -1154,6 +1218,9 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
         "Hours tracked": {"number": round(hours_tracked, 2)},
         "Hours billed": {"number": round(hours_billed, 2)},
         "Note": {"rich_text": [{"text": {"content": note[:1900]}}]},
+        # rewritten every save, so an entry billed back at its logged hours
+        # stops being an adjustment instead of lingering as one
+        _ADJ_PROP: {"rich_text": _adjustments_to_rich_text(adjustments or {})},
     }
     if issued:
         props["Issued"] = {"date": {"start": issued}}

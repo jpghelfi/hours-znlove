@@ -97,6 +97,7 @@ def _startup() -> None:
     ops.ensure_person_property()
     ops.ensure_admin_property()
     ops.ensure_task_properties()
+    ops.ensure_invoice_properties()
 
 
 @app.get("/healthz")
@@ -963,16 +964,78 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
     rng = _period_range("monthly", month)
-    tracked = sum(e["hours"] for e in _period_entries(project, [project["id"]], rng))
+    logged = {e["id"]: e["hours"] for e in _period_entries(project, [project["id"]], rng)
+              if e.get("id")}
+    tracked = sum(logged.values())
     billed = sum(r["hours"] for r in rows)
     try:
         saved = ops.save_invoice(project["id"], month.isoformat(), tracked, billed,
-                                 issued.isoformat(), req.note[:500], user.get("id"))
+                                 issued.isoformat(), req.note[:500], user.get("id"),
+                                 adjustments=_invoice_adjustments(req.rows, logged))
     except Exception:
         logging.exception("Saving the invoice for %s %s failed", project["name"], req.month)
         return JSONResponse({"ok": False, "error": "could not save that invoice"},
                             status_code=502)
     return JSONResponse({"ok": True, "invoice": saved})
+
+
+def _invoice_adjustments(raw_rows: list, logged: dict) -> dict:
+    """{entry id: billed hours} for the rows billed at something other than
+    what was logged — including the ones billed at nothing.
+
+    Read from the *raw* payload rather than `_rows_from_payload`, which drops
+    zeroed rows before they can be seen: "billed nothing" is precisely the
+    adjustment most worth recording, and it would otherwise look like an entry
+    that was never on screen.
+    """
+    out = {}
+    for r in raw_rows:
+        entry_id = str(r.get("id") or "")
+        if entry_id not in logged:
+            continue
+        try:
+            billed = round(float(r.get("hours") or 0), 2)
+        except (TypeError, ValueError):
+            continue
+        if abs(billed - round(logged[entry_id], 2)) >= 0.01:
+            out[entry_id] = billed
+    return out
+
+
+def _invoiced_rows(invoice: dict, entries: list[dict]) -> list[dict]:
+    """The entries as this invoice billed them: what was logged, plus the
+    adjustments recorded at save time.
+
+    Entries are re-read live rather than copied onto the invoice, so this shows
+    today's comments and any entry logged after the fact — which is the same
+    reason the list can flag an invoice whose month has moved.
+    """
+    adj = {ops._bare(k): v for k, v in (invoice.get("adjustments") or {}).items()}
+    rows = []
+    for e in sorted(entries, key=lambda e: (e["date"], e["person"].lower())):
+        billed = adj.get(ops._bare(e.get("id") or ""), e["hours"])
+        rows.append(dict(e, tracked=e["hours"], billed=billed,
+                         changed=abs(billed - e["hours"]) >= 0.01))
+    return rows
+
+
+def _invoiced_days(rows: list[dict]) -> list[dict]:
+    """Those rows grouped into days, each with its own tracked/billed totals."""
+    days: dict = {}
+    for r in rows:
+        day = days.setdefault(r["date"], {"date": r["date"], "rows": [],
+                                          "tracked": 0.0, "billed": 0.0})
+        day["rows"].append(r)
+        day["tracked"] += r["tracked"]
+        day["billed"] += r["billed"]
+    out = []
+    for day in sorted(days.values(), key=lambda d: d["date"]):
+        day["tracked"] = round(day["tracked"], 2)
+        day["billed"] = round(day["billed"], 2)
+        parsed = _parse_date(day["date"])
+        day["label"] = parsed.strftime("%a %d %b") if parsed else day["date"]
+        out.append(day)
+    return out
 
 
 _STALE_MONTHS = 4
@@ -1035,6 +1098,50 @@ def invoices_page(request: Request, project: list[str] = Query(default=[])):
         "enabled": ops.invoices_enabled(),
         "total_billed": round(sum(r["hours_billed"] for r in rows), 2),
         "total_tracked": round(sum(r["hours_tracked"] for r in rows), 2),
+    })
+
+
+@app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
+def invoice_detail(request: Request, invoice_id: str):
+    """One invoice, day by day, as it was billed.
+
+    The hours shown are the *invoiced* ones — what was logged, with the
+    adjustments made on the export screen applied back over them. Rows billed
+    at less (or nothing) are marked, so the difference on the list has an
+    explanation you can read.
+    """
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    invoice = ops.get_invoice(invoice_id)
+    if not invoice:
+        return RedirectResponse(url="/invoices", status_code=303)
+
+    month = _parse_date(invoice["month"])
+    rng = _period_range("monthly", month) if month else None
+    rows, days = [], []
+    if rng and invoice["project_id"]:
+        project = {"id": invoice["project_id"], "name": invoice["project"]}
+        rows = _invoiced_rows(invoice, _period_entries(project, [project["id"]], rng))
+        days = _invoiced_days(rows)
+    now_tracked = round(sum(r["tracked"] for r in rows), 2)
+    return templates.TemplateResponse(request, "invoice_detail.html", {
+        "user": user, "is_admin": True,
+        "invoice": invoice, "days": days, "rng": rng,
+        "month_label": month.strftime("%B %Y") if month else invoice["month"],
+        "now_tracked": now_tracked,
+        "now_billed": round(sum(r["billed"] for r in rows), 2),
+        # the month has been logged against since this was saved
+        "stale": abs(now_tracked - round(invoice["hours_tracked"], 2)) >= 0.01,
+        "adjusted": sum(1 for r in rows if r["changed"]),
+        # saved before the per-line adjustments were recorded: the total says
+        # one thing and the days below would add up to another, so say why
+        # rather than showing a contradiction
+        "legacy": (not invoice.get("adjustments")
+                   and abs(round(invoice["hours_billed"], 2)
+                           - round(invoice["hours_tracked"], 2)) >= 0.01),
     })
 
 

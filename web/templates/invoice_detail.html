@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ invoice.project }} · {{ month_label }} · Invoices{% endblock %}
+{% block nav_invoices %}active{% endblock %}
+{% block content %}
+
+<div class="week-head">
+  <div>
+    <h1>{{ invoice.project }} · {{ month_label }}</h1>
+    <div class="subtle">
+      Invoiced <strong>{{ '%g'|format(invoice.hours_billed) }}</strong> h of
+      {{ '%g'|format(invoice.hours_tracked) }} h tracked
+      {%- if invoice.issued %} · issued {{ invoice.issued }}{% endif %}
+      {%- if invoice.saved_by %} by {{ invoice.saved_by }}{% endif %}
+      {%- if adjusted %} · {{ adjusted }} line{{ '' if adjusted == 1 else 's' }} adjusted{% endif %}
+    </div>
+  </div>
+  <div class="weeknav">
+    <a class="btn" href="/invoices">← All invoices</a>
+    <a class="btn" href="/project?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">The report</a>
+    <a class="btn btn-primary" href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
+  </div>
+</div>
+
+{% if invoice.note %}<div class="notebar">{{ invoice.note }}</div>{% endif %}
+
+{% if legacy %}
+<div class="notebar warn">
+  <strong>This invoice predates line-by-line detail.</strong>
+  Its total says {{ '%g'|format(invoice.hours_billed) }} h were billed of
+  {{ '%g'|format(invoice.hours_tracked) }} h tracked, but which lines were cut wasn't
+  recorded then — so the days below show the hours <em>as logged</em>, and they add up to
+  the tracked figure rather than the billed one.
+  <a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
+  to record the breakdown.
+</div>
+{% endif %}
+
+{% if stale %}
+{# the hours logged against this month have moved since it was saved, which is
+   what happens whenever somebody logs late #}
+<div class="notebar warn">
+  <strong>This month has changed since it was invoiced.</strong>
+  It was saved against {{ '%g'|format(invoice.hours_tracked) }} h tracked;
+  {{ '%g'|format(now_tracked) }} h are logged now, and the days below reflect
+  today's entries. Re-invoice if the bill should follow.
+</div>
+{% endif %}
+
+<div class="card wide">
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Day</th>
+        <th class="left">Person</th>
+        <th>Tracked</th>
+        <th>Billed</th>
+        <th class="left">Comment</th>
+        <th class="left">Ticket</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for day in days %}
+      <tr class="group-row">
+        <td class="left nowrap">{{ day.label }}</td>
+        <td class="left"></td>
+        <td class="tracked">{{ '%g'|format(day.tracked) }}</td>
+        <td>{{ '%g'|format(day.billed) }}</td>
+        <td class="left" colspan="2">
+          {%- if day.billed != day.tracked %}
+          <span class="chip chip-under">{{ '%g'|format(day.billed - day.tracked) }} h</span>
+          {%- endif %}
+        </td>
+      </tr>
+      {% for r in day.rows %}
+      <tr class="{{ 'row-unbilled' if not r.billed else '' }}">
+        <td class="left"></td>
+        <td class="left">{{ r.person }}</td>
+        <td class="tracked">{{ '%g'|format(r.tracked) }}</td>
+        <td>
+          {%- if r.changed %}<strong class="adjusted">{{ '%g'|format(r.billed) }}</strong>
+          {%- else %}{{ '%g'|format(r.billed) }}{% endif %}
+        </td>
+        <td class="left desc">{{ r.description }}</td>
+        <td class="left">
+          {%- if r.task_url %}<a class="tlink" href="{{ r.task_url }}" target="_blank"
+             rel="noopener noreferrer">🔗 {{ r.task or 'Notion ticket' }}</a>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr class="empty"><td colspan="6">
+        Nothing is logged against {{ invoice.project }} for {{ month_label }} any more —
+        the entries behind this invoice have been removed or moved.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+    {% if days %}
+    <tfoot>
+      <tr class="total-row">
+        <td class="left"><strong>Total</strong></td>
+        <td class="left"></td>
+        <td class="tracked">{{ '%g'|format(now_tracked) }}</td>
+        <td><strong>{{ '%g'|format(now_billed) }}</strong></td>
+        <td class="left" colspan="2"></td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+</div>
+{% endblock %}
