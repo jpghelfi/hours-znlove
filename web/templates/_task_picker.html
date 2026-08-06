@@ -6,7 +6,10 @@
    the title in its slug). So when search isn't available the box still works
    as a paste field rather than looking broken. #}
 <div class="tpick" id="tpick">
-  <label for="tq">Notion ticket <span class="subtle">— optional</span></label>
+  <div class="tpick-head">
+    <label for="tq">Notion ticket <span class="subtle">— optional</span></label>
+    {% if ticket_create %}<button type="button" class="linkbtn" id="tnew">＋ New ticket</button>{% endif %}
+  </div>
 
   <div class="tpick-chip" id="tchip" hidden>
     <span class="tpick-ico" aria-hidden="true">🔗</span>
@@ -26,6 +29,44 @@
   <input type="hidden" name="task_url" id="turl">
   <input type="hidden" name="task_label" id="tlabel">
 </div>
+
+{% if ticket_create %}
+{# No <form> in here: this dialog renders inside the entry form, and a nested
+   form is invalid HTML. Plain inputs plus a fetch do the same job. #}
+<dialog id="tdlg" class="pop">
+  <div class="pop-head">
+    <strong>New ticket</strong>
+    <button type="button" class="pop-x" id="tnCancel" aria-label="Close">×</button>
+  </div>
+
+  <label>Title
+    <input id="tnTitle" type="text" maxlength="200" required
+           placeholder="What needs doing?" autocomplete="off">
+  </label>
+
+  {# one span holds the whole caption: dialog.pop labels stack their children,
+     so a bare trailing <span> would drop "— optional" onto its own line #}
+  <label><span>Description <span class="subtle">— optional</span></span>
+    <textarea id="tnDesc" rows="3" placeholder="Any detail worth keeping"></textarea>
+  </label>
+
+  <label>Project
+    <select id="tnProj"><option value="">— none —</option></select>
+  </label>
+  <div class="subtle tpick-hint" id="tnNote" hidden></div>
+
+  {# the ticket is a real page on a real board the moment this is clicked, so
+     don't let that be a surprise when the hours form is then abandoned #}
+  <div class="subtle tpick-hint">Created in Notion right away — not when you save the hours — and assigned to you.</div>
+
+  <div class="pop-err" id="tnErr" hidden></div>
+
+  <div class="pop-actions">
+    <button type="button" class="btn" id="tnClose">Cancel</button>
+    <button type="button" class="primary" id="tnGo">Create ticket</button>
+  </div>
+</dialog>
+{% endif %}
 
 <script>
 (function () {
@@ -130,5 +171,79 @@
     else if (e.key === 'Escape') { close(); }
   });
   document.addEventListener('click', e => { if (!document.getElementById('tpick').contains(e.target)) close(); });
+
+  // ---- create a ticket ---------------------------------------------------
+  // The third way in, and the only one that writes: it needs the integration to
+  // have write access to one named board, so everything here is absent unless
+  // the server rendered it.
+  const newBtn = document.getElementById('tnew'), dlg = document.getElementById('tdlg');
+  if (newBtn && dlg) {
+    const tTitle = document.getElementById('tnTitle'), tDesc = document.getElementById('tnDesc');
+    const tProj = document.getElementById('tnProj'), tNote = document.getElementById('tnNote');
+    const tErr = document.getElementById('tnErr'), tGo = document.getElementById('tnGo');
+
+    function err(msg) { tErr.textContent = msg || ''; tErr.hidden = !msg; }
+
+    async function loadBoard() {
+      const sel = document.querySelector('select[name=project_id]');
+      const pid = sel ? sel.value : '';
+      tProj.innerHTML = '<option value="">— none —</option>';
+      tNote.hidden = true;
+      try {
+        const res = await fetch('/api/tasks/new?project_id=' + encodeURIComponent(pid));
+        const d = await res.json();
+        if (!d.ok) return;
+        (d.options || []).forEach(o => {
+          const opt = document.createElement('option');
+          opt.value = o; opt.textContent = o;
+          tProj.appendChild(opt);
+        });
+        if (d.selected) {
+          tProj.value = d.selected;
+        } else if (d.project) {
+          // half our projects have no option on that board — say which, rather
+          // than silently filing the ticket with no project
+          tNote.textContent = 'That board has no option for “' + d.project + '” — pick one, or leave it out.';
+          tNote.hidden = false;
+        }
+      } catch (e) { /* the dialog still works without a project */ }
+    }
+
+    newBtn.addEventListener('click', () => {
+      err(''); tTitle.value = ''; tDesc.value = '';
+      loadBoard();
+      dlg.showModal();
+      tTitle.focus();
+    });
+    ['tnCancel', 'tnClose'].forEach(id =>
+      document.getElementById(id).addEventListener('click', () => dlg.close()));
+
+    async function create() {
+      const title = tTitle.value.trim();
+      if (!title) { err('A ticket needs a title.'); tTitle.focus(); return; }
+      tGo.disabled = true; const was = tGo.textContent; tGo.textContent = 'Creating…';
+      err('');
+      try {
+        const body = new URLSearchParams({
+          title, description: tDesc.value, project_option: tProj.value,
+        });
+        const res = await fetch('/api/tasks/create', {method: 'POST', body});
+        const d = await res.json();
+        if (!d.ok) { err(d.error || "Couldn't create the ticket."); return; }
+        pick({url: d.url, title: d.title});     // straight into the chip
+        dlg.close();
+      } catch (e) {
+        err("Couldn't reach Notion — try again.");
+      } finally {
+        tGo.disabled = false; tGo.textContent = was;
+      }
+    }
+    tGo.addEventListener('click', create);
+    // there is no <form> in the dialog (it sits inside the entry form), so
+    // Enter is wired by hand — and must never reach the hours form
+    tTitle.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); create(); }
+    });
+  }
 })();
 </script>

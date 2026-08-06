@@ -57,3 +57,9 @@ services:
         sync: false
       - key: REPORT_TO
         value: zarco@znlove.xyz,angie@znlove.xyz
+      # The one board "＋ New ticket" writes to (a data source id). Creating is
+      # the only ticket feature that *writes* to Notion, so it targets exactly
+      # one board named here — never one the browser picks — and the button
+      # isn't rendered at all while this is unset.
+      - key: TICKET_CREATE_DS_ID
+        sync: false

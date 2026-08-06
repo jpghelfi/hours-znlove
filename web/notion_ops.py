@@ -727,6 +727,15 @@ def _bare(notion_id: str | None) -> str:
     return (notion_id or "").replace("-", "").lower()
 
 
+def _norm(name: str) -> str:
+    """A name flattened for comparison: case and punctuation dropped.
+
+    Enough to see that our project "FShip" is the ticket board's "Fship", and
+    deliberately no cleverer than that — see match_project_option.
+    """
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+
 def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
     """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry.
 
@@ -785,6 +794,11 @@ _TASK_URL_PROP = "Task URL"
 # What a ticket board might call its assignee column, best match first.
 _ASSIGNEE_NAMES = ("assignee", "assigned to", "assigned", "owner", "responsible",
                    "person", "people", "developer")
+
+# ...and what it might call the single-select naming the client/project. Matched
+# on the whole normalised name, not a substring: "Project Phase" and "Project
+# name" are not the column we mean.
+_PROJECT_NAMES = ("project", "proyecto", "cliente", "client")
 
 # Our own databases are data sources too — never offer them as ticket boards,
 # and never accept one of their rows as a "ticket". Both id flavours are listed
@@ -891,7 +905,8 @@ def task_sources() -> list[str]:
 
 
 def _task_schema(ds_id: str) -> dict:
-    """Which property on a ticket board is its title, and which its assignee.
+    """Which property on a ticket board is its title, its assignee, and — for
+    creating a ticket — which single-select names the project.
 
     Ticket boards belong to other teams and get renamed freely, so nothing is
     addressed by a hardcoded name here — the lesson from alloc_person_prop.
@@ -900,7 +915,8 @@ def _task_schema(ds_id: str) -> dict:
     hit = _task_schema_cache.get(ds_id)
     if hit and now - hit[0] < _TASK_SRC_TTL:
         return hit[1]
-    info = {"title": None, "people": None, "email": None}
+    info = {"title": None, "people": None, "email": None,
+            "project": None, "project_options": []}
     try:
         props = _notion.data_sources.retrieve(ds_id)["properties"]
     except Exception:
@@ -923,6 +939,11 @@ def _task_schema(ds_id: str) -> dict:
         info["people"] = sorted(people, key=rank)[0]
     if emails:
         info["email"] = sorted(emails, key=rank)[0]
+    for name, p in props.items():
+        if p.get("type") == "select" and _norm(name) in _PROJECT_NAMES:
+            info["project"] = name
+            info["project_options"] = [o["name"] for o in p["select"].get("options") or []]
+            break
     _task_schema_cache[ds_id] = (now, info)
     return info
 
@@ -1064,6 +1085,114 @@ def resolve_task(page_id: str) -> dict | None:
     ours = _bare(parent.get("data_source_id") or parent.get("database_id") or "") in _OWN_DS
     return {"id": page["id"], "title": _page_title(page), "ours": ours,
             "url": page.get("url") or f"https://www.notion.so/{_bare(page_id)}"}
+
+
+# ---- creating a ticket -------------------------------------------------
+#
+# The third and strictest way in. Pasting a link needs nothing from Notion and
+# searching needs *read* access to the ticket boards; creating needs *write*
+# access to one named board, so it stays behind its own env var and simply
+# doesn't appear until that is set.
+#
+# The board is named by config and never by the caller — the same rule that
+# makes set_entry_hours and get_invoice refuse a page whose parent isn't ours.
+# Writing is a side effect on another team's board, so it gets the narrowest
+# possible target.
+
+TICKET_BOARD = os.environ.get("TICKET_CREATE_DS_ID", "").strip()
+
+
+def ticket_create_enabled() -> bool:
+    return bool(TICKET_BOARD)
+
+
+def match_project_option(project_name: str, options: list[str]) -> str | None:
+    """Our project name -> the ticket board's own select option, or None.
+
+    Matching stops at case and punctuation (`FShip` -> `Fship`). It is
+    deliberately not fuzzier: our "Saltworks" and the board's "Salworks" are one
+    keystroke apart, and so are plenty of client names — guessing files a real
+    ticket against the wrong client. Anything unmatched is left for the person
+    to pick from the board's real options instead.
+    """
+    want = _norm(project_name)
+    if not want:
+        return None
+    for opt in options:
+        if _norm(opt) == want:
+            return opt
+    return None
+
+
+def ticket_board_info(project_name: str = "") -> dict:
+    """What the "new ticket" dialog needs: the board's project options, and
+    which one our project maps onto (empty when it maps onto none)."""
+    if not TICKET_BOARD:
+        return {"enabled": False, "options": [], "selected": "", "field": ""}
+    schema = _task_schema(TICKET_BOARD)
+    options = schema.get("project_options") or []
+    return {
+        "enabled": True,
+        "field": schema.get("project") or "",
+        "options": options,
+        "selected": match_project_option(project_name, options) or "",
+    }
+
+
+def create_ticket(title: str, description: str = "", project_option: str = "",
+                  person_id: str = "") -> dict:
+    """Create a ticket on the configured board and return {id, url, title}.
+
+    Only ever writes what the board actually has, resolved from its schema
+    rather than by name (the alloc_person_prop lesson): the title property, the
+    assignee, and the project select. Status, type and priority are left alone
+    so the board's own defaults apply.
+
+    `project_option` must be an option the board already has. An unknown name is
+    dropped rather than sent, because Notion *creates* a select option for any
+    name it doesn't recognise — a typo here would litter another team's board.
+
+    The description becomes the page body: this board has no description
+    property, and a Notion ticket's description is its page content anyway.
+    """
+    if not TICKET_BOARD:
+        raise RuntimeError("No ticket board configured (TICKET_CREATE_DS_ID)")
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("A ticket needs a title")
+
+    schema = _task_schema(TICKET_BOARD)
+    title_prop = schema.get("title")
+    if not title_prop:
+        raise RuntimeError("That ticket board has no title property")
+
+    props: dict = {title_prop: {"title": [{"text": {"content": title[:200]}}]}}
+    if person_id and schema.get("people"):
+        # assigning it to whoever logged it is what puts the new ticket in their
+        # own my_tasks list, which filters on this very property
+        props[schema["people"]] = {"people": [{"object": "user", "id": person_id}]}
+    if project_option and schema.get("project"):
+        if project_option in (schema.get("project_options") or []):
+            props[schema["project"]] = {"select": {"name": project_option}}
+        else:
+            logging.warning("Ignoring unknown project option %r for the ticket board",
+                            project_option)
+
+    kwargs: dict = {"parent": {"type": "data_source_id", "data_source_id": TICKET_BOARD},
+                    "properties": props}
+    # Notion caps one rich-text object at 2000 characters, so a long
+    # description becomes several paragraphs rather than a rejected write.
+    description = (description or "").strip()[:8000]
+    if description:
+        kwargs["children"] = [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": [{"type": "text", "text": {"content": description[i:i + 1900]}}]}}
+            for i in range(0, len(description), 1900)
+        ]
+    with _write_lock:
+        page = _notion.pages.create(**kwargs)
+    return {"id": page["id"], "title": title,
+            "url": page.get("url") or f"https://www.notion.so/{_bare(page['id'])}"}
 
 
 # ---- invoices ----------------------------------------------------------

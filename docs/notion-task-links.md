@@ -12,6 +12,7 @@ the whole design, so it's worth stating first:
 |---|---|---|
 | **Paste a ticket link** | nothing at all | yes |
 | **Search for a ticket** | the integration connected to the ticket boards | once an admin does that |
+| **Create a ticket** | the integration able to *write* to one named board | once `TICKET_CREATE_DS_ID` is set |
 
 ## Pasting a link needs no permission
 
@@ -100,6 +101,78 @@ keeps the default list personal, but it is a convenience, not a permission
 boundary. Making it a real one would mean per-user OAuth tokens — the app
 already mints one at login and discards it (`web/auth.py:exchange_code`) — at
 the cost of every person hand-picking pages on Notion's consent screen.
+
+## Creating a ticket
+
+Sometimes the work you just did has no ticket yet. **＋ New ticket** next to the
+picker's label opens a dialog — title (required), description, project — creates
+the page on a Notion board and drops it straight into the picker's chip, so the
+hours you were already logging file against it.
+
+It is the third and strictest way in: pasting needs nothing from Notion,
+searching needs *read* access, and this needs *write* access to one board. So it
+lives behind its own env var, `TICKET_CREATE_DS_ID`, and the button simply isn't
+rendered until that's set — the same quiet degradation as `invoices_enabled()`.
+
+**The board is named by config, never by the browser.** Writing is a side effect
+on another team's board, so it gets the narrowest possible target — the same
+rule that makes `set_entry_hours` and `get_invoice` refuse a page whose parent
+isn't ours.
+
+What `create_ticket` writes, all resolved from the board's schema rather than by
+name (`_task_schema`, the `alloc_person_prop` lesson):
+
+| | Property | From |
+|---|---|---|
+| Title | the board's `title` property | the dialog, ≤200 chars |
+| Assignee | its best-ranked `people` property | whoever is logging the hours |
+| Project | a `select` whose name *is* project/proyecto/client | the matched option, or nothing |
+| Description | **the page body**, as paragraphs | the dialog |
+
+Status, type and priority are left alone so the board's own defaults apply. The
+description becomes page content because these boards have no description
+property — and a Notion ticket's description is its page body anyway.
+
+Assigning it to the logger is what makes the new ticket appear in their own
+"your tickets" list next time the picker opens: `my_tasks` filters on exactly
+that property.
+
+### Why the project is a dropdown and not a prefilled name
+
+The board's project column is a **`select`**, and its options are the other
+team's list, not ours. Measured against live Notion when this was built: 18 of
+our 35 active projects had a matching option; 17 — Neurogum, Chocolate Sun, the
+Vital Signals pair, Streamside, Zesty Paws and ten more — had none.
+
+So the dialog shows the board's **real options**, preselected when ours maps onto
+one and blank otherwise, with a line naming the project that didn't map. Two
+rules hold it up:
+
+- **Never write an option the board doesn't have.** Notion *creates* a select
+  option for any name it doesn't recognise, so prefilling by name would quietly
+  litter someone else's board with `Vital Signals - Phase 1 MVP Launch`.
+  `create_ticket` drops an unknown value and logs it rather than sending it.
+- **Match on case and punctuation only** (`_norm`, so our `FShip` finds the
+  board's `Fship`) **and no further.** Our `Saltworks` and the board's
+  `Salworks` are one keystroke apart, and so are plenty of client names — an
+  edit-distance guess files a real ticket against the wrong client. A dropdown
+  costs one click and can't.
+
+The project name is looked up from *our* Projects db by id, filtered to the
+projects that person is on — so the preselected option always belongs to a
+project they can actually log against, and a stale id prefills nothing.
+
+### Things worth knowing
+
+- **The ticket is created immediately, not when the hours are saved.** Abandon
+  the form afterwards and the ticket still exists — correct, since a ticket is a
+  real artifact, but the dialog says so rather than letting it surprise anyone.
+- The dialog holds no `<form>` element: it renders *inside* the entry form, and
+  nested forms are invalid HTML. Enter on the title is wired by hand for the
+  same reason the picker's Enter is — it must never submit the hours.
+- A refusal from Notion is repeated in words someone can act on (`_ticket_error`):
+  a permission error names the Connections menu, the way `mailer.explain()`
+  passes on Google's.
 
 ## Storage
 

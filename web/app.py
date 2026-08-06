@@ -208,6 +208,7 @@ def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = N
         "is_admin": auth.is_admin(user),
         "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
+        "ticket_create": ops.ticket_create_enabled(),
         "ok": ok, "err": _ENTRY_ERRORS.get(err) if err else None,
     })
 
@@ -305,6 +306,77 @@ def api_tasks_resolve(request: Request, url: str = ""):
                             status_code=400)
     return JSONResponse({"ok": True, "url": task["url"], "verified": bool(live),
                          "label": (live or {}).get("title") or task["label"] or "Notion ticket"})
+
+
+@app.get("/api/tasks/new")
+def api_tasks_new(request: Request, project_id: str = ""):
+    """What the "new ticket" dialog needs before it opens.
+
+    The project name is looked up from *our* Projects db by id rather than taken
+    from the browser, so the option we preselect is the one that belongs to a
+    project this person is actually on.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "login required"}, status_code=401)
+    if not ops.ticket_create_enabled():
+        return JSONResponse({"ok": True, "enabled": False, "options": [], "selected": ""})
+    name = ""
+    if project_id:
+        for p in ops.list_projects(member_of=user.get("id")):
+            if p["id"] == project_id:
+                name = p["name"]
+                break
+    try:
+        info = ops.ticket_board_info(name)
+    except Exception:
+        logging.exception("Reading the ticket board's schema failed")
+        return JSONResponse({"ok": False, "error": "board unavailable"}, status_code=502)
+    return JSONResponse({"ok": True, "project": name, **info})
+
+
+@app.post("/api/tasks/create")
+def api_tasks_create(
+    request: Request,
+    title: str = Form(...),
+    description: str = Form(""),
+    project_option: str = Form(""),
+):
+    """Create a ticket on the configured board and hand it back to the picker.
+
+    The ticket is created *now*, not when the hours are saved — it is a real
+    page on a real board, so the dialog says as much.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "login required"}, status_code=401)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not ops.ticket_create_enabled():
+        return JSONResponse({"ok": False, "error": "creating tickets isn't set up"},
+                            status_code=403)
+    if not title.strip():
+        # the dialog marks it required; this catches a hand-made POST
+        return JSONResponse({"ok": False, "error": "A ticket needs a title."}, status_code=400)
+    try:
+        ticket = ops.create_ticket(title[:200], description[:8000],
+                                   project_option, user.get("id"))
+    except Exception as exc:
+        logging.exception("Creating a ticket failed for %s", user.get("email"))
+        return JSONResponse({"ok": False, "error": _ticket_error(exc)}, status_code=502)
+    return JSONResponse({"ok": True, **ticket})
+
+
+def _ticket_error(exc: Exception) -> str:
+    """Notion's refusal in a sentence someone can act on — the same courtesy
+    mailer.explain() does for Google's errors."""
+    text = str(exc)
+    if "restricted" in text.lower() or "permission" in text.lower() or "unauthorized" in text.lower():
+        return ("Hours Tracker can't create pages on that board yet — in Notion, open it "
+                "→ ••• → Connections → add Hours Tracker.")
+    if "validation" in text.lower():
+        return "Notion refused that ticket: " + text[:200]
+    return "Couldn't create the ticket — try again, or add it in Notion."
 
 
 @app.get("/week", response_class=HTMLResponse)
