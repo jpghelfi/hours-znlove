@@ -265,6 +265,10 @@ dialog.pop label .subtle { font-size: 11.5px; }
 .range-form input[type=date] { padding: 7px 8px; }
 .range-dates, .range-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .weeknav .btn.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+/* destructive nav action (Clear week): reads as a warning without shouting —
+   the confirm dialog is what actually guards it */
+.btn-danger { color: var(--err-ink); border-color: var(--err-ink); }
+.btn-danger:hover { background: var(--err); }
 .statrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .stat { text-align: center; padding: 16px; max-width: none; }
 .stat-n { font-size: 34px; font-weight: 800; line-height: 1.1; }
