@@ -1,0 +1,44 @@
+{# The "New ticket" dialog, rendered OUTSIDE the entry form (base.html's
+   `modals` block) — never inside it.
+
+   A control inside the form is validated on submit even while its dialog is
+   closed, and a closed dialog is display:none, so the browser can't focus it
+   to complain: `required` in here once made "Save entry" do nothing at all,
+   silently, with no request and no message. Out here the dialog is not
+   form-associated, so its fields can't block the hours from being saved.
+
+   It carries no <form> of its own either: `create()` in _task_picker.html
+   POSTs the fields with fetch, and Enter in the title is wired by hand. #}
+<dialog id="tdlg" class="pop">
+  <div class="pop-head">
+    <strong>New ticket</strong>
+    <button type="button" class="pop-x" id="tnCancel" aria-label="Close">×</button>
+  </div>
+
+  <label>Title
+    <input id="tnTitle" type="text" maxlength="200" required
+           placeholder="What needs doing?" autocomplete="off">
+  </label>
+
+  {# one span holds the whole caption: dialog.pop labels stack their children,
+     so a bare trailing <span> would drop "— optional" onto its own line #}
+  <label><span>Description <span class="subtle">— optional</span></span>
+    <textarea id="tnDesc" rows="3" placeholder="Any detail worth keeping"></textarea>
+  </label>
+
+  <label>Project
+    <select id="tnProj"><option value="">— none —</option></select>
+  </label>
+  <div class="subtle tpick-hint" id="tnNote" hidden></div>
+
+  {# the ticket is a real page on a real board the moment this is clicked, so
+     don't let that be a surprise when the hours form is then abandoned #}
+  <div class="subtle tpick-hint">Created in Notion right away — not when you save the hours — and assigned to you.</div>
+
+  <div class="pop-err" id="tnErr" hidden></div>
+
+  <div class="pop-actions">
+    <button type="button" class="btn" id="tnClose">Cancel</button>
+    <button type="button" class="primary" id="tnGo">Create ticket</button>
+  </div>
+</dialog>
