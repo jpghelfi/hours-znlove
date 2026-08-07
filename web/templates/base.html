@@ -36,6 +36,10 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  {# Dialogs go here, not inside the page's forms: a required field in a closed
+     dialog is still validated on submit and can't be focused to complain, which
+     makes the form's own submit button do nothing at all. #}
+  {% block modals %}{% endblock %}
   <footer class="foot">Notion is the source of truth · entries sync to the Time Entries database</footer>
   <script>
     function effectiveTheme(){var t=document.documentElement.getAttribute('data-theme');return t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
@@ -93,6 +97,24 @@
         barTimer = setTimeout(navStop, 30000);
       }
       window.navStart = navStart;
+
+      // An invalid control the user can't see is a dead end: the browser
+      // refuses the submit, then has nothing to focus and says nothing, so the
+      // button just stops working. That cost a day of lost hours once — say it
+      // out loud rather than let a save fail in silence.
+      document.addEventListener('invalid', function (e) {
+        var el = e.target;
+        var shown = el.checkVisibility ? el.checkVisibility() : !!el.offsetParent;
+        if (shown || el.type === 'hidden') return;
+        console.warn('Submit blocked by an invisible invalid field', el);
+        var form = el.form;
+        if (!form || form.dataset.stuck) return;
+        form.dataset.stuck = '1';
+        var note = document.createElement('div');
+        note.className = 'deny';
+        note.textContent = 'Something on this page is blocking the save. Reload and try again.';
+        form.prepend(note);
+      }, true);   // `invalid` doesn't bubble
 
       // registered before the nav listeners so a blocked re-submit (below)
       // marks the event handled and doesn't also restart the progress bar

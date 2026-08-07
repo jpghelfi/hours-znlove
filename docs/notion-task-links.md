@@ -167,9 +167,17 @@ project they can actually log against, and a stale id prefills nothing.
 - **The ticket is created immediately, not when the hours are saved.** Abandon
   the form afterwards and the ticket still exists — correct, since a ticket is a
   real artifact, but the dialog says so rather than letting it surprise anyone.
-- The dialog holds no `<form>` element: it renders *inside* the entry form, and
-  nested forms are invalid HTML. Enter on the title is wired by hand for the
-  same reason the picker's Enter is — it must never submit the hours.
+- **The dialog renders outside the entry form** (`_task_dialog.html`, pulled in
+  through base.html's `modals` block) and holds no `<form>` of its own. Both
+  halves of that are load-bearing. It shipped *inside* the form, where its
+  required Title input was still validated on every "Save entry" — and a closed
+  `<dialog>` is `display:none`, so the browser could not focus the field to
+  complain. The result: the button did nothing, no request, no message, for
+  everyone, from the moment `TICKET_CREATE_DS_ID` was set (2026-08-06) until the
+  fix. Nothing `required` may sit inside a form unless it is visible. Enter on
+  the title is still wired by hand, for the same reason the picker's Enter is —
+  it must never submit the hours. base.html now also flags any invisible invalid
+  control on submit, so a repeat is loud instead of silent.
 - A refusal from Notion is repeated in words someone can act on (`_ticket_error`):
   a permission error names the Connections menu, the way `mailer.explain()`
   passes on Google's.

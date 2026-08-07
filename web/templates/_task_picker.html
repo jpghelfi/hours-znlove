@@ -30,46 +30,14 @@
   <input type="hidden" name="task_label" id="tlabel">
 </div>
 
-{% if ticket_create %}
-{# No <form> in here: this dialog renders inside the entry form, and a nested
-   form is invalid HTML. Plain inputs plus a fetch do the same job. #}
-<dialog id="tdlg" class="pop">
-  <div class="pop-head">
-    <strong>New ticket</strong>
-    <button type="button" class="pop-x" id="tnCancel" aria-label="Close">×</button>
-  </div>
-
-  <label>Title
-    <input id="tnTitle" type="text" maxlength="200" required
-           placeholder="What needs doing?" autocomplete="off">
-  </label>
-
-  {# one span holds the whole caption: dialog.pop labels stack their children,
-     so a bare trailing <span> would drop "— optional" onto its own line #}
-  <label><span>Description <span class="subtle">— optional</span></span>
-    <textarea id="tnDesc" rows="3" placeholder="Any detail worth keeping"></textarea>
-  </label>
-
-  <label>Project
-    <select id="tnProj"><option value="">— none —</option></select>
-  </label>
-  <div class="subtle tpick-hint" id="tnNote" hidden></div>
-
-  {# the ticket is a real page on a real board the moment this is clicked, so
-     don't let that be a surprise when the hours form is then abandoned #}
-  <div class="subtle tpick-hint">Created in Notion right away — not when you save the hours — and assigned to you.</div>
-
-  <div class="pop-err" id="tnErr" hidden></div>
-
-  <div class="pop-actions">
-    <button type="button" class="btn" id="tnClose">Cancel</button>
-    <button type="button" class="primary" id="tnGo">Create ticket</button>
-  </div>
-</dialog>
-{% endif %}
+{# The "New ticket" dialog it opens is NOT here: it renders outside the entry
+   form, from base.html's `modals` block (see _task_dialog.html). Only the
+   field above belongs inside the form. #}
 
 <script>
-(function () {
+{# the dialog is rendered later in the document than this include, so wait for
+   the parse to finish before looking it up #}
+document.addEventListener('DOMContentLoaded', function () {
   const q = document.getElementById('tq'), list = document.getElementById('tlist');
   const hint = document.getElementById('thint'), box = document.getElementById('tbox');
   const chip = document.getElementById('tchip'), chipLink = document.getElementById('tchipLink');
@@ -245,5 +213,5 @@
       if (e.key === 'Enter') { e.preventDefault(); create(); }
     });
   }
-})();
+});
 </script>

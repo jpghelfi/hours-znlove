@@ -79,3 +79,6 @@ function toggleTimer() {
 setInterval(renderTimer, 1000); renderTimer();
 </script>
 {% endblock %}
+
+{# outside the entry form on purpose — see _task_dialog.html #}
+{% block modals %}{% if ticket_create %}{% include "_task_dialog.html" %}{% endif %}{% endblock %}
