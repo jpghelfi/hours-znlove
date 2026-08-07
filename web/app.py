@@ -1399,13 +1399,21 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
                    people: list[dict], projects: list[dict],
                    focus_people: set, focus_project: Optional[str]) -> list[dict]:
     """Planner rows: one per person (by="person") or per project, each holding
-    a stack of pills per column.
+    a stack of pills per column. Returns (rows, hidden) — see the pruning note.
 
     Every roster person/project gets a row even with nothing booked — an empty
     row is what you click to make the first assignment, so the old
     "add a person/project pair first, then type hours" step disappears.
     bucket maps an allocation's date to its column (identity for the day
     planner, the week's Monday for the rollup).
+
+    The exception is a view narrowed to *one project*: "the Fotosprint week"
+    means the people on Fotosprint, not the whole company with four rows filled
+    in, so empty rows are pruned there (and symmetrically for projects when the
+    view is narrowed to a few people). `hidden` counts what that dropped, so the
+    page can offer the way back — booking someone new needs their empty row.
+    An explicit pick is never pruned: naming people is itself a request to see
+    them, blank week or not.
     """
     rows: dict = {}
     # Notion people properties come back as bare user refs with no name, so
@@ -1459,7 +1467,14 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
     for r in ordered:
         for c in cols:
             r["days"][c]["pills"].sort(key=lambda p: (-p["hours"], p["label"].lower()))
-    return ordered
+
+    narrowed = (focus_project and not focus_people) if by == "person" else (focus_people and not focus_project)
+    hidden = 0
+    if narrowed:
+        kept = [r for r in ordered if r["total"]]
+        hidden = len(ordered) - len(kept)
+        ordered = kept
+    return ordered, hidden
 
 
 @app.get("/schedule", response_class=HTMLResponse)
@@ -1511,12 +1526,14 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     if project:
         allocs = [a for a in allocs if a["project_id"] == project]
     col_isos = [c["iso"] for c in cols]
-    rows = _schedule_rows(allocs, col_isos, by, bucket, people, projects, focus_people, project)
+    rows, hidden_rows = _schedule_rows(allocs, col_isos, by, bucket, people, projects,
+                                       focus_people, project)
 
     col_totals = {c: sum(r["days"][c]["total"] for r in rows) for c in col_isos}
     return templates.TemplateResponse(request, "schedule.html", {
         "user": user, "by": by, "view": view,
         "cols": cols, "cap": cap, "rows": rows, "col_totals": col_totals,
+        "hidden_rows": hidden_rows,
         "grand_total": sum(col_totals.values()),
         "focus_people": picked, "focus_project": project or "",
         "is_admin": True,

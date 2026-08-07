@@ -25,6 +25,22 @@ Every roster person gets a row even with nothing booked — an empty row is what
 
 `?by=person` (People) puts people in rows and projects in pills. `?by=project` (Projects) flips it: projects in rows, people in pills. The same allocations, the same writes — only the pivot differs. The capacity meter is drawn for person rows only, since a project has no 8h/day ceiling.
 
+### Who gets a row
+
+Normally everyone on the roster gets a row, booked or not: an empty row is what
+you click to make the first assignment.
+
+A view narrowed to **one project** is the exception. "The Fotosprint week" means
+the people on Fotosprint — a full company roster with four filled rows is noise,
+so `_schedule_rows` prunes the rows that totalled nothing. The Projects view does
+the same when the people filter narrows it. An explicit pick is never pruned:
+naming people is itself a request to see them, blank week or not.
+
+Pruning costs the one thing empty rows were for, so the page says what it hid —
+"10 people with nothing booked on this project this week are hidden" — and links
+back to the unfiltered planner, where the missing person has a row to click.
+Totals are unaffected either way: a pruned row contributed nothing.
+
 ### Assigning
 
 Clicking a day cell (or an existing pill) opens the assign popover:
