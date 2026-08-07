@@ -14,6 +14,7 @@ import os
 import secrets
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -1737,6 +1738,193 @@ def api_entry_hours(request: Request, e: EntryHours):
     except Exception:
         logging.exception("Editing entry %s failed", e.entry_id)
         return JSONResponse({"ok": False, "error": "could not save that entry"}, status_code=400)
+
+
+# ---- absences ----------------------------------------------------------
+#
+# Who is off, and when. Logging one needs no name: it's always the logged-in
+# person, so the form is a date (or a range) and a reason. The dashboard reads
+# a week or a month at a time, the way /project reads one period rather than a
+# window of several.
+
+_ABSENCE_PERIODS = ("weekly", "monthly")
+
+
+def _absence_columns(period: str, rng: dict) -> list[dict]:
+    """The dashboard's columns: the weekdays of a week, or the weeks of a month.
+
+    A month of weekday columns would be 22 of them; bucketing into weeks keeps
+    the monthly view readable, and mirrors the schedule's Days/Weeks split.
+    """
+    first, last = dt.date.fromisoformat(rng["from"]), dt.date.fromisoformat(rng["to"])
+    days = ops.weekdays_between(first, last)
+    if period == "weekly":
+        return [{"key": d.isoformat(), "label": d.strftime("%a"),
+                 "sub": d.strftime("%d %b"), "days": [d]} for d in days]
+    weeks: dict[dt.date, list[dt.date]] = {}
+    for d in days:
+        weeks.setdefault(d - dt.timedelta(days=d.weekday()), []).append(d)
+    return [{"key": mon.isoformat(), "label": "W" + mon.strftime("%V"),
+             "sub": f"{ds[0]:%d} – {ds[-1]:%d %b}", "days": ds}
+            for mon, ds in sorted(weeks.items())]
+
+
+def _absence_days(rows: list[dict], rng: dict) -> dict:
+    """(person id) -> {date: reason} for every weekday off *inside* the period.
+
+    An absence that straddles the period edge is clipped here rather than in
+    the query, so a fortnight off still counts only the days it costs this
+    week — while the row itself stays whole in the list underneath.
+    """
+    lo, hi = dt.date.fromisoformat(rng["from"]), dt.date.fromisoformat(rng["to"])
+    out: dict[str, dict] = {}
+    for r in rows:
+        start = _parse_date(r["start"])
+        end = _parse_date(r["end"]) or start
+        if not start:
+            continue
+        for d in ops.weekdays_between(max(start, lo), min(end, hi)):
+            out.setdefault(r["person_id"] or "", {})[d] = r["reason"]
+    return out
+
+
+def _absence_board(rows: list[dict], cols: list[dict], rng: dict,
+                   people: list[dict]) -> tuple[list[dict], list[float]]:
+    """One row per person who is off in the period, and the column totals."""
+    by_person = _absence_days(rows, rng)
+    names = {p["id"]: p["name"] for p in people}
+    board = []
+    for pid, days in by_person.items():
+        cells = []
+        for c in cols:
+            hit = [d for d in c["days"] if d in days]
+            cells.append({
+                "n": len(hit),
+                # the reason belongs on the cell that shows the day off, not
+                # only in the list below — hovering a mark should answer "why"
+                "why": " · ".join(sorted({days[d] for d in hit if days[d]})),
+                "label": ("●" if len(c["days"]) == 1 else str(len(hit))) if hit else "",
+            })
+        name = next((r["person"] for r in rows if (r["person_id"] or "") == pid), None)
+        board.append({"person_id": pid, "person": names.get(pid) or name or "(unassigned)",
+                      "cells": cells, "days": len(days)})
+    board.sort(key=lambda r: (-r["days"], r["person"].lower()))
+    totals = [sum(r["cells"][i]["n"] for r in board) for i in range(len(cols))]
+    return board, totals
+
+
+def _absence_qs(period: str, anchor: str, person_ids: list[str]) -> str:
+    qs = f"?period={period}&start={anchor}"
+    return qs + "".join(f"&person={pid}" for pid in person_ids)
+
+
+@app.get("/absences", response_class=HTMLResponse)
+def absences_page(request: Request, period: str = "weekly", start: Optional[str] = None,
+                  person: list[str] = Query(default=[]),
+                  ok: Optional[str] = None, err: Optional[str] = None):
+    """Log an absence, and see who's off — a week or a month at a time.
+
+    Everyone sees (and can only remove) their own absences; an admin sees the
+    whole team and can filter it, the same scope rule /reports uses.
+    """
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    is_admin = auth.is_admin(user)
+    period = period if period in _ABSENCE_PERIODS else "weekly"
+    rng = _period_range(period, _project_anchor(period, start))
+    people = ops.list_people()
+    picks = [p for p in person if is_admin]     # the filter is an admin's tool
+    rows = ops.list_absences(rng["from"], rng["to"],
+                             person_id=None if is_admin else user.get("id"))
+    if picks:
+        keep = set(picks)
+        rows = [r for r in rows if r["person_id"] in keep]
+    cols = _absence_columns(period, rng)
+    board, totals = _absence_board(rows, cols, rng, people)
+    for r in rows:
+        s, e = _parse_date(r["start"]), _parse_date(r["end"])
+        r["label"] = (f"{s:%d %b %Y}" if s and s == e else
+                      f"{s:%d %b} – {e:%d %b %Y}" if s and e else r["start"])
+        r["mine"] = bool(user.get("id")) and r["person_id"] == user.get("id")
+    rows.sort(key=lambda r: (r["start"], r["person"].lower()))
+    return templates.TemplateResponse(request, "absences.html", {
+        "user": user, "is_admin": is_admin,
+        "enabled": ops.absences_enabled(),
+        "period": period, "rng": rng, "anchor": rng["value"],
+        "people": people, "focus_people": picks,
+        "cols": cols, "board": board, "totals": totals, "rows": rows,
+        "days_off": sum(totals), "people_off": len(board),
+        "today": dt.date.today().isoformat(),
+        "max_reason": ops.MAX_ABSENCE_REASON,
+        "ok": ok, "err": err,
+    })
+
+
+@app.post("/absences")
+def submit_absence(request: Request,
+                   start_date: str = Form(...), end_date: str = Form(""),
+                   reason: str = Form(""), period: str = Form("weekly"),
+                   anchor: str = Form(""), person: list[str] = Form(default=[])):
+    """File one absence for the logged-in person, then land back on the view
+    they filed it from."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    period = period if period in _ABSENCE_PERIODS else "weekly"
+    back = "/absences" + _absence_qs(period, anchor, [p for p in person if auth.is_admin(user)])
+
+    def bounce(err: str = "", ok: str = "") -> RedirectResponse:
+        sep = "&" + ("err=" + quote(err) if err else "ok=" + quote(ok))
+        return RedirectResponse(url=back + sep, status_code=303)
+
+    if not _same_origin(request):
+        return bounce("That request didn't come from this site.")
+    first = _parse_date(start_date)
+    last = _parse_date(end_date) if end_date else first
+    if not first or not last:
+        return bounce("That date didn't look like a date.")
+    if last < first:
+        return bounce("The last day is before the first one.")
+    if not reason.strip():
+        return bounce("Say why — a word is enough.")
+    try:
+        row = ops.add_absence(user.get("id"), user.get("name", ""),
+                              first.isoformat(), last.isoformat(), reason.strip())
+    except ValueError as e:
+        return bounce(str(e))
+    except Exception:
+        logging.exception("Filing an absence for %s failed", user.get("name"))
+        return bounce("Notion refused that absence. Try again in a moment.")
+    if not row["days"]:   # a Saturday-to-Sunday absence is saved, but costs nothing
+        return bounce(ok="Saved — that range is all weekend, so it costs no working days.")
+    return bounce(ok=f"{row['days']} day{'' if row['days'] == 1 else 's'} logged as off.")
+
+
+class AbsenceDelete(BaseModel):
+    absence_id: str
+
+
+@app.post("/api/absence/delete")
+def api_absence_delete(request: Request, a: AbsenceDelete):
+    """Remove an absence: your own, or anyone's if you're an admin."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        ops.delete_absence(a.absence_id, user.get("id"), any_person=auth.is_admin(user))
+    except PermissionError:
+        return JSONResponse({"ok": False, "error": "that's someone else's absence"},
+                            status_code=403)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Deleting absence %s failed", a.absence_id)
+        return JSONResponse({"ok": False, "error": "could not remove that absence"},
+                            status_code=400)
+    return JSONResponse({"ok": True})
 
 
 class Cell(BaseModel):

@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Absences · Hours Tracker{% endblock %}
+{% block nav_absences %}active{% endblock %}
+{% block content %}
+{# people picks ride along on every nav link so an admin's filter survives navigation #}
+{% set qs_person %}{% for pid in focus_people %}&person={{ pid }}{% endfor %}{% endset %}
+
+<div class="week-head">
+  <div>
+    <h1>Absences</h1>
+    <div class="subtle">
+      {{ rng.label }} ·
+      {% if days_off %}<strong>{{ days_off }}</strong> day{{ '' if days_off == 1 else 's' }} off
+        across {{ people_off }} {{ 'person' if people_off == 1 else 'people' }}
+      {% else %}nobody away{% endif %}
+      {%- if not is_admin %} · your own absences{% endif %}
+    </div>
+  </div>
+  <div class="weeknav weeknav-4">
+    <a class="btn" href="/absences?period={{ period }}&start={{ rng.prev }}{{ qs_person }}">← Earlier</a>
+    <a class="btn" href="/absences?period={{ period }}&start={{ rng.now }}{{ qs_person }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/absences?period={{ period }}&start={{ rng.next }}{{ qs_person }}">Later →</a>
+  </div>
+</div>
+
+{% if not enabled %}
+<div class="card wide">
+  <div class="notebar warn">
+    The Absences database isn't set up yet. Run <code>src/setup_absences_db.py</code>, then set
+    <code>ABSENCES_DB_ID</code> and <code>ABSENCES_DS_ID</code> on the deploy host.
+  </div>
+</div>
+{% endif %}
+
+{# ---- log one ---------------------------------------------------------
+   No "who": it's always the person looking at the screen. Leave the last day
+   blank for a single day off. #}
+<div class="card">
+  <h3 class="card-title">Log an absence</h3>
+  <div class="subtle">Logging as <strong>{{ user.name }}</strong></div>
+  {% if ok %}<div class="flash">✓ {{ ok }}</div>{% endif %}
+  {% if err %}<div class="deny">{{ err }}</div>{% endif %}
+  <form method="post" action="/absences" class="entry-form" data-lock>
+    <input type="hidden" name="period" value="{{ period }}">
+    <input type="hidden" name="anchor" value="{{ anchor }}">
+    {% for pid in focus_people %}<input type="hidden" name="person" value="{{ pid }}">{% endfor %}
+    <div class="row2">
+      <label>First day off
+        <input type="date" name="start_date" id="absStart" value="{{ today }}" required
+               onchange="absSyncEnd()">
+      </label>
+      <label>Last day off <span class="subtle">— blank for one day</span>
+        <input type="date" name="end_date" id="absEnd">
+      </label>
+    </div>
+    <label>Reason
+      <input type="text" name="reason" maxlength="{{ max_reason }}" required
+             placeholder="Holiday, sick, public holiday, appointment…">
+    </label>
+    <button type="submit" data-busy="Saving to Notion…" {{ 'disabled' if not enabled }}>
+      Save absence</button>
+  </form>
+</div>
+
+{# ---- the dashboard ---------------------------------------------------- #}
+<form class="range-form" method="get" action="/absences">
+  <div class="seg" role="group" aria-label="Period">
+    <span class="seg-label">Period</span>
+    <div class="seg-opts">
+      {# no `start`: switching granularity re-anchors on today, the way /project
+         does, so Monthly lands on this month rather than the week's month #}
+      <a class="seg-opt{{ ' is-on' if period == 'weekly' }}" {% if period == 'weekly' %}aria-current="page"{% endif %}
+         href="/absences?period=weekly{{ qs_person }}">Weekly</a>
+      <a class="seg-opt{{ ' is-on' if period == 'monthly' }}" {% if period == 'monthly' %}aria-current="page"{% endif %}
+         href="/absences?period=monthly{{ qs_person }}">Monthly</a>
+    </div>
+  </div>
+  <input type="hidden" name="period" value="{{ period }}">
+  <label class="period-pick">{{ 'Month' if period == 'monthly' else 'Week of' }}
+    {# navStart() by hand: form.submit() fires no submit event, so base.html's
+       progress bar never sees these #}
+    <input type="{{ rng.picker }}" name="start" value="{{ rng.value }}"
+           onchange="navStart(); this.form.submit()">
+  </label>
+  {% if is_admin %}
+  <span class="seg-label filters-label">Show</span>
+  {% with selected = focus_people %}{% include "_people_filter.html" %}{% endwith %}
+  {% endif %}
+</form>
+
+<div class="card wide">
+  <div class="grid-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th class="col-project left">Person</th>
+          {% for c in cols %}
+          <th class="col-day">{{ c.label }}<div class="subtle daysub">{{ c.sub }}</div></th>
+          {% endfor %}
+          <th>Days</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in board %}
+        <tr>
+          <td class="col-project col-person left">{{ r.person }}</td>
+          {% for c in r.cells %}
+          <td class="{{ 'off' if c.n else 'zero' }}"{% if c.why %} title="{{ c.why }}"{% endif %}>
+            {{ c.label or '·' }}</td>
+          {% endfor %}
+          <td><strong>{{ r.days }}</strong></td>
+        </tr>
+        {% else %}
+        <tr class="empty"><td colspan="{{ cols|length + 2 }}">
+          Nobody is away in {{ rng.label }}.</td></tr>
+        {% endfor %}
+      </tbody>
+      {% if board %}
+      <tfoot>
+        <tr>
+          <td class="col-project left">Total</td>
+          {% for t in totals %}<td>{{ t or '·' }}</td>{% endfor %}
+          <td>{{ days_off }}</td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+  <p class="subtle plan-hint">
+    Weekdays only — a Friday-to-Monday absence costs two days, not four ·
+    an absence that straddles the edge of {{ rng.label }} counts only the days inside it.
+  </p>
+</div>
+
+<div class="card wide">
+  <h3 class="card-title">Absences in {{ rng.label }}</h3>
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Person</th>
+        <th class="left">Dates</th>
+        <th>Days</th>
+        <th class="left">Reason</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr data-id="{{ r.id }}">
+        <td class="left">{{ r.person }}</td>
+        <td class="left nowrap">{{ r.label }}</td>
+        <td>{{ r.days }}</td>
+        <td class="left desc">{{ r.reason }}</td>
+        <td class="nowrap">
+          {% if r.mine or is_admin %}
+          <button type="button" class="btn btn-sm btn-danger" data-busy="Removing…"
+                  onclick="dropAbsence(this, '{{ r.id }}')"
+                  title="Remove this absence">Remove</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="5">Nothing logged for this period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+// Leaving the last day blank means one day off, but a range that starts after
+// it ends is a typo — keep the end picker from offering those dates at all.
+function absSyncEnd() {
+  var s = document.getElementById('absStart'), e = document.getElementById('absEnd');
+  if (!s || !e) return;
+  e.min = s.value;
+  if (e.value && e.value < s.value) e.value = s.value;
+}
+absSyncEnd();
+
+async function dropAbsence(btn, id) {
+  if (!confirm('Remove this absence?')) return;
+  setBusy(btn, true);
+  try {
+    const res = await fetch('/api/absence/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({absence_id: id}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || 'could not remove that absence');
+    // the tables above are server-rendered totals, so reload rather than leave
+    // a stale board next to a row that's gone
+    navStart();
+    location.reload();
+  } catch (e) {
+    setBusy(btn, false);
+    alert('Remove failed: ' + e.message);
+  }
+}
+</script>
+{% endblock %}
