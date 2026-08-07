@@ -177,6 +177,10 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
   that week day by day. Allocation rows carry real dates: day-cell edits save the exact day,
   a week-cell edit replaces the pair's whole week with one Monday-dated row (so week-planned
   hours appear in Monday's cell in the day view until spread out).
+- **`/absences` — Absences:** log a day (or a range) off with a reason — never asks who, it's
+  always you — into a separate Absences database, and read who's away a **week** or a **month**
+  at a time. Weekdays only, so a Friday-to-Monday absence costs two days. Admins see the whole
+  team and can filter it; everyone else sees their own. See [docs/absences.md](docs/absences.md).
 
 The chosen/logged-in person is written to a `Person` (people) property, **re-added on startup**
 if missing. (Notion-form submissions still use `Logged by`; `report.py` and the grid read either.)
@@ -255,6 +259,7 @@ credentials, and the July 2026 backfill numbers.
 | `src/config.py` | Loads `.env`, builds the Notion client, parses page URLs → ids, persists db ids. |
 | `src/setup_databases.py` | Creates the two databases (run once). |
 | `src/setup_people_db.py` | Creates the People roster db + seeds it from workspace members (idempotent). |
+| `src/setup_absences_db.py` | Creates the Absences db (idempotent). |
 | `src/seed_projects.py` | Bulk-adds projects, dedupe-safe. |
 | `src/log_hours.py` | Logs one time entry from the CLI. |
 | `src/report.py` | Aggregates hours by person (submitter) or project. |

@@ -23,6 +23,10 @@ services:
         sync: false
       - key: PEOPLE_DS_ID
         sync: false
+      # Absences (src/setup_absences_db.py). Unset just hides the feature behind
+      # a "not set up yet" note — /absences still renders.
+      - key: ABSENCES_DS_ID
+        sync: false
       - key: ADMIN_EMAILS
         sync: false
       - key: WEEK_TARGET_HOURS
