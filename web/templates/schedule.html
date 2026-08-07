@@ -62,6 +62,20 @@
   </select>
 </form>
 
+{# a one-project (or few-people) view lists only who is actually booked, so say
+   what that left out — an empty row is the only way to book someone new #}
+{% if hidden_rows %}
+<p class="subtle plan-hint">
+  {% if by == 'person' %}
+  {{ hidden_rows }} {{ 'person' if hidden_rows == 1 else 'people' }} with nothing booked on this project {{ 'this week' if view == 'days' else 'in these weeks' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
+  <a href="/schedule?start={{ start_iso }}&by={{ by }}&view={{ view }}{{ qs_person }}">clear the project filter</a> to book someone new
+  {% else %}
+  {{ hidden_rows }} {{ 'project' if hidden_rows == 1 else 'projects' }} with nothing booked for {{ 'this person' if focus_people|length == 1 else 'these people' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
+  <a href="/schedule?start={{ start_iso }}&by={{ by }}&view={{ view }}{{ qs_project }}">clear the people filter</a> to book a new project
+  {% endif %}
+</p>
+{% endif %}
+
 <div class="grid-wrap">
 <table class="grid plan {{ 'plan-days' if view == 'days' else 'plan-weeks' }}">
   <thead>
