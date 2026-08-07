@@ -479,7 +479,11 @@ def alloc_person_prop() -> str:
 
 def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
     """Every allocation in [date_from, date_to] as flat records:
-    {person_id, person_name, project_id, project_name, date, hours}.
+    {id, person_id, person_name, project_id, project_name, date, hours}.
+
+    `id` is the Notion page id, so a caller that wants to delete exactly the
+    rows it just read (clear_week_allocations) doesn't have to re-derive them
+    through the (person, project, day) upsert key.
 
     Allocations are day-dated (the property is still called "Week" for
     historical reasons). One flat read feeds both schedule views: the day
@@ -509,6 +513,7 @@ def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> li
             if not rel or not props["Week"]["date"]:
                 continue
             out.append({
+                "id": row["id"],
                 "person_id": pid,
                 "person_name": people[0].get("name", "?") if people else "(unassigned)",
                 "project_id": rel[0]["id"],
@@ -605,6 +610,38 @@ def copy_week_allocations(from_monday: str, to_monday: str,
         for (pid, prid, iso), hours in plan.items():
             _set_allocation_locked(pid, prid, iso, hours)
     return {"ok": True, "copied": len(plan), "hours": round(sum(plan.values()), 2)}
+
+
+def clear_week_allocations(monday: str, person_ids: list[str] | None = None,
+                           project_id: str | None = None) -> dict:
+    """Delete a whole week of bookings in one go — the counterpart to clearing
+    a day cell by cell.
+
+    Scoped to whatever the planner is filtered to (person_ids / project_id), so
+    the button removes exactly the bookings on screen and nothing behind a
+    filter. Deletes by page id — the rows this same read returned — rather than
+    re-deriving (person, project, day) keys, so a duplicate row left over from
+    an old race goes too instead of surviving as a ghost.
+
+    Notion has no bulk archive, so this is one write per booking under a single
+    _write_lock, capped like a copy.
+    """
+    mon = dt.date.fromisoformat(monday)
+    pick = set(person_ids or [])
+    doomed = []
+    for a in alloc_rows(monday, (mon + dt.timedelta(days=4)).isoformat()):
+        if pick and a["person_id"] not in pick:
+            continue
+        if project_id and a["project_id"] != project_id:
+            continue
+        doomed.append(a)
+    if len(doomed) > MAX_COPY_ROWS:
+        raise ValueError(f"that week has {len(doomed)} bookings — more than the {MAX_COPY_ROWS} a clear will delete")
+    with _write_lock:
+        for a in doomed:
+            _notion.pages.update(a["id"], archived=True)
+    return {"ok": True, "cleared": len(doomed),
+            "hours": round(sum(a["hours"] for a in doomed), 2)}
 
 
 def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float) -> dict:

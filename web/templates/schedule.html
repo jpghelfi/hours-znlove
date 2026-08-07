@@ -20,6 +20,8 @@
     {% if view == 'days' %}
     <button type="button" class="btn" id="copyweek" onclick="copyLastWeek(this)" data-busy="Copying…"
             title="Copy every booking from the week of {{ copy_from }} into this week">⧉ Copy last week</button>
+    <button type="button" class="btn btn-danger" id="clearweek" onclick="clearWeek(this)" data-busy="Clearing…"
+            title="Delete every booking shown in the week of {{ start_iso }}">🗑 Clear week</button>
     {% endif %}
     <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">← Earlier</a>
     <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Now</a>
@@ -121,7 +123,7 @@
 </div>
 
 {% if view == 'days' %}
-<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one.</p>
+<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one · “Clear week” deletes every booking shown here.</p>
 
 <dialog class="pop" id="pop">
   <div class="pop-head"><strong id="pop-title">Assign</strong>
@@ -184,6 +186,33 @@ async function copyLastWeek(btn) {
     location.reload();
   } catch (e) {
     alert('Copy failed — check your connection.');
+    restore();
+  }
+}
+
+/* "Start this week over": delete every booking the planner is currently
+   showing. Scoped to the filters like the copy, so a filtered view only wipes
+   what's on screen — and typed-confirm, because there is no undo. */
+async function clearWeek(btn) {
+  const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT;
+  const what = filtered ? 'every booking the current filter shows' : 'every booking';
+  if (!confirm('Delete ' + what + ' in the week of ' + WEEK_LABEL + '?'
+               + '\n\nThis cannot be undone.')) return;
+  setBusy(btn, true);
+  const restore = () => setBusy(btn, false);
+  try {
+    const res = await fetch('/api/allocation/clear-week', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({start: WEEK, person_ids: FOCUS_PEOPLE,
+                            project_id: FOCUS_PROJECT || null})
+    });
+    const data = await res.json();
+    if (!data.ok) { alert('Clear failed: ' + (data.error || '')); return restore(); }
+    if (!data.cleared) { alert('Nothing booked in the week of ' + WEEK_LABEL + ' to clear.'); return restore(); }
+    navStart();
+    location.reload();
+  } catch (e) {
+    alert('Clear failed — check your connection.');
     restore();
   }
 }

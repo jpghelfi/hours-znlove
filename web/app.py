@@ -1662,6 +1662,37 @@ def api_copy_week(request: Request, c: CopyWeek):
     return JSONResponse(res)
 
 
+class ClearWeek(BaseModel):
+    start: str                          # any date in the week to wipe
+    person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter
+    project_id: Optional[str] = None
+
+
+@app.post("/api/allocation/clear-week")
+def api_clear_week(request: Request, c: ClearWeek):
+    """Wipe a week of bookings — "start this week over" — honouring the page's
+    filters, so it only removes what the planner is showing."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    day = _parse_date(c.start)
+    if not day:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    mon = ops.monday_of(day)
+    try:
+        res = ops.clear_week_allocations(mon.isoformat(), c.person_ids, c.project_id)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Clearing the week of %s failed", mon)
+        return JSONResponse({"ok": False, "error": "could not clear that week"}, status_code=400)
+    return JSONResponse(res)
+
+
 class EntryHours(BaseModel):
     entry_id: str
     hours: float = Field(ge=0, le=24, allow_inf_nan=False)
