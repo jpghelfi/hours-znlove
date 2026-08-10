@@ -41,6 +41,30 @@ Pruning costs the one thing empty rows were for, so the page says what it hid �
 back to the unfiltered planner, where the missing person has a row to click.
 Totals are unaffected either way: a pruned row contributed nothing.
 
+### Who can open it
+
+Everyone. Only an admin can *plan*.
+
+A non-admin gets the same page pinned to **their own row**: the route sets the
+people pick to their own Notion user id and ignores any `?person=` they send, so
+a hand-typed id shows their week, not someone else's. The `by=project` grouping
+still works — it becomes "the projects I'm on this week", empty ones pruned by
+the same rule above.
+
+Read-only means the affordances are gone, not merely disabled: no click target
+on a day cell, no `+`, pills render as `<span>` instead of `<button>`, no
+Copy/Clear week, no assign dialog, and none of the popover JavaScript (which
+also keeps the roster and every project's membership list out of a page that has
+no use for them). The three write endpoints — `/api/allocation`,
+`/api/allocation/copy-week`, `/api/allocation/clear-week` — already refused
+non-admins before this and still do; the UI gating is what stops the page from
+offering a click that could only 403.
+
+One person asked for is the one filter pushed **into the Notion query**
+(`alloc_rows`), rather than paged through and dropped in Python like a
+multi-person pick. It's every non-admin's view of this page, so it's the read
+that got the extra traffic when the page opened up.
+
 ### Assigning
 
 Clicking a day cell (or an existing pill) opens the assign popover:

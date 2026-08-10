@@ -19,10 +19,13 @@
       <div class="nav-links">
         <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
         <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
+        {# everyone logs their own absences, so this one isn't admin-only —
+           and /schedule reads as your own week for anyone who isn't an admin #}
+        <a href="/absences" class="{% block nav_absences %}{% endblock %}">Absences</a>
+        <a href="/schedule" class="{% block nav_schedule %}{% endblock %}">Schedule</a>
         {% if is_admin %}
         <a href="/reports" class="{% block nav_reports %}{% endblock %}">Reports</a>
         <a href="/project" class="{% block nav_project %}{% endblock %}">By project</a>
-        <a href="/schedule" class="{% block nav_schedule %}{% endblock %}">Schedule</a>
         <a href="/assignments" class="{% block nav_assignments %}{% endblock %}">Assignments</a>
         <a href="/invoices" class="{% block nav_invoices %}{% endblock %}">Invoices</a>
         {% endif %}

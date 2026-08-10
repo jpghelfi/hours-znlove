@@ -763,3 +763,23 @@ tr.rowlink:hover td { background: var(--head); }
 /* the linked ticket where an entry is listed (reports, export screen) */
 .tlink { display: inline-block; font-size: 12.5px; font-weight: 600; color: var(--accent); white-space: nowrap; }
 td.desc .tlink { margin-left: 8px; }
+
+/* ---- absences ----
+   The board answers "who's away, when" at a glance: a filled mark is a day
+   off (a count, in the monthly view where a column is a whole week), an empty
+   one is a middot so the row still reads as a row. `--saving` is reused on
+   purpose — the same amber that means "in flight" elsewhere reads here as
+   "not at their desk", and both stay legible in either theme. */
+.card-title { margin: 0 0 12px; font-size: 15px; }
+.grid td.off {
+  background: var(--saving); font-weight: 700; color: var(--ink);
+  cursor: help;   /* the reason is in the title attribute */
+}
+.grid th .daysub { font-size: 10.5px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+
+/* read-only planner: /schedule is readable by everyone, but only an admin can
+   plan, so a non-admin's cells are still cells — they're just not buttons.
+   Drop every affordance that promises a click the server would refuse. */
+.plan-cell.is-static { cursor: default; padding-bottom: 8px; }
+.plan-cell.is-static:hover { background: transparent; }
+.plan-cell.is-static .pill:hover { border-color: transparent; }

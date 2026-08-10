@@ -497,10 +497,17 @@ def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> li
     pname = _project_name_map()
     person_prop = alloc_person_prop()
     out: list[dict] = []
-    kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
+    where = [
         {"property": "Week", "date": {"on_or_after": date_from}},
         {"property": "Week", "date": {"on_or_before": date_to}},
-    ]}}
+    ]
+    if person_id:
+        # One person is asked for on every non-admin view of /schedule, so it
+        # goes into the query rather than being paged through and dropped in
+        # Python. Same result — an unassigned row can't contain the id either
+        # — for a fraction of the rows fetched.
+        where.append({"property": person_prop, "people": {"contains": person_id}})
+    kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": where}}
     while True:
         res = _notion.data_sources.query(**kwargs)
         for row in res["results"]:
@@ -1422,3 +1429,139 @@ def entry_task(props: dict) -> dict:
     text = props.get(_TASK_PROP, {}).get("rich_text") or []
     label = "".join(t.get("plain_text", "") for t in text).strip()
     return {"task_url": url, "task": label or ("Notion ticket" if url else "")}
+
+
+# ---- absences ----------------------------------------------------------
+#
+# One row per absence, holding the whole stretch of days in a single Notion
+# date property (start + end) — not one row per day the way allocations work.
+# An absence is one decision with one reason, and a fortnight off shouldn't
+# leave ten rows to delete. Days are expanded here whenever something needs to
+# count them.
+ABSENCES_DS = _ids.get("absences_ds_id")   # optional: unset until set up
+
+# Notion's date filters compare against a range's *start*, so "ends on or after
+# X" can't be asked for server-side. The query instead reaches back a bounded
+# window before the period and the overlap is settled in Python — nobody books
+# an absence longer than this, and the bound keeps the read small.
+_MAX_ABSENCE_DAYS = 366
+MAX_ABSENCE_REASON = 400
+
+
+def absences_enabled() -> bool:
+    return bool(ABSENCES_DS)
+
+
+def weekdays_between(start: dt.date, end: dt.date) -> list[dt.date]:
+    """Mon–Fri days in [start, end] — the days an absence actually costs.
+
+    Weekends are dropped for the same reason the planner skips them: a Friday
+    to Monday absence is two days off, not four.
+    """
+    out, day = [], start
+    while day <= end:
+        if day.weekday() < 5:
+            out.append(day)
+        day += dt.timedelta(days=1)
+    return out
+
+
+def _absence_row(page: dict, people: dict) -> dict:
+    props = page["properties"]
+    date = props.get("Dates", {}).get("date") or {}
+    start = (date.get("start") or "")[:10]
+    end = (date.get("end") or start or "")[:10]
+    who = props.get("Person", {}).get("people") or []
+    pid = who[0]["id"] if who else None
+    reason = props.get("Reason", {}).get("rich_text") or []
+    return {
+        "id": page["id"],
+        "person_id": pid,
+        # people properties come back nameless — resolve against the roster
+        "person": people.get(pid, "(unknown)") if pid else "(unassigned)",
+        "start": start,
+        "end": end,
+        "days": props.get("Days", {}).get("number") or 0,
+        "reason": "".join(t.get("plain_text", "") for t in reason),
+        "url": page.get("url", ""),
+    }
+
+
+def list_absences(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
+    """Every absence overlapping [date_from, date_to], earliest first.
+
+    Overlapping, not contained: a fortnight off that starts in June is still
+    what someone is doing on the 1st of July, and a dashboard that hid it would
+    be lying about the week.
+    """
+    if not ABSENCES_DS:
+        return []
+    reach = (dt.date.fromisoformat(date_from) - dt.timedelta(days=_MAX_ABSENCE_DAYS)).isoformat()
+    kwargs = {"data_source_id": ABSENCES_DS, "page_size": 100, "filter": {"and": [
+        {"property": "Dates", "date": {"on_or_after": reach}},
+        {"property": "Dates", "date": {"on_or_before": date_to}},
+    ]}, "sorts": [{"property": "Dates", "direction": "ascending"}]}
+    people = _person_name_map()
+    out = []
+    for page in _query_all(kwargs):
+        row = _absence_row(page, people)
+        if not row["start"] or row["end"] < date_from:   # ended before the period
+            continue
+        if person_id and row["person_id"] != person_id:
+            continue
+        out.append(row)
+    return out
+
+
+def add_absence(person_id: str | None, person_name: str, start: str, end: str,
+                reason: str = "") -> dict:
+    """File one absence. `end` may equal `start` for a single day."""
+    if not ABSENCES_DS:
+        raise ValueError("The Absences database isn't set up yet.")
+    first, last = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    if last < first:
+        raise ValueError("The end date is before the start date.")
+    if (last - first).days > _MAX_ABSENCE_DAYS:
+        raise ValueError("That range is longer than a year — log it in shorter stretches.")
+    days = len(weekdays_between(first, last))
+    label = first.strftime("%d %b") if first == last else f"{first:%d %b} – {last:%d %b %Y}"
+    props = {
+        "Absence": {"title": [{"text": {"content": f"{person_name or 'Absence'} · {label}"}}]},
+        # a single-day absence still gets an explicit end, so every row reads
+        # the same way in Notion and nothing downstream has to guess
+        "Dates": {"date": {"start": start, "end": end if end != start else None}},
+        "Days": {"number": days},
+        "Reason": {"rich_text": [{"text": {"content": reason[:MAX_ABSENCE_REASON]}}]},
+    }
+    if person_id:
+        props["Person"] = {"people": [{"id": person_id}]}
+    with _write_lock:
+        page = _notion.pages.create(
+            parent={"type": "data_source_id", "data_source_id": ABSENCES_DS},
+            properties=props)
+    return _absence_row(page, _person_name_map())
+
+
+def delete_absence(absence_id: str, requester_id: str | None = None,
+                   any_person: bool = False) -> dict:
+    """Archive one absence by page id, refusing anything that isn't one.
+
+    The id arrives from the browser, so two things are checked *before* the
+    write, inside the same lock: that the page really is a row of this database
+    (the way set_entry_hours checks a time entry's parent), and that the caller
+    owns it — `any_person` is the admin's escape hatch. Otherwise anyone who
+    could read an id could cancel somebody else's holiday.
+    """
+    if not ABSENCES_DS:
+        raise ValueError("The Absences database isn't set up yet.")
+    with _write_lock:
+        page = _notion.pages.retrieve(absence_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(ABSENCES_DS):
+            raise ValueError("not an absence")
+        row = _absence_row(page, _person_name_map())
+        if not any_person and (not requester_id
+                               or _bare(row["person_id"]) != _bare(requester_id)):
+            raise PermissionError("that absence belongs to someone else")
+        _notion.pages.update(absence_id, archived=True)
+    return row

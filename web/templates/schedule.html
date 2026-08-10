@@ -2,22 +2,28 @@
 {% block title %}Schedule · Hours Tracker{% endblock %}
 {% block nav_schedule %}active{% endblock %}
 {% block content %}
-{# people picks ride along on every nav link so a filter survives navigation #}
-{% set qs_person %}{% for pid in focus_people %}&person={{ pid }}{% endfor %}{% endset %}
+{# people picks ride along on every nav link so a filter survives navigation.
+   Not for a non-admin: their pick is the route's doing, not theirs, and the
+   server re-applies it on every request anyway. #}
+{% set qs_person %}{% if is_admin %}{% for pid in focus_people %}&person={{ pid }}{% endfor %}{% endif %}{% endset %}
 {% set qs_project = '&project=' ~ focus_project if focus_project else '' %}
 <div class="week-head">
   <div>
     <h1>Schedule</h1>
     <div class="subtle">
-      {%- if view == 'days' -%}
+      {%- if view == 'days' and is_admin -%}
         Week of {{ start_iso }} — click a day to book a project, {{ '%g'|format(cap) }}h a day, weekends off
-      {%- else -%}
+      {%- elif view == 'days' -%}
+        Week of {{ start_iso }} — what you're booked on, {{ '%g'|format(cap) }}h a day, weekends off
+      {%- elif is_admin -%}
         Six weeks at a glance — read-only; click a week to plan its days
+      {%- else -%}
+        Six weeks at a glance — click a week to see it day by day
       {%- endif -%}
     </div>
   </div>
-  <div class="weeknav{{ ' weeknav-4' if view == 'days' }}">
-    {% if view == 'days' %}
+  <div class="weeknav{{ ' weeknav-4' if view == 'days' and is_admin }}">
+    {% if view == 'days' and is_admin %}
     <button type="button" class="btn" id="copyweek" onclick="copyLastWeek(this)" data-busy="Copying…"
             title="Copy every booking from the week of {{ copy_from }} into this week">⧉ Copy last week</button>
     <button type="button" class="btn btn-danger" id="clearweek" onclick="clearWeek(this)" data-busy="Clearing…"
@@ -54,8 +60,10 @@
   <input type="hidden" name="view" value="{{ view }}">
   {# the people picker's Apply is a real submit button, so base.html's listener
      starts the progress bar on its own — only the select needs navStart() by
-     hand, since form.submit() fires no submit event #}
-  {% with selected = focus_people %}{% include "_people_filter.html" %}{% endwith %}
+     hand, since form.submit() fires no submit event. Admins only: everyone
+     else is pinned to their own row by the route, so a picker here would just
+     be a control that does nothing. #}
+  {% if is_admin %}{% with selected = focus_people %}{% include "_people_filter.html" %}{% endwith %}{% endif %}
   <select name="project" onchange="navStart(); this.form.submit()">
     <option value="">All projects</option>
     {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
@@ -64,7 +72,7 @@
 
 {# a one-project (or few-people) view lists only who is actually booked, so say
    what that left out — an empty row is the only way to book someone new #}
-{% if hidden_rows %}
+{% if hidden_rows and is_admin %}
 <p class="subtle plan-hint">
   {% if by == 'person' %}
   {{ hidden_rows }} {{ 'person' if hidden_rows == 1 else 'people' }} with nothing booked on this project {{ 'this week' if view == 'days' else 'in these weeks' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
@@ -94,8 +102,13 @@
       {% for c in cols %}
       {% set d = r.days[c.iso] %}
       {% if view == 'days' %}
-      <td class="plan-cell{{ ' is-empty' if not d.pills }}" data-date="{{ c.iso }}" data-total="{{ d.total }}"
-          onclick="openPop(this, null)">
+      {# read-only for everyone but an admin: no click target, no + affordance,
+         and the pills below are spans rather than buttons — the write endpoints
+         would refuse them anyway, and a control that only 403s is worse than
+         no control #}
+      <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if not is_admin }}"
+          data-date="{{ c.iso }}" data-total="{{ d.total }}"
+          {% if is_admin %}onclick="openPop(this, null)"{% endif %}>
         {% if by == 'person' %}
         <div class="cap {{ 'cap-over' if d.total > cap else ('cap-full' if d.total >= cap else 'cap-ok') }}" aria-hidden="true">
           <i style="width: {{ [100, (d.total / cap * 100)|round(0, 'ceil')|int]|min }}%"></i>
@@ -104,15 +117,22 @@
         <div class="cap-num">{% if d.total %}{{ '%g'|format(d.total) }}{% if by == 'person' %}<span class="cap-of">/{{ '%g'|format(cap) }}</span>{% endif %}{% endif %}</div>
         <div class="pills">
           {% for p in d.pills %}
+          {% if is_admin %}
           <button type="button" class="pill s{{ p.swatch }}" data-person="{{ p.person_id }}" data-project="{{ p.project_id }}"
                   data-hours="{{ p.hours }}" data-label="{{ p.label }}"
                   onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), this)"
                   title="{{ p.label }} — {{ '%g'|format(p.hours) }}h">
             <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
           </button>
+          {% else %}
+          <span class="pill s{{ p.swatch }}" data-hours="{{ p.hours }}"
+                title="{{ p.label }} — {{ '%g'|format(p.hours) }}h">
+            <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
+          </span>
+          {% endif %}
           {% endfor %}
         </div>
-        <span class="addbtn" aria-hidden="true">+</span>
+        {% if is_admin %}<span class="addbtn" aria-hidden="true">+</span>{% endif %}
       </td>
       {% else %}
       <td class="{{ ('heat ' ~ ('heat-over' if d.total > cap else ('heat-full' if d.total >= cap * 0.8 else 'heat-ok'))) if by == 'person' and d.total else '' }}">
@@ -136,7 +156,12 @@
 </table>
 </div>
 
-{% if view == 'days' %}
+{% if view == 'days' and not is_admin %}
+<p class="subtle plan-hint">Your bookings for this week, as planned by the team — read-only.
+  Hours you actually worked go on <a href="/">Log hours</a> or the <a href="/week">weekly grid</a>.</p>
+{% endif %}
+
+{% if view == 'days' and is_admin %}
 <p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one · “Clear week” deletes every booking shown here.</p>
 
 <dialog class="pop" id="pop">
@@ -162,11 +187,14 @@
 {% endif %}
 
 <script>
+{# every line below drives the assign popover, so none of it is emitted for a
+   read-only visitor — that also keeps the roster and the project membership
+   lists out of a page that has no use for them #}
+{% if view == 'days' and is_admin %}
 const BY = {{ by|tojson }};
 const CAP = {{ cap|tojson }};
 const PROJECTS = {{ projects|tojson }};
 const PEOPLE = {{ people|tojson }};
-{% if view == 'days' %}
 const FOCUS_PEOPLE = {{ focus_people|tojson }};
 const FOCUS_PROJECT = {{ focus_project|tojson }};
 const WEEK = {{ start_iso|tojson }}, WEEK_LABEL = {{ week_label|tojson }};
