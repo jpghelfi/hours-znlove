@@ -497,10 +497,17 @@ def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> li
     pname = _project_name_map()
     person_prop = alloc_person_prop()
     out: list[dict] = []
-    kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": [
+    where = [
         {"property": "Week", "date": {"on_or_after": date_from}},
         {"property": "Week", "date": {"on_or_before": date_to}},
-    ]}}
+    ]
+    if person_id:
+        # One person is asked for on every non-admin view of /schedule, so it
+        # goes into the query rather than being paged through and dropped in
+        # Python. Same result — an unassigned row can't contain the id either
+        # — for a fraction of the rows fetched.
+        where.append({"property": person_prop, "people": {"contains": person_id}})
+    kwargs = {"data_source_id": ALLOC_DS, "page_size": 100, "filter": {"and": where}}
     while True:
         res = _notion.data_sources.query(**kwargs)
         for row in res["results"]:

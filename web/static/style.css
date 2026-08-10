@@ -776,3 +776,10 @@ td.desc .tlink { margin-left: 8px; }
   cursor: help;   /* the reason is in the title attribute */
 }
 .grid th .daysub { font-size: 10.5px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+
+/* read-only planner: /schedule is readable by everyone, but only an admin can
+   plan, so a non-admin's cells are still cells — they're just not buttons.
+   Drop every affordance that promises a click the server would refuse. */
+.plan-cell.is-static { cursor: default; padding-bottom: 8px; }
+.plan-cell.is-static:hover { background: transparent; }
+.plan-cell.is-static .pill:hover { border-color: transparent; }

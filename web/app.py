@@ -1485,10 +1485,19 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user):
-        return RedirectResponse(url="/", status_code=303)
-    # repeated ?person= like /reports — an empty pick means everyone
-    picked = [p for p in person if p]
+    # Everyone may *read* the planner; only an admin may plan. A normal user is
+    # pinned to their own row: the ?person= pick is dropped server-side rather
+    # than merely hidden, so a hand-typed id shows nothing. The three write
+    # endpoints already refuse non-admins — this is what stops the page from
+    # offering them a click that would only 403.
+    is_admin = auth.is_admin(user)
+    if is_admin:
+        # repeated ?person= like /reports — an empty pick means everyone
+        picked = [p for p in person if p]
+    elif user.get("id"):
+        picked = [user["id"]]
+    else:
+        return RedirectResponse(url="/", status_code=303)   # no identity to scope to
     by = by if by in ("person", "project") else "person"
     view = view if view in ("weeks", "days") else "days"
     anchor = _parse_date(start)  # malformed ?start= falls back to the current week
@@ -1518,9 +1527,12 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
 
     people = ops.list_people()
     projects = ops.list_projects(include_members=True)
-    # the Notion query is unfiltered either way (alloc_rows filters in Python),
-    # so a multi-person pick costs nothing extra — same as /reports
-    allocs = ops.alloc_rows(range_from, range_to)
+    # A multi-person pick still filters in Python (same as /reports): the read
+    # is one week of everyone either way. One person is the exception worth
+    # pushing into Notion — it's every non-admin's view of this page, so it's
+    # the one that got a lot more traffic when the page opened up.
+    allocs = ops.alloc_rows(range_from, range_to,
+                            picked[0] if len(picked) == 1 else None)
     focus_people = set(picked)
     if focus_people:
         allocs = [a for a in allocs if a["person_id"] in focus_people]
@@ -1537,7 +1549,7 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         "hidden_rows": hidden_rows,
         "grand_total": sum(col_totals.values()),
         "focus_people": picked, "focus_project": project or "",
-        "is_admin": True,
+        "is_admin": is_admin,
         "people": people,
         "projects": [{"id": p["id"], "name": p["name"], "member_ids": p.get("member_ids", []),
                       "swatch": _swatch(p["id"])} for p in projects],
