@@ -190,7 +190,10 @@ table.plan { min-width: 720px; }
   cursor: pointer; min-width: 148px;
 }
 /* `.grid td` (line ~131) outranks a bare `.plan-cell`, so the padding has to
-   be written with the td to actually win — it silently didn't before */
+   be written with the td to actually win — it silently didn't before. This
+   also outranks the narrow-screen `.grid th, .grid td { padding: 7px 6px }`,
+   deliberately: `table.plan`'s 720px min-width already puts this grid on a
+   horizontal scroller below 560px, so there is nothing to tighten for. */
 .plan td.plan-cell { padding: 8px; }
 .plan-cell:hover { background: var(--active-bg); }
 /* the capacity meter: how full the day is against DAY_TARGET_HOURS */
