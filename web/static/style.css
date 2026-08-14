@@ -187,10 +187,12 @@ table.plan { min-width: 720px; }
 .plan .col-day { min-width: 148px; }
 .plan-cell {
   position: relative; vertical-align: top; text-align: left;
-  padding: 8px 8px 20px; cursor: pointer; min-width: 148px;
+  cursor: pointer; min-width: 148px;
 }
+/* `.grid td` (line ~131) outranks a bare `.plan-cell`, so the padding has to
+   be written with the td to actually win — it silently didn't before */
+.plan td.plan-cell { padding: 8px; }
 .plan-cell:hover { background: var(--active-bg); }
-.plan-cell:hover .addbtn { opacity: 1; }
 /* the capacity meter: how full the day is against DAY_TARGET_HOURS */
 .cap { height: 4px; border-radius: 3px; background: var(--chart-track); overflow: hidden; }
 .cap i { display: block; height: 100%; border-radius: 3px; background: var(--chart); }
@@ -218,12 +220,19 @@ table.plan { min-width: 720px; }
 .pill.s5 { background: var(--s5); color: var(--s5i); }
 .pill.s6 { background: var(--s6); color: var(--s6i); }
 .pill.s7 { background: var(--s7); color: var(--s7i); }
+/* the add affordance: always in the flow beneath the pills, so it can never
+   sit on top of one, and always visible (faintly) so it works on touch, where
+   there is no hover to reveal it */
 .addbtn {
-  position: absolute; left: 8px; right: 8px; bottom: 4px; text-align: center;
-  font-size: 13px; font-weight: 700; color: var(--muted); opacity: 0;
-  border: 1px dashed var(--line); border-radius: 6px; line-height: 1.2;
+  display: block; width: 100%; margin-top: 4px; padding: 3px 0;
+  background: none; border: 1px dashed var(--line); border-radius: 7px;
+  font-size: 13px; font-weight: 700; line-height: 1.25; text-align: center;
+  color: var(--muted); opacity: .5;
+  transition: opacity .12s ease, color .12s ease, border-color .12s ease;
 }
-.plan-cell.is-empty .addbtn { opacity: .55; }
+.plan-cell:hover .addbtn { opacity: 1; }
+.addbtn:hover { color: var(--ink); border-color: var(--ring); background: var(--card); }
+.addbtn:focus-visible { opacity: 1; outline: 2px solid var(--ring); outline-offset: 1px; }
 .plan-hint { margin-top: 12px; }
 
 /* assign popover */
@@ -780,6 +789,6 @@ td.desc .tlink { margin-left: 8px; }
 /* read-only planner: /schedule is readable by everyone, but only an admin can
    plan, so a non-admin's cells are still cells — they're just not buttons.
    Drop every affordance that promises a click the server would refuse. */
-.plan-cell.is-static { cursor: default; padding-bottom: 8px; }
+.plan-cell.is-static { cursor: default; }
 .plan-cell.is-static:hover { background: transparent; }
 .plan-cell.is-static .pill:hover { border-color: transparent; }

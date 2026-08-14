@@ -67,6 +67,18 @@ that got the extra traffic when the page opened up.
 
 ### Assigning
 
+Every day cell an admin can plan ends in a dashed **`+`** button, sitting in the
+flow underneath the pills. It used to be an absolutely-positioned `<span>` at
+`bottom: 4px`, with a 20px bottom padding on `.plan-cell` reserving room for it —
+except `.grid td`'s `padding: 10px 12px` outranks a bare `.plan-cell` selector,
+so the reserve never applied and the `+` landed on top of the last pill as soon
+as a day held two bookings, covering its bottom 12px. In flow it cannot collide
+whatever the cell holds; the padding is now written as `.plan td.plan-cell` so it
+actually wins. The button is a real `<button>` with its own handler (and
+`event.stopPropagation()`, since the cell behind it opens the same popover) — so
+it is focusable, and visible at 50% opacity rather than only on hover, which is
+the only way it exists at all on touch.
+
 Clicking a day cell (or an existing pill) opens the assign popover:
 
 - **Project** (or **Person**, in the Projects view) — the row pins down one side of the pair, the select offers the other. Options are split into *Assigned* (already on the project's `People` property) and *Other*.

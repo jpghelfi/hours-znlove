@@ -132,7 +132,17 @@
           {% endif %}
           {% endfor %}
         </div>
-        {% if is_admin %}<span class="addbtn" aria-hidden="true">+</span>{% endif %}
+        {# a real button, in the flow under the pills. As an absolutely
+           positioned overlay it covered the last pill the moment a day held
+           two bookings — the cell's bottom padding was supposed to reserve
+           room for it, but `.grid td`'s padding outranks `.plan-cell`'s, so
+           the reserve never applied. In flow it can't collide, and it gives
+           the cell a focusable, touch-friendly click target of its own. #}
+        {% if is_admin %}
+        <button type="button" class="addbtn" aria-label="Book a project on this day"
+                title="Book a project on this day"
+                onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), null)">+</button>
+        {% endif %}
       </td>
       {% else %}
       <td class="{{ ('heat ' ~ ('heat-over' if d.total > cap else ('heat-full' if d.total >= cap * 0.8 else 'heat-ok'))) if by == 'person' and d.total else '' }}">
