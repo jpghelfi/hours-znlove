@@ -89,7 +89,7 @@
       <td class="col-num">{{ g.entries or '' }}</td>
     </tr>
     {% for r in g.rows %}
-    <tr class="person-row {{ 'idle' if not r.hours }}" hidden>
+    <tr class="person-row sub-row {{ 'idle' if not r.hours }}" hidden>
       <td class="col-project sub">{{ r.person_name }}</td>
       <td class="col-hours">{{ '%g'|format(r.hours) if r.hours else '—' }}</td>
       {% if r.hours %}{{ share_cell(r.pct, r.share) }}{% else %}<td class="col-share"></td>{% endif %}
@@ -127,26 +127,54 @@
 <table class="grid projgrid">
   <thead>
     <tr>
-      <th class="col-project">Person</th>
+      <th class="col-project">Person
+        <button type="button" class="expand-all" onclick="toggleAll(this)" aria-expanded="false">Expand all</button>
+      </th>
       <th class="col-hours">Hours</th>
       <th class="col-share">Share</th>
       <th class="col-num">Days</th>
       <th class="col-num">Entries</th>
     </tr>
   </thead>
-  <tbody>
-    {% for r in d.rows %}
-    <tr class="{{ 'idle' if not r.hours }}">
-      <td class="col-project">{{ r.person_name }}</td>
+  {% for r in d.rows %}
+  <tbody class="pgroup">
+    <tr class="group-row {{ 'idle' if not r.hours }}">
+      <td class="col-project">
+        {# somebody with nothing logged has nothing to expand into — plain name #}
+        {% if r.log %}
+        <button type="button" class="disclosure" onclick="toggleGroup(this)" aria-expanded="false">
+          <span class="caret" aria-hidden="true">▸</span>{{ r.person_name }}
+          <span class="who-count">{{ r.log|length }}</span>
+        </button>
+        {% else %}{{ r.person_name }}{% endif %}
+      </td>
       <td class="col-hours">{{ '%g'|format(r.hours) if r.hours else '—' }}</td>
       {% if r.hours %}{{ share_cell(r.pct, r.share) }}{% else %}<td class="col-share"></td>{% endif %}
       <td class="col-num">{{ r.days or '' }}</td>
       <td class="col-num">{{ r.entries or '' }}</td>
     </tr>
-    {% else %}
-    <tr class="empty"><td colspan="5">Nobody is assigned to this project and nothing was logged in this period.</td></tr>
+    {% for e in r.log %}
+    {# same entry ids as the list at the bottom: saveEntry() keeps both in sync #}
+    <tr class="entry-row sub-row" data-entry="{{ e.id }}" hidden>
+      <td class="col-project sub">
+        <span class="entry-date">{{ e.date }}</span>
+        <span class="entry-desc">{{ e.description or '—' }}</span>
+      </td>
+      <td class="col-hours cell">
+        <input type="number" step="0.25" min="0" max="24" inputmode="decimal"
+               aria-label="Hours — {{ r.person_name }}, {{ sel.name }}, {{ e.date }}"
+               value="{{ '%g'|format(e.hours) }}"
+               onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
+      </td>
+      <td class="col-share"></td>
+      <td class="col-num"></td>
+      <td class="col-num"></td>
+    </tr>
     {% endfor %}
   </tbody>
+  {% else %}
+  <tbody><tr class="empty"><td colspan="5">Nobody is assigned to this project and nothing was logged in this period.</td></tr></tbody>
+  {% endfor %}
   {% if d.rows %}
   <tfoot>
     <tr>
@@ -231,12 +259,18 @@ async function saveEntry(input) {
       alert('Save failed: ' + (data.error || 'unknown'));
       return;
     }
+    // an entry shows up twice — under its person and in the list below — so
+    // both copies follow the save rather than one going stale on screen
+    const twins = document.querySelectorAll(`tr[data-entry="${CSS.escape(entry_id)}"]`);
     if (data.deleted) {
       const count = document.getElementById('entry-count');
       count.textContent = Math.max(0, parseInt(count.textContent, 10) - 1);
-      tr.remove();
+      twins.forEach(row => row.remove());
     } else {
-      input.dataset.prev = input.value;
+      twins.forEach(row => {
+        const other = row.querySelector('input');
+        if (other) { other.value = input.value; other.dataset.prev = input.value; }
+      });
       input.classList.add('saved');
       setTimeout(() => input.classList.remove('saved'), 800);
     }
@@ -250,12 +284,11 @@ async function saveEntry(input) {
 }
 </script>
 
-{% if is_all %}
 <script>
 function setGroup(btn, open) {
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   btn.querySelector('.caret').textContent = open ? '▾' : '▸';
-  btn.closest('tbody').querySelectorAll('tr.person-row').forEach(tr => { tr.hidden = !open; });
+  btn.closest('tbody').querySelectorAll('tr.sub-row').forEach(tr => { tr.hidden = !open; });
 }
 function toggleGroup(btn) { setGroup(btn, btn.getAttribute('aria-expanded') !== 'true'); }
 function toggleAll(btn) {
@@ -265,5 +298,4 @@ function toggleAll(btn) {
   document.querySelectorAll('.pgroup .disclosure').forEach(b => setGroup(b, open));
 }
 </script>
-{% endif %}
 {% endblock %}
