@@ -660,7 +660,7 @@ def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict)
     def row_for(pid, name):
         return rows.setdefault(pid or "(unassigned)", {
             "person_id": pid, "person_name": name,
-            "hours": 0.0, "entries": 0, "days": set(),
+            "hours": 0.0, "entries": 0, "days": set(), "log": [],
         })
 
     for e in entries:
@@ -668,6 +668,8 @@ def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict)
         r["hours"] += e["hours"]
         r["entries"] += 1
         r["days"].add(e["date"])
+        # the person's own entries, so their row can expand into what they did
+        r["log"].append(e)
     for mid in member_ids:
         row_for(mid, name_map.get(mid, "(unnamed)"))
 
@@ -680,6 +682,7 @@ def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict)
         r["pct"] = round(r["hours"] / top * 100) if top else 0
         r["share"] = round(r["hours"] / total * 100) if total else 0
         r["hours"] = round(r["hours"], 2)
+        r["log"].sort(key=lambda e: (e["date"], e["person"]), reverse=True)
     return {
         "rows": ordered, "total": total,
         "entries": sorted(entries, key=lambda e: (e["date"], e["person"]), reverse=True),

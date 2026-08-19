@@ -707,6 +707,17 @@ dialog.pop label .subtle { font-size: 11.5px; }
 .projgrid .person-row td { background: var(--bg); font-weight: 500; }
 .projgrid .person-row .col-project.sub { background: var(--bg); padding-left: 34px; font-weight: 500; color: var(--muted); }
 .projgrid .person-row .share-track { max-width: 240px; }
+/* One project: a person row expands the same way, into their own entries —
+   date + description on the left, the hours still editable in place. */
+.projgrid .entry-row td { background: var(--bg); font-weight: 500; }
+.projgrid .entry-row .col-project.sub {
+  background: var(--bg); padding-left: 34px; font-weight: 500; color: var(--muted);
+  display: flex; gap: 10px; align-items: baseline;
+}
+.projgrid .entry-row .entry-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.projgrid .entry-row .entry-desc { color: var(--muted); font-size: 13.5px; }
+.projgrid .entry-row .cell { padding: 2px 4px; }
+.projgrid .entry-row .cell input { padding: 6px 4px; font-size: 14px; min-width: 60px; border-color: var(--line); }
 .expand-all {
   float: right; background: none; border: 1px solid var(--line); color: var(--muted);
   font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase;
