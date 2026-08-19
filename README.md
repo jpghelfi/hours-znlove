@@ -156,8 +156,9 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
     many people it holds. Projects with nothing logged are still listed, zeroed, at the bottom.
   - **One project:** the same table one level down — a row per person with their hours, share of
     that project, and how many days / entries it took. Each person expands the same way (or
-    **Expand all**) into their own entries for the period — date, description and an editable
-    Hours cell, so a wrong number can be fixed where you spotted it. An entry shows up both here
+    **Expand all**) into their own entries for the period — date, what the hour was for (the
+    typed description, the linked Notion ticket, or both) and an editable Hours cell, so a wrong
+    number can be fixed where you spotted it. An entry shows up both here
     and in the list at the bottom; saving one updates the other.
   People assigned to a project with nothing logged still appear with a dashed total, so
   "assigned but idle" is visible. Totals row at the bottom, CSV for whichever mode you're in,
