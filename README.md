@@ -153,7 +153,8 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
   - **All projects** (the default): every project listed with its hours for that period, sorted
     biggest first, with a share bar (% of the period's total) and its day/entry counts. Click a
     project to expand it into its people (or **Expand all**); the badge next to each name is how
-    many people it holds. Projects with nothing logged are still listed, zeroed, at the bottom.
+    many people it holds. Each of those people expands one level further, into their own entries
+    for the period. Projects with nothing logged are still listed, zeroed, at the bottom.
   - **One project:** the same table one level down — a row per person with their hours, share of
     that project, and how many days / entries it took. Each person expands the same way (or
     **Expand all**) into their own entries for the period — date, what the hour was for (the

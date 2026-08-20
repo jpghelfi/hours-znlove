@@ -724,17 +724,21 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
         key = e["person_id"] or "(unassigned)"
         p = g["people"].setdefault(key, {
             "person_name": e["person"], "hours": 0.0, "entries": 0, "days": set(),
+            "log": [],
         })
         p["hours"] += e["hours"]
         p["entries"] += 1
         p["days"].add(e["date"])
+        # their own entries, so a person row expands the same way here as it
+        # does in the one-project view
+        p["log"].append(e)
 
     for proj in projects:  # every active project shows up, logged against or not
         g = group_for(proj["id"], proj["name"])
         for mid in proj.get("member_ids", []):
             g["people"].setdefault(mid, {
                 "person_name": name_map.get(mid, "(unnamed)"),
-                "hours": 0.0, "entries": 0, "days": set(),
+                "hours": 0.0, "entries": 0, "days": set(), "log": [],
             })
 
     total = round(sum(g["hours"] for g in groups.values()), 2)
@@ -745,9 +749,12 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
         g["pct"] = round(g["hours"] / top * 100) if top else 0
         g["share"] = round(g["hours"] / total * 100) if total else 0
         ptop = max([p["hours"] for p in g["people"].values()], default=0)
+        for key, p in g["people"].items():
+            p["key"] = key  # what the person's entry rows point back at
         rows = sorted(g["people"].values(), key=lambda p: (-p["hours"], p["person_name"].lower()))
         for p in rows:
             p["days"] = len(p["days"])
+            p["log"].sort(key=lambda e: (e["date"], e["person"]), reverse=True)
             # person bars are scaled within their project, so an expanded group
             # shows that project's split rather than a sliver of the biggest one
             p["pct"] = round(p["hours"] / ptop * 100) if ptop else 0
