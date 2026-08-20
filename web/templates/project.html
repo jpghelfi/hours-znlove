@@ -53,6 +53,31 @@
 </td>
 {% endmacro %}
 
+{# One logged entry, shown under the person who logged it. `parent` is set in
+   the rollup, where the row is a level deeper than the person rows the project
+   disclosure toggles — without it a closed project would leave entries on
+   screen. Hours stay editable here, same as in the list at the bottom. #}
+{% macro entry_row(e, who, project_label, parent=None) %}
+<tr class="entry-row{{ ' sub-row' if not parent }}" {% if parent %}data-parent="{{ parent }}"{% endif %}
+    data-entry="{{ e.id }}" hidden>
+  <td class="col-project sub">
+    <span class="entry-date">{{ e.date }}</span>
+    <span class="entry-desc">{{ e.description }}{% if e.task_url %}
+      <a class="tlink" href="{{ e.task_url }}" target="_blank" rel="noopener noreferrer">🔗 {{ e.task or 'Notion ticket' }}</a>
+      {% elif not e.description %}—{% endif %}</span>
+  </td>
+  <td class="col-hours cell">
+    <input type="number" step="0.25" min="0" max="24" inputmode="decimal"
+           aria-label="Hours — {{ who }}, {{ project_label }}, {{ e.date }}"
+           value="{{ '%g'|format(e.hours) }}"
+           onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
+  </td>
+  <td class="col-share"></td>
+  <td class="col-num"></td>
+  <td class="col-num"></td>
+</tr>
+{% endmacro %}
+
 {% if is_all %}
 <div class="statrow">
   <div class="stat card"><div class="stat-n">{{ '%g'|format(d.total) }}</div><div class="stat-l">hours</div></div>
@@ -90,12 +115,22 @@
     </tr>
     {% for r in g.rows %}
     <tr class="person-row sub-row {{ 'idle' if not r.hours }}" hidden>
-      <td class="col-project sub">{{ r.person_name }}</td>
+      <td class="col-project sub">
+        {# nobody with nothing logged has anything to expand into #}
+        {% if r.log %}
+        <button type="button" class="disclosure person-disclosure" data-pkey="{{ r.key }}"
+                onclick="togglePerson(this)" aria-expanded="false">
+          <span class="caret" aria-hidden="true">▸</span>{{ r.person_name }}
+          <span class="who-count">{{ r.log|length }}</span>
+        </button>
+        {% else %}{{ r.person_name }}{% endif %}
+      </td>
       <td class="col-hours">{{ '%g'|format(r.hours) if r.hours else '—' }}</td>
       {% if r.hours %}{{ share_cell(r.pct, r.share) }}{% else %}<td class="col-share"></td>{% endif %}
       <td class="col-num">{{ r.days or '' }}</td>
       <td class="col-num">{{ r.entries or '' }}</td>
     </tr>
+    {% for e in r.log %}{{ entry_row(e, r.person_name, g.project_name, r.key) }}{% endfor %}
     {% endfor %}
   </tbody>
   {% else %}
@@ -153,29 +188,8 @@
       <td class="col-num">{{ r.days or '' }}</td>
       <td class="col-num">{{ r.entries or '' }}</td>
     </tr>
-    {% for e in r.log %}
     {# same entry ids as the list at the bottom: saveEntry() keeps both in sync #}
-    <tr class="entry-row sub-row" data-entry="{{ e.id }}" hidden>
-      <td class="col-project sub">
-        <span class="entry-date">{{ e.date }}</span>
-        {# what the hour was for: the typed description, the linked ticket, or
-           both — an entry logged from the weekly grid has only the ticket, so
-           showing the description alone leaves the row saying nothing #}
-        <span class="entry-desc">{{ e.description }}{% if e.task_url %}
-          <a class="tlink" href="{{ e.task_url }}" target="_blank" rel="noopener noreferrer">🔗 {{ e.task or 'Notion ticket' }}</a>
-          {% elif not e.description %}—{% endif %}</span>
-      </td>
-      <td class="col-hours cell">
-        <input type="number" step="0.25" min="0" max="24" inputmode="decimal"
-               aria-label="Hours — {{ r.person_name }}, {{ sel.name }}, {{ e.date }}"
-               value="{{ '%g'|format(e.hours) }}"
-               onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
-      </td>
-      <td class="col-share"></td>
-      <td class="col-num"></td>
-      <td class="col-num"></td>
-    </tr>
-    {% endfor %}
+    {% for e in r.log %}{{ entry_row(e, r.person_name, sel.name) }}{% endfor %}
   </tbody>
   {% else %}
   <tbody><tr class="empty"><td colspan="5">Nobody is assigned to this project and nothing was logged in this period.</td></tr></tbody>
@@ -290,10 +304,28 @@ async function saveEntry(input) {
 </script>
 
 <script>
-function setGroup(btn, open) {
+function setCaret(btn, open) {
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   btn.querySelector('.caret').textContent = open ? '▾' : '▸';
-  btn.closest('tbody').querySelectorAll('tr.sub-row').forEach(tr => { tr.hidden = !open; });
+}
+// one person inside a project row: their entries hang off data-parent
+function setPerson(btn, open) {
+  setCaret(btn, open);
+  btn.closest('tbody')
+     .querySelectorAll(`tr.entry-row[data-parent="${CSS.escape(btn.dataset.pkey)}"]`)
+     .forEach(tr => { tr.hidden = !open; });
+}
+function togglePerson(btn) { setPerson(btn, btn.getAttribute('aria-expanded') !== 'true'); }
+function setGroup(btn, open) {
+  setCaret(btn, open);
+  const body = btn.closest('tbody');
+  body.querySelectorAll('tr.sub-row').forEach(tr => { tr.hidden = !open; });
+  // closing takes the level below with it, so reopening starts collapsed
+  // rather than dumping every entry back on screen
+  if (!open) {
+    body.querySelectorAll('tr.entry-row').forEach(tr => { tr.hidden = true; });
+    body.querySelectorAll('.person-disclosure').forEach(b => setCaret(b, false));
+  }
 }
 function toggleGroup(btn) { setGroup(btn, btn.getAttribute('aria-expanded') !== 'true'); }
 function toggleAll(btn) {
