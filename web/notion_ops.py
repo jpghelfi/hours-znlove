@@ -677,31 +677,34 @@ def move_allocation(person_id: str, project_id: str, date_iso: str,
     dropped 3h of Kepos onto a day already holding 2h of Kepos, and 5h is the
     only reading of that gesture that doesn't silently lose hours.
 
-    Move (the default) deletes the source afterwards; `copy` leaves it. Both
-    halves happen under one _write_lock, so a concurrent planner edit can't
-    interleave between the write and the delete and strand the hours.
+    Move (the default) deletes the source afterwards; `copy` leaves it.
+
+    The whole read-modify-write sits inside _write_lock, not just the two
+    writes: the target's hours are read and then added to, so a read taken
+    outside the lock could be overtaken by another drag landing on the same day
+    and the second write would silently drop the first one's hours. Holding the
+    lock across the reads costs two extra queries' worth of contention on a
+    gesture that happens a few times a minute, and makes the sum honest.
     """
-    src_hours = 0.0
-    for a in alloc_rows(date_iso, date_iso):
-        if a["person_id"] == person_id and a["project_id"] == project_id:
-            src_hours += a["hours"]
-    if not src_hours:
-        return {"ok": False, "error": "nothing booked there any more"}
-    same = (person_id, project_id, date_iso) == (to_person_id, to_project_id, to_date)
-    if same:
-        return {"ok": True, "hours": src_hours, "from_hours": src_hours, "moved": 0}
-    dst_hours = 0.0
-    for a in alloc_rows(to_date, to_date):
-        if a["person_id"] == to_person_id and a["project_id"] == to_project_id:
-            dst_hours += a["hours"]
-    total = round(src_hours + dst_hours, 2)
-    if total > 24:
-        return {"ok": False, "error": "that would book more than 24h of one project in a day"}
+    def booked(pid: str, prid: str, day: str) -> float:
+        return sum(a["hours"] for a in alloc_rows(day, day)
+                   if a["person_id"] == pid and a["project_id"] == prid)
+
     with _write_lock:
+        src_hours = booked(person_id, project_id, date_iso)
+        if not src_hours:
+            return {"ok": False, "error": "nothing booked there any more"}
+        if (person_id, project_id, date_iso) == (to_person_id, to_project_id, to_date):
+            return {"ok": True, "hours": src_hours, "from_hours": src_hours, "moved": 0}
+        dst_hours = booked(to_person_id, to_project_id, to_date)
+        total = round(src_hours + dst_hours, 2)
+        if total > 24:
+            return {"ok": False,
+                    "error": "that would book more than 24h of one project in a day"}
         _set_allocation_locked(to_person_id, to_project_id, to_date, total)
         if not copy:
             _set_allocation_locked(person_id, project_id, date_iso, 0)
-    return {"ok": True, "hours": total, "from_hours": 0 if not copy else src_hours,
+    return {"ok": True, "hours": total, "from_hours": src_hours if copy else 0,
             "moved": src_hours}
 
 

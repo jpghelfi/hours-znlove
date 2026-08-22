@@ -421,11 +421,20 @@ async function savePop(forceHours) {
   // adding to them (a typed number is a statement, not an increment) — which
   // would quietly shrink a 6h booking to the 1h being edited. Say so first.
   if (swapped) {
-    const clash = POP.cell.querySelector(
-      '.pill[data-person="' + personId + '"][data-project="' + projectId + '"]');
-    if (clash && parseFloat(clash.dataset.hours) !== hours &&
-        !confirm(label + ' is already booked ' + fmt(parseFloat(clash.dataset.hours))
-                 + 'h that day. Saving replaces that with ' + fmt(hours) + 'h.')) return;
+    // every day the save will rewrite, not just the one the popover was opened
+    // on: a "repeat through" swap reaches days whose existing booking for the
+    // new pair would be replaced just as silently
+    const hit = [...row.querySelectorAll('.plan-cell')]
+      .filter(c => c.dataset.date >= date && c.dataset.date <= through)
+      .map(c => ({date: c.dataset.date, pill: c.querySelector(
+        '.pill[data-person="' + personId + '"][data-project="' + projectId + '"]')}))
+      .filter(c => c.pill && parseFloat(c.pill.dataset.hours) !== hours);
+    if (hit.length) {
+      const days = hit.map(c => dayLabel(c.date) + ' (' + fmt(parseFloat(c.pill.dataset.hours)) + 'h)');
+      if (!confirm(label + ' is already booked on ' + days.join(', ')
+                   + '. Saving replaces ' + (hit.length === 1 ? 'that' : 'those')
+                   + ' with ' + fmt(hours) + 'h.')) return;
+    }
   }
   err.hidden = true;
   setPopBusy(true, btn, weekdaysBetween(date, through), !hours);

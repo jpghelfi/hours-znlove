@@ -1650,6 +1650,16 @@ def api_allocation(request: Request, alloc: Alloc):
     if (end - day).days > _MAX_RANGE_DAYS:
         return JSONResponse({"ok": False, "error": f"range longer than {_MAX_RANGE_DAYS} days"},
                             status_code=400)
+    # A replacement may only restate the half the grouping pins down: the row is
+    # a person (or a project) and the select offers the other side, so exactly
+    # one of the two can differ. Checked before anything is written — a body
+    # claiming both sides changed isn't an edit this screen can produce, and
+    # honouring it would clear a pair nobody was looking at.
+    old_person = alloc.from_person_id or alloc.person_id
+    old_project = alloc.from_project_id or alloc.project_id
+    if old_person != alloc.person_id and old_project != alloc.project_id:
+        return JSONResponse({"ok": False, "error": "a booking can only change one of person/project"},
+                            status_code=400)
     try:
         res = ops.set_allocation_range(alloc.person_id, alloc.project_id,
                                        day.isoformat(), end.isoformat(), alloc.hours)
@@ -1660,8 +1670,6 @@ def api_allocation(request: Request, alloc: Alloc):
     # the write above and outside its try — if this half fails the day holds
     # both bookings, which is visible and fixable on the spot; the other order
     # could drop the hours entirely.
-    old_person = alloc.from_person_id or alloc.person_id
-    old_project = alloc.from_project_id or alloc.project_id
     if (old_person, old_project) != (alloc.person_id, alloc.project_id):
         try:
             ops.set_allocation_range(old_person, old_project,
