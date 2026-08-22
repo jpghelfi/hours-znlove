@@ -119,3 +119,84 @@ Numbers that look low are usually the roster filter, not a bug: Centerline shows
 because only Zarco (1 h) is znlove — the other 21.76 h that month were logged by Bear
 people who aren't on the roster. Saltworks is the same story (22.5 h ours, 17.5 h
 theirs).
+
+## August 2026 runs
+
+August has been pulled in three passes, all with the same flags as July
+(`--nonbillable-project "Bear Website" --allow-unassigned`). No Harvest project went
+unmapped and no one was off-assignment in any of them, so those two warnings stayed
+silent all month.
+
+| Run date | Range asked for | Result |
+|---|---|---|
+| 2026-08-07 | 2026-08-03..08-06 | 14 rows, 15.50 h, 5 people |
+| 2026-08-19 | 2026-08-03..08-19 | 31 created, 3 updated, 11 unchanged, 1 collision — 53.33 h new |
+| 2026-08-22 | 2026-08-17..08-22 | 6 created, 5 unchanged — 13.50 h new |
+
+After the third pass the Time Entries database holds **213 Harvest rows, 546.91 h**,
+covering 2026-07-01 through 2026-08-21 (nothing was logged on the 22nd, a Saturday).
+
+The 2026-08-19 pass imported 53.33 h for 6 people: Pablo Saracca 17.50 h (Neurogum,
+The Human Bean, True Temper), Joaquin Kenta Heianna 12 h (Bear Website), Lautaro Ayub
+11.33 h (44PRO), Zarco Nontol 6 h (five projects), Francisco Andres 5.50 h (both
+Streamside projects), Juan Pablo Ghelfi 1 h (Bear Website). One collision: Melisa had
+hand-logged 0.5 h on Bear Website for 2026-08-10, so Harvest's 0.5 h for that day was
+skipped.
+
+### Re-running an already-imported range is worth it
+
+Both later passes deliberately started *before* the last import's end date, and both
+found drift — people edit their Harvest timesheets after the fact:
+
+- re-reading 08-03..08-06 (imported on the 7th) found 11 of 15 rows unchanged, 3 rows
+  whose hours or notes had since changed in Harvest, and 1 row
+  (Pablo / The Human Bean / 08-06, 1 h) that hadn't existed at import time at all;
+- re-reading 08-17..08-22 found two more days (08-18, 08-19) that had been logged in
+  Harvest *after* the 19th's pull.
+
+So: overlap the previous run by a few days rather than starting where it stopped. The
+update path is what makes that free — an unchanged row costs one comparison and no
+write.
+
+### `--dry-run` cannot tell you what will change
+
+`--dry-run` skips the `existing_rows` read entirely, so its "N rows would be
+created/updated" is just the Harvest side of the plan — it can't say which rows are new
+and which already match. To preview a run *against* Notion, run it for real with the
+client's writes intercepted:
+
+```python
+# reconcile.py — same code path, nothing written
+import sys; sys.path.insert(0, 'src')
+import sync_harvest as sh
+
+class FakePages:
+    def __init__(self, real): self.real = real
+    def update(self, page_id=None, properties=None): print("UPDATE", properties)
+    def create(self, **kw): print("CREATE", kw['properties'])
+    def __getattr__(self, n): return getattr(self.real, n)
+
+class FakeClient:
+    def __init__(self, real): self.real = real; self.pages = FakePages(real.pages)
+    def __getattr__(self, n): return getattr(self.real, n)
+
+_real = sh.get_client
+sh.get_client = lambda: FakeClient(_real())
+sys.argv = ['sync_harvest.py'] + sys.argv[1:]
+sh.main()
+```
+
+It prints the same `created / updated / unchanged / skipped` tally the real run does,
+plus every row it would have touched.
+
+### Pulling the data without API credentials
+
+`.env` still has no `HARVEST_ACCOUNT_ID` / `HARVEST_TOKEN`, so all three passes fed the
+script a saved payload via `--entries`, pulled through the Harvest MCP connector
+(`harvest_list_time_entries`, `auto_paginate`). Two things to know about that route:
+
+- the response is large — 17 days account-wide is ~3 MB / 1,759 entries — so it lands
+  in a tool-results file rather than in the reply; copy it somewhere durable before
+  using it;
+- `harvest_aggregate_time` caps at 1,000 entries analyzed, so its totals are a
+  truncated sample. `harvest_list_time_entries` is the only reliable source.
