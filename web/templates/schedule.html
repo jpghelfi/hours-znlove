@@ -84,13 +84,26 @@
 </p>
 {% endif %}
 
-<div class="grid-wrap">
+{# its own scroller, not the page's: `.grid thead th` has always been
+   position:sticky, but a wrapper that never scrolls vertically gives sticky
+   nothing to stick against — the dates scrolled away with the page. Bounding
+   the grid to the viewport makes the day headers (and the totals row) hold
+   their place while a long roster scrolls underneath. #}
+<div class="grid-wrap plan-scroll">
 <table class="grid plan {{ 'plan-days' if view == 'days' else 'plan-weeks' }}">
   <thead>
     <tr>
       <th class="col-project">{{ 'Person' if by == 'person' else 'Project' }}</th>
       {% for c in cols %}
-      <th class="col-day">{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span></th>
+      <th class="col-day">{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span>
+        {# the day column's own wipe: the same gesture as "Clear week", one
+           column wide, under the same filters — so a filtered planner only
+           deletes the bookings it is showing #}
+        {% if view == 'days' and is_admin %}
+        <button type="button" class="dayx" data-busy="…" title="Delete every booking shown on {{ c.top }} {{ c.sub }}"
+                aria-label="Clear {{ c.top }} {{ c.sub }}" onclick="clearDay('{{ c.iso }}', this)">🗑</button>
+        {% endif %}
+      </th>
       {% endfor %}
       <th class="col-total">Total</th>
     </tr>
@@ -108,7 +121,8 @@
          no control #}
       <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if not is_admin }}"
           data-date="{{ c.iso }}" data-total="{{ d.total }}"
-          {% if is_admin %}onclick="openPop(this, null)"{% endif %}>
+          {% if is_admin %}onclick="openPop(this, null)"
+          ondragover="cellOver(event, this)" ondragleave="cellOut(this)" ondrop="cellDrop(event, this)"{% endif %}>
         {% if by == 'person' %}
         <div class="cap {{ 'cap-over' if d.total > cap else ('cap-full' if d.total >= cap else 'cap-ok') }}" aria-hidden="true">
           <i style="width: {{ [100, (d.total / cap * 100)|round(0, 'ceil')|int]|min }}%"></i>
@@ -120,8 +134,9 @@
           {% if is_admin %}
           <button type="button" class="pill s{{ p.swatch }}" data-person="{{ p.person_id }}" data-project="{{ p.project_id }}"
                   data-hours="{{ p.hours }}" data-label="{{ p.label }}"
+                  draggable="true" ondragstart="pillDrag(event, this)" ondragend="pillDrop(this)"
                   onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), this)"
-                  title="{{ p.label }} — {{ '%g'|format(p.hours) }}h">
+                  title="{{ p.label }} — {{ '%g'|format(p.hours) }}h · drag to another day or row, ⌥-drag to copy">
             <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
           </button>
           {% else %}
@@ -142,6 +157,12 @@
         <button type="button" class="addbtn" aria-label="Book a project on this day"
                 title="Book a project on this day"
                 onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), null)">+</button>
+        {# empties this one cell — every booking stacked on this person's day.
+           Rendered always and hidden by CSS while the cell is empty, so a cell
+           that fills in without a reload gets its ✕ back. #}
+        <button type="button" class="cellx" aria-label="Clear this day"
+                title="Delete every booking in this cell"
+                onclick="event.stopPropagation(); clearCell(this.closest('.plan-cell'))">×</button>
         {% endif %}
       </td>
       {% else %}
@@ -172,7 +193,7 @@
 {% endif %}
 
 {% if view == 'days' and is_admin %}
-<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change or remove it · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one · “Clear week” deletes every booking shown here.</p>
+<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change its project, its hours or remove it · <strong>drag a booking</strong> to another day or another row to move it (hold ⌥ to copy) · × empties one cell, 🗑 in a day header clears that whole day · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one · “Clear week” deletes every booking shown here.</p>
 
 <dialog class="pop" id="pop">
   <div class="pop-head"><strong id="pop-title">Assign</strong>
@@ -272,6 +293,9 @@ async function clearWeek(btn) {
 function fmt(n) { return (Math.round(n * 100) / 100).toString(); }
 
 function openPop(cell, pill) {
+  // a drag that ends over its own cell still lands a click on the pill — that
+  // gesture was a move, not a request to open the dialog
+  if (performance.now() - DRAG_END < 250) return;
   const row = cell.closest('tr');
   const rowId = row.dataset.row;
   const date = cell.dataset.date;
@@ -303,9 +327,11 @@ function openPop(cell, pill) {
   };
   group('Assigned', assigned);
   group(BY === 'person' ? 'Other projects' : 'Other people', other);
-  // editing pins the pair; a fresh booking just keeps the first option selected
+  // editing preselects the pair — and stays editable: picking another project
+  // (or another person, in the Projects grouping) rewrites the booking in
+  // place, so "wrong project" is one dropdown rather than remove-then-add.
   if (POP.editing) sel.value = BY === 'person' ? POP.projectId : POP.personId;
-  sel.disabled = POP.editing;  // changing who/what = remove it and add the other
+  sel.disabled = false;
 
   // In the People grouping the cell total is one person's day, so a new
   // booking can default to what's left of their capacity. In the Projects
@@ -357,8 +383,7 @@ function setPopBusy(on, activeBtn, count, removing) {
   setBusy(activeBtn, on);
   ['pop-what', 'pop-hours', 'pop-through'].forEach(id => {
     const el = document.getElementById(id);
-    // the select is disabled on purpose while editing — don't re-enable it
-    if (el && !(id === 'pop-what' && POP && POP.editing)) el.disabled = on;
+    if (el) el.disabled = on;
   });
   const other = activeBtn && activeBtn.id === 'pop-save'
     ? document.getElementById('pop-del') : document.getElementById('pop-save');
@@ -370,8 +395,17 @@ function setPopBusy(on, activeBtn, count, removing) {
 async function savePop(forceHours) {
   if (!POP || POP_BUSY) return;
   const sel = document.getElementById('pop-what');
-  const personId = BY === 'person' ? POP.personId : sel.value;
-  const projectId = BY === 'person' ? sel.value : POP.projectId;
+  const removing = forceHours === 0;
+  // Remove always removes the booking that was clicked, even if the select was
+  // fiddled with first — "Remove" on an existing pill can't mean the other one.
+  const personId = removing && POP.editing ? POP.personId
+                 : (BY === 'person' ? POP.personId : sel.value);
+  const projectId = removing && POP.editing ? POP.projectId
+                  : (BY === 'person' ? sel.value : POP.projectId);
+  // the pair being replaced, when an edit switched project (or person)
+  const oldPerson = POP.editing ? POP.personId : personId;
+  const oldProject = POP.editing ? POP.projectId : projectId;
+  const swapped = !removing && (oldPerson !== personId || oldProject !== projectId);
   const err = document.getElementById('pop-err');
   if (!personId || !projectId) {
     err.textContent = 'Pick one first.'; err.hidden = false; return;
@@ -383,12 +417,33 @@ async function savePop(forceHours) {
   // captured up front: a save outlives the popover's own state
   const row = POP.row, date = POP.date;
   const btn = document.getElementById(forceHours === 0 ? 'pop-del' : 'pop-save');
+  // Swapping onto a project the day already books *sets* its hours rather than
+  // adding to them (a typed number is a statement, not an increment) — which
+  // would quietly shrink a 6h booking to the 1h being edited. Say so first.
+  if (swapped) {
+    // every day the save will rewrite, not just the one the popover was opened
+    // on: a "repeat through" swap reaches days whose existing booking for the
+    // new pair would be replaced just as silently
+    const hit = [...row.querySelectorAll('.plan-cell')]
+      .filter(c => c.dataset.date >= date && c.dataset.date <= through)
+      .map(c => ({date: c.dataset.date, pill: c.querySelector(
+        '.pill[data-person="' + personId + '"][data-project="' + projectId + '"]')}))
+      .filter(c => c.pill && parseFloat(c.pill.dataset.hours) !== hours);
+    if (hit.length) {
+      const days = hit.map(c => dayLabel(c.date) + ' (' + fmt(parseFloat(c.pill.dataset.hours)) + 'h)');
+      if (!confirm(label + ' is already booked on ' + days.join(', ')
+                   + '. Saving replaces ' + (hit.length === 1 ? 'that' : 'those')
+                   + ' with ' + fmt(hours) + 'h.')) return;
+    }
+  }
   err.hidden = true;
   setPopBusy(true, btn, weekdaysBetween(date, through), !hours);
   try {
     const res = await fetch('/api/allocation', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({person_id: personId, project_id: projectId, date, through, hours})
+      body: JSON.stringify({person_id: personId, project_id: projectId, date, through, hours,
+                            from_person_id: swapped ? oldPerson : null,
+                            from_project_id: swapped ? oldProject : null})
     });
     const data = await res.json();
     if (!data.ok) { err.textContent = 'Save failed: ' + (data.error || ''); err.hidden = false; return; }
@@ -398,9 +453,20 @@ async function savePop(forceHours) {
       const proj = PROJECTS.find(p => p.id === projectId);
       if (proj && !proj.member_ids.includes(personId)) proj.member_ids.push(personId);
     }
-    (data.days || [date]).forEach(day => patchCell(row, day, personId, projectId, label, hours, swatch));
+    const days = data.days || [date];
+    days.forEach(day => patchCell(row, day, personId, projectId, label, hours, swatch));
+    // a swapped pair is a new booking plus a removed one — clear the old pill
+    // across exactly the days the server rewrote. The row is the same either
+    // way: the grouping pins down the side that didn't change.
+    if (swapped && !data.replace_failed) {
+      days.forEach(day => patchCell(row, day, oldPerson, oldProject, '', 0, 0));
+    }
     retotal();
     closePop();
+    if (data.replace_failed) {
+      alert('Saved the new booking, but the old one is still there — remove it by hand.');
+      navStart(); location.reload();
+    }
   } catch (e) {
     err.textContent = 'Save failed — check your connection.'; err.hidden = false;
   } finally {
@@ -423,15 +489,27 @@ function patchCell(row, date, personId, projectId, label, hours, swatch) {
       pill.type = 'button';
       pill.className = 'pill s' + (swatch === undefined ? 0 : swatch);
       pill.dataset.person = personId; pill.dataset.project = projectId;
+      pill.draggable = true;
       pill.innerHTML = '<span class="pill-name"></span><span class="pill-h"></span>';
       pill.addEventListener('click', ev => { ev.stopPropagation(); openPop(cell, pill); });
+      pill.addEventListener('dragstart', ev => pillDrag(ev, pill));
+      pill.addEventListener('dragend', () => pillDrop(pill));
       pills.appendChild(pill);
     }
+    if (swatch !== undefined) pill.className = 'pill s' + swatch;  // a moved pill can change project
     pill.dataset.hours = hours; pill.dataset.label = label;
-    pill.title = label + ' — ' + fmt(hours) + 'h';
+    pill.title = label + ' — ' + fmt(hours) + 'h · drag to another day or row, ⌥-drag to copy';
     pill.querySelector('.pill-name').textContent = label;
     pill.querySelector('.pill-h').textContent = fmt(hours);
   }
+  refreshCell(cell);
+}
+
+/* The cell's own numbers — total, capacity meter, empty state — read back off
+   whatever pills it is left holding. Split out of patchCell because clearing a
+   cell or a whole day column removes pills without going through it. */
+function refreshCell(cell) {
+  const pills = cell.querySelector('.pills');
   let total = 0;
   pills.querySelectorAll('.pill').forEach(p => total += parseFloat(p.dataset.hours) || 0);
   cell.dataset.total = total;
@@ -469,6 +547,145 @@ function retotal() {
     td.textContent = v ? fmt(v) : '';
   });
   document.querySelector('.grandtotal').textContent = fmt(grand);
+}
+
+/* ---- drag a booking ----------------------------------------------------
+   A move is exactly what the planner does by hand all day — "Kepos slips to
+   Thursday", "give that day to Franco" — so it's a drag rather than
+   open-remove-reopen-add. The pill carries the (person, project) pair; where
+   it lands supplies the day and, across rows, the other half of the pair. The
+   hours are settled by the server from Notion, not sent from here: the pill
+   can be a fold of duplicate rows, and it can be stale. ⌥ (or Ctrl) copies. */
+let DRAG = null;      // {personId, projectId, date, cell, label}
+let DRAG_END = 0;     // the tail of a drag isn't a click — see openPop
+
+function pillDrag(ev, pill) {
+  const cell = pill.closest('.plan-cell');
+  DRAG = {personId: pill.dataset.person, projectId: pill.dataset.project,
+          date: cell.dataset.date, cell, label: pill.dataset.label || ''};
+  pill.classList.add('is-dragging');
+  document.querySelector('table.plan').classList.add('is-dnd');
+  try {
+    ev.dataTransfer.effectAllowed = 'copyMove';
+    // Firefox won't start a drag with an empty payload
+    ev.dataTransfer.setData('text/plain', DRAG.label || 'booking');
+  } catch (e) {}
+}
+
+/* dragend — fires after drop, and also on a drag that landed nowhere */
+function pillDrop(pill) {
+  pill.classList.remove('is-dragging');
+  const table = document.querySelector('table.plan');
+  if (table) table.classList.remove('is-dnd');
+  document.querySelectorAll('.plan-cell.is-over').forEach(c => c.classList.remove('is-over'));
+  DRAG_END = performance.now();
+  DRAG = null;
+}
+
+function cellOver(ev, cell) {
+  if (!DRAG) return;                       // a file or some other page's drag
+  ev.preventDefault();                     // "yes, you may drop here"
+  ev.dataTransfer.dropEffect = (ev.altKey || ev.ctrlKey) ? 'copy' : 'move';
+  cell.classList.add('is-over');
+}
+
+function cellOut(cell) { cell.classList.remove('is-over'); }
+
+async function cellDrop(ev, cell) {
+  if (!DRAG) return;
+  ev.preventDefault();
+  const src = DRAG;                        // dragend clears DRAG right after this
+  cell.classList.remove('is-over');
+  const copy = ev.altKey || ev.ctrlKey;
+  const toRow = cell.closest('tr'), fromRow = src.cell.closest('tr');
+  const toDate = cell.dataset.date;
+  // the grouping decides which half of the pair the target row supplies
+  const toPerson = BY === 'person' ? toRow.dataset.row : src.personId;
+  const toProject = BY === 'person' ? src.projectId : toRow.dataset.row;
+  if (toPerson === src.personId && toProject === src.projectId && toDate === src.date) return;
+  const label = BY === 'person'
+    ? ((PROJECTS.find(p => p.id === toProject) || {}).name || src.label)
+    : ((PEOPLE.find(p => p.id === toPerson) || {}).name || src.label);
+  const swatch = (PROJECTS.find(p => p.id === toProject) || {}).swatch;
+  cell.classList.add('is-saving');
+  try {
+    const res = await fetch('/api/allocation/move', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({person_id: src.personId, project_id: src.projectId, date: src.date,
+                            to_person_id: toPerson, to_project_id: toProject, to_date: toDate,
+                            copy})
+    });
+    const data = await res.json();
+    if (!data.ok) { alert('Move failed: ' + (data.error || '')); return; }
+    if (data.assigned) {
+      const proj = PROJECTS.find(p => p.id === toProject);
+      if (proj && !proj.member_ids.includes(toPerson)) proj.member_ids.push(toPerson);
+    }
+    patchCell(toRow, toDate, toPerson, toProject, label, data.hours, swatch);
+    if (!copy) patchCell(fromRow, src.date, src.personId, src.projectId, src.label, 0, undefined);
+    retotal();
+  } catch (e) {
+    alert('Move failed — check your connection.');
+  } finally {
+    cell.classList.remove('is-saving');
+  }
+}
+
+/* ---- wiping a cell and a day column ------------------------------------
+   Both go through /api/allocation/clear-day, which deletes by page id under
+   the page's own filters — so what disappears is exactly what was on screen.
+   A cell adds its own row to that scope; a column is the whole day. */
+function dayLabel(iso) {
+  return new Date(iso + 'T00:00:00')
+    .toLocaleDateString(undefined, {weekday: 'short', month: 'short', day: 'numeric'});
+}
+
+async function clearScope(iso, personIds, projectId, cells, question) {
+  const n = cells.reduce((t, c) => t + c.querySelectorAll('.pill').length, 0);
+  if (!n) { alert('Nothing booked there to delete.'); return false; }
+  if (!confirm(question(n) + '\n\nThis cannot be undone.')) return false;
+  const res = await fetch('/api/allocation/clear-day', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({date: iso, person_ids: personIds, project_id: projectId})
+  });
+  const data = await res.json();
+  if (!data.ok) { alert('Clear failed: ' + (data.error || '')); return false; }
+  cells.forEach(c => {
+    c.querySelectorAll('.pill').forEach(p => p.remove());
+    refreshCell(c);
+  });
+  retotal();
+  return true;
+}
+
+async function clearCell(cell) {
+  const row = cell.closest('tr');
+  const who = row.querySelector('.col-person').textContent.trim();
+  const personIds = BY === 'person' ? [row.dataset.row] : FOCUS_PEOPLE;
+  const projectId = BY === 'person' ? (FOCUS_PROJECT || null) : row.dataset.row;
+  try {
+    await clearScope(cell.dataset.date, personIds, projectId, [cell],
+      n => 'Delete ' + n + (n === 1 ? ' booking' : ' bookings') + ' for '
+           + who + ' on ' + dayLabel(cell.dataset.date) + '?');
+  } catch (e) {
+    alert('Clear failed — check your connection.');
+  }
+}
+
+async function clearDay(iso, btn) {
+  const cells = [...document.querySelectorAll('tbody .plan-cell[data-date="' + iso + '"]')];
+  const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT;
+  setBusy(btn, true);
+  try {
+    await clearScope(iso, FOCUS_PEOPLE, FOCUS_PROJECT || null, cells,
+      n => 'Delete ' + (n === 1 ? 'the one booking' : (filtered ? 'the ' + n + ' bookings' : 'all ' + n + ' bookings'))
+           + (filtered ? ' the current filter shows' : '')
+           + ' on ' + dayLabel(iso) + '?');
+  } catch (e) {
+    alert('Clear failed — check your connection.');
+  } finally {
+    setBusy(btn, false);
+  }
 }
 
 document.getElementById('pop').addEventListener('close', () => { POP = null; });
