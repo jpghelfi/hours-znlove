@@ -819,7 +819,12 @@ def set_entry_hours(entry_id: str, hours: float) -> dict:
         if not hours:  # 0, None -> remove, like a blanked cell on the weekly grid
             _notion.pages.update(entry_id, archived=True)
             return {"ok": True, "hours": 0, "deleted": True}
-        _notion.pages.update(entry_id, properties={"Hours": {"number": hours}})
+        props = {"Hours": {"number": hours}}
+        # same rule as set_cell: a corrected import stops being an import, so
+        # the next Harvest sync leaves it alone instead of overwriting it
+        if (page.get("properties", {}).get("Source", {}).get("select") or {}).get("name"):
+            props["Source"] = {"select": None}
+        _notion.pages.update(entry_id, properties=props)
         return {"ok": True, "hours": hours, "deleted": False}
 
 
@@ -863,10 +868,19 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
             return {"ok": True, "hours": 0}
 
         if keep:
-            _notion.pages.update(keep["id"], properties={
+            props = {
                 "Hours": {"number": hours},
                 "Person": {"people": [{"id": person_id}]},
-            })
+            }
+            # Correcting an imported row makes it a hand-logged one. Without
+            # this the Harvest sync still recognises the row as its own and
+            # writes Harvest's number back over the correction on its next run
+            # — the person who looked at the day would silently lose. Cleared,
+            # it takes the sync's existing "logged by hand → skip and report"
+            # path instead. The human wins permanently, which is the point.
+            if (keep.get("properties", {}).get("Source", {}).get("select") or {}).get("name"):
+                props["Source"] = {"select": None}
+            _notion.pages.update(keep["id"], properties=props)
         else:
             create_entry(person_id, project_id, date, hours)
         return {"ok": True, "hours": hours}
