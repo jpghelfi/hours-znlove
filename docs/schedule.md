@@ -130,6 +130,44 @@ mid-drag cancels the drag outright in Chromium.
 Drag-and-drop is pointer-only. On touch, the popover is still the way to move a
 booking.
 
+### Selecting bookings and pasting them onto other days
+
+The planner's most repetitive act is *"this day again, over there"*. For one
+booking that is a ⌥-drag; a day is usually a stack of two or three, and
+dragging them one at a time is three round trips and three chances to drop one.
+
+- **⌘/Ctrl-click** a pill adds it to a selection, **⇧-click** extends within
+  the cell, and **⧉** on the cell takes everything in it. Plain click still
+  opens the popover, so nothing that worked before changed.
+- The selection lives **inside one cell** — one person, one day. That is what a
+  paste has to replay somewhere else, so it is what the model stores.
+- A sticky bar names what is held ("2 bookings · 7h — Kepos, Nowsta"), every
+  other day cell becomes a target, and each click pastes. The selection stays
+  live, so Tue, Wed and Thu is three clicks. ⌘V pastes into the day under the
+  pointer; Esc clears.
+- Pasting into **another person's row** works: the target row supplies the
+  person, exactly as a cross-row drag does. In the Projects grouping it is the
+  other way round, and the browser resolves that before the request — the
+  endpoint only ever sees finished (person, project) pairs.
+
+**A paste sets, where a drag adds.** Dropping 3h of Kepos onto a day already
+holding 2h of it means 5h: those hours moved, and losing one of them would be
+wrong. Pasting Monday's Kepos 6h onto a Wednesday holding 2h means **6h**:
+"make Wednesday look like Monday" is a statement about Wednesday, not an
+addition to it. Only the pairs being pasted are touched — everything else on
+the target day survives, because wiping a day is Clear day and that already
+exists. One sentence to remember it by: **a move carries hours, a copy states
+them.**
+
+`POST /api/allocation/paste` takes the finished pairs and the target days and
+writes them in one request — `ops.paste_allocations` loops
+`_set_allocation_locked`, taking `_write_lock` **per day rather than per
+paste**, so a big paste can't freeze every weekly-grid save in the app. It
+refuses more than `MAX_COPY_ROWS` writes before making the first one, and drops
+weekend dates. The paint is optimistic like the drag, with the same revert: on
+a refusal or a dead connection the target day goes back to exactly what it
+held, and says why.
+
 ### Clearing a cell, a day or a week
 
 Three sizes of the same gesture, all going through one function
