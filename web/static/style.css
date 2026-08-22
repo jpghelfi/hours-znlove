@@ -288,6 +288,51 @@ table.plan { min-width: 720px; }
   .plan .pill.is-pending { transition: opacity .15s ease; }
 }
 
+/* ---- selecting bookings, pasting them onto other days ------------------ */
+.plan .pill.is-picked {
+  outline: 2px solid var(--ring); outline-offset: 1px;
+  box-shadow: 0 2px 8px rgba(0,5,40,.18);
+}
+/* while something is held, every other day is a target — the same faint
+   dashed invitation a live drag paints, for the same reason */
+.plan.is-picking .plan-cell { outline: 1px dashed var(--line); outline-offset: -3px; cursor: copy; }
+.plan.is-picking .plan-cell:hover { outline: 2px solid var(--ring); background: var(--active-bg); }
+/* the cell the selection came from is not a target */
+.plan.is-picking .plan-cell:has(.pill.is-picked) { outline: none; cursor: default; }
+.plan .plan-cell.is-pasted { animation: paste-flash .6s ease-out; }
+@keyframes paste-flash { from { background: var(--okbg); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .plan .plan-cell.is-pasted { animation: none; } }
+
+/* selects the whole cell — the touch way in, since ⌘-click has no equivalent */
+.cellcopy {
+  position: absolute; top: 6px; right: 26px; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 5px; background: none;
+  color: var(--muted); font-size: 12px; line-height: 1; opacity: 0;
+  transition: opacity .12s ease, color .12s ease, background .12s ease;
+}
+.plan-cell:hover .cellcopy { opacity: .75; }
+.cellcopy:hover { opacity: 1; color: var(--ink); background: var(--card); }
+.cellcopy:focus-visible { opacity: 1; outline: 2px solid var(--ring); outline-offset: 1px; }
+.plan-cell.is-empty .cellcopy { display: none; }
+.plan.is-dnd .cellcopy { pointer-events: none; }
+
+/* what is held, and how to be rid of it. Sticky to the bottom of the viewport
+   because the days being pasted into are up in the grid — the bar must not be
+   the thing you scroll away from. */
+.pastebar {
+  position: sticky; bottom: 14px; z-index: 6; margin-top: 14px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 14px; border-radius: 12px;
+  background: var(--card); border: 1px solid var(--ring);
+  box-shadow: 0 10px 26px rgba(0,5,40,.16);
+}
+.pastebar[hidden] { display: none; }   /* .btn's display would otherwise win */
+.pastebar-what { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.pastebar-what .subtle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pastebar-how { margin-left: auto; }
+@media (max-width: 700px) { .pastebar-how { display: none; } }
+
 /* empties one cell — hidden while the cell has nothing in it, which is also
    how a cell filled in without a reload gets its × back */
 .cellx {

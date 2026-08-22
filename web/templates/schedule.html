@@ -121,7 +121,7 @@
          no control #}
       <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if not is_admin }}"
           data-date="{{ c.iso }}" data-total="{{ d.total }}"
-          {% if is_admin %}onclick="openPop(this, null)"
+          {% if is_admin %}onclick="cellClick(event, this)"
           ondragover="cellOver(event, this)" ondragleave="cellOut(this)" ondrop="cellDrop(event, this)"{% endif %}>
         {% if by == 'person' %}
         <div class="cap {{ 'cap-over' if d.total > cap else ('cap-full' if d.total >= cap else 'cap-ok') }}" aria-hidden="true">
@@ -135,8 +135,8 @@
           <button type="button" class="pill s{{ p.swatch }}" data-person="{{ p.person_id }}" data-project="{{ p.project_id }}"
                   data-hours="{{ p.hours }}" data-label="{{ p.label }}"
                   draggable="true" ondragstart="pillDrag(event, this)" ondragend="pillDrop(this)"
-                  onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), this)"
-                  title="{{ p.label }} — {{ '%g'|format(p.hours) }}h · drag to another day or row, ⌥-drag to copy">
+                  onclick="pillClick(event, this)"
+                  title="{{ p.label }} — {{ '%g'|format(p.hours) }}h · drag to another day or row (⌥ copies) · ⌘-click to select">
             <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
           </button>
           {% else %}
@@ -163,6 +163,12 @@
         <button type="button" class="cellx" aria-label="Clear this day"
                 title="Delete every booking in this cell"
                 onclick="event.stopPropagation(); clearCell(this.closest('.plan-cell'))">×</button>
+        {# selects everything in the cell in one click — the touch-reachable
+           way in, since ⌘-click has no equivalent there, and the shortcut for
+           "this whole day again on Wed and Thu" #}
+        <button type="button" class="cellcopy" aria-label="Select this whole day"
+                title="Select every booking in this cell, to paste onto other days"
+                onclick="event.stopPropagation(); selectCell(this.closest('.plan-cell'))">⧉</button>
         {% endif %}
       </td>
       {% else %}
@@ -193,7 +199,16 @@
 {% endif %}
 
 {% if view == 'days' and is_admin %}
-<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change its project, its hours or remove it · <strong>drag a booking</strong> to another day or another row to move it (hold ⌥ to copy) · × empties one cell, 🗑 in a day header clears that whole day · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one · “Clear week” deletes every booking shown here.</p>
+<p class="subtle plan-hint">Click any day cell to book a project · click a booking to change its project, its hours or remove it · <strong>drag a booking</strong> to another day or another row to move it (hold ⌥ to copy) · <strong>⌘-click bookings</strong> (or ⧉ for a whole day) to select them, then click the days to paste into · × empties one cell, 🗑 in a day header clears that whole day · “Repeat through” fills every weekday up to that date · “Copy last week” lifts the week of {{ copy_from_label }} onto this one · “Clear week” deletes every booking shown here.</p>
+
+{# the selection's own bar: what is held, and how to get rid of it. Sticky at
+   the bottom of the viewport because the days being pasted into are up in the
+   grid — the bar must not be the thing you scroll away from. #}
+<div class="pastebar" id="pastebar" hidden>
+  <div class="pastebar-what"><strong id="paste-count"></strong><span class="subtle" id="paste-what"></span></div>
+  <div class="pastebar-how subtle">Click the days to paste into · ⌘V pastes into the last day clicked · Esc clears</div>
+  <button type="button" class="btn" onclick="clearSelection()">Clear selection</button>
+</div>
 
 <dialog class="pop" id="pop">
   <div class="pop-head"><strong id="pop-title">Assign</strong>
@@ -494,7 +509,9 @@ function patchCell(row, date, personId, projectId, label, hours, swatch) {
       pill.dataset.person = personId; pill.dataset.project = projectId;
       pill.draggable = true;
       pill.innerHTML = '<span class="pill-name"></span><span class="pill-h"></span>';
-      pill.addEventListener('click', ev => { ev.stopPropagation(); openPop(cell, pill); });
+      // pillClick, not openPop: a pill drawn after a save has to answer to
+      // ⌘-click selection exactly like a server-rendered one
+      pill.addEventListener('click', ev => pillClick(ev, pill));
       pill.addEventListener('dragstart', ev => pillDrag(ev, pill));
       pill.addEventListener('dragend', () => pillDrop(pill));
       pills.appendChild(pill);
@@ -551,6 +568,183 @@ function retotal() {
   });
   document.querySelector('.grandtotal').textContent = fmt(grand);
 }
+
+/* ---- select bookings, paste them onto other days ------------------------
+   The planner's most repetitive act is "this day again, there" — for one
+   booking that's a ⌥-drag, but a day is usually a stack of two or three, and
+   dragging them one at a time is three round trips and three chances to drop
+   one. So: ⌘-click (or ⧉ for the whole cell) collects bookings, then every
+   other day cell becomes a target and one click writes them all.
+
+   The selection lives inside ONE cell on purpose. It is what you described,
+   and it keeps the model honest — a selection is (row, day, some pairs),
+   which is exactly what a paste has to replay somewhere else. */
+let SEL = null;   // {cell, keys: [pairKey…], last: index}
+
+function pairKey(pill) { return pill.dataset.person + '|' + pill.dataset.project; }
+
+function cellPills(cell) { return [...cell.querySelectorAll('.pill')]; }
+
+/* A plain click still edits; ⌘/Ctrl adds to a selection; ⇧ extends within the
+   cell. And while a selection is live, a plain click on any *other* cell
+   pastes into it — the whole cell is the target, pills included, so you don't
+   have to aim at its empty space. */
+function pillClick(ev, pill) {
+  ev.stopPropagation();
+  const cell = pill.closest('.plan-cell');
+  if (ev.metaKey || ev.ctrlKey) return togglePill(pill);
+  if (ev.shiftKey && SEL && SEL.cell === cell) return extendTo(pill);
+  if (SEL && SEL.cell !== cell) return pasteInto(cell);
+  openPop(cell, pill);
+}
+
+function cellClick(ev, cell) {
+  if (SEL && SEL.cell !== cell) return pasteInto(cell);
+  if (SEL && SEL.cell === cell) return;   // clicking the source is a no-op, not a new booking
+  openPop(cell, null);
+}
+
+function togglePill(pill) {
+  const cell = pill.closest('.plan-cell');
+  if (!SEL || SEL.cell !== cell) SEL = {cell, keys: [], last: -1};
+  const key = pairKey(pill);
+  const at = SEL.keys.indexOf(key);
+  if (at >= 0) SEL.keys.splice(at, 1); else SEL.keys.push(key);
+  SEL.last = cellPills(cell).indexOf(pill);
+  paintSelection();
+}
+
+function extendTo(pill) {
+  const pills = cellPills(SEL.cell);
+  const to = pills.indexOf(pill);
+  const from = SEL.last < 0 ? to : SEL.last;
+  for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
+    const key = pairKey(pills[i]);
+    if (!SEL.keys.includes(key)) SEL.keys.push(key);
+  }
+  SEL.last = to;
+  paintSelection();
+}
+
+/* ⧉ on the cell: everything in it. Also the only way in on a touch screen,
+   where there is no ⌘-click. */
+function selectCell(cell) {
+  const pills = cellPills(cell);
+  if (!pills.length) return;
+  const all = pills.map(pairKey);
+  const already = SEL && SEL.cell === cell && SEL.keys.length === all.length;
+  if (already) return clearSelection();     // ⧉ twice = never mind
+  SEL = {cell, keys: all, last: pills.length - 1};
+  paintSelection();
+}
+
+function clearSelection() { SEL = null; paintSelection(); }
+
+function paintSelection() {
+  document.querySelectorAll('.pill.is-picked').forEach(p => p.classList.remove('is-picked'));
+  const table = document.querySelector('table.plan');
+  const bar = document.getElementById('pastebar');
+  if (SEL && !SEL.keys.length) SEL = null;
+  if (!SEL) {
+    table.classList.remove('is-picking');
+    bar.hidden = true;
+    return;
+  }
+  const picked = selectedPills();
+  picked.forEach(p => p.classList.add('is-picked'));
+  table.classList.add('is-picking');
+  const hours = picked.reduce((t, p) => t + (parseFloat(p.dataset.hours) || 0), 0);
+  document.getElementById('paste-count').textContent =
+    picked.length + (picked.length === 1 ? ' booking' : ' bookings') + ' · ' + fmt(hours) + 'h';
+  document.getElementById('paste-what').textContent =
+    ' — ' + picked.map(p => p.dataset.label).join(', ');
+  bar.hidden = false;
+}
+
+function selectedPills() {
+  if (!SEL) return [];
+  return SEL.keys.map(k => SEL.cell.querySelector(
+    '.pill[data-person="' + k.split('|')[0] + '"][data-project="' + k.split('|')[1] + '"]'))
+    .filter(Boolean);
+}
+
+/* Paste is a *copy*, and it reads differently from a drag on purpose: a drag
+   ADDS its hours where it lands, because those hours moved; a paste SETS the
+   pairs it names, because "make Wednesday look like Monday" means 6h, not 6h
+   on top of the 2h already there. Everything else booked on the target day is
+   left alone — wiping a day is Clear day, and that already exists.
+
+   Optimistic like the drag: the pills appear, the write runs behind them, and
+   a failure repaints exactly what was there before and says why. */
+async function pasteInto(cell) {
+  if (!SEL || cell.classList.contains('is-static')) return;
+  const picked = selectedPills();
+  if (!picked.length) return clearSelection();
+  const toRow = cell.closest('tr'), date = cell.dataset.date;
+  // the grouping decides which half of each pair the target row supplies
+  const items = picked.map(p => ({
+    person_id: BY === 'person' ? toRow.dataset.row : p.dataset.person,
+    project_id: BY === 'person' ? p.dataset.project : toRow.dataset.row,
+    hours: parseFloat(p.dataset.hours) || 0,
+    label: BY === 'person'
+      ? p.dataset.label
+      : ((PEOPLE.find(x => x.id === p.dataset.person) || {}).name || p.dataset.label),
+  }));
+  // what the target day holds now, so a refusal can put it back exactly
+  const before = items.map(i => {
+    const was = cell.querySelector('.pill[data-person="' + i.person_id
+                                   + '"][data-project="' + i.project_id + '"]');
+    return {item: i, hours: was ? parseFloat(was.dataset.hours) || 0 : 0,
+            label: was ? was.dataset.label : i.label};
+  });
+  const paint = (rows) => {
+    rows.forEach(r => patchCell(toRow, date, r.item.person_id, r.item.project_id,
+                                r.label, r.hours, swatchFor(r.item.project_id)));
+    retotal();
+  };
+  paint(items.map(i => ({item: i, hours: i.hours, label: i.label})));
+  cell.classList.add('is-pasted');
+  setTimeout(() => cell.classList.remove('is-pasted'), 600);
+  try {
+    const res = await fetch('/api/allocation/paste', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dates: [date], items: items.map(
+        i => ({person_id: i.person_id, project_id: i.project_id, hours: i.hours}))})
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      paint(before);
+      zAlert(data.error || 'The server refused it without saying why.',
+             {title: 'Paste refused — nothing changed'});
+      return;
+    }
+    (data.assigned || []).forEach(a => {
+      const proj = PROJECTS.find(p => p.id === a.project_id);
+      if (proj && !proj.member_ids.includes(a.person_id)) proj.member_ids.push(a.person_id);
+    });
+  } catch (e) {
+    paint(before);
+    zAlert('That paste never reached the server, so nothing changed — check your connection.',
+           {title: 'Paste failed'});
+  }
+}
+
+// ⌘V pastes into the last cell the pointer was over, so a keyboard user isn't
+// forced to click; Esc drops the selection, like every other selection anywhere
+let LAST_CELL = null;
+document.addEventListener('mouseover', e => {
+  const cell = e.target.closest && e.target.closest('.plan-cell');
+  if (cell) LAST_CELL = cell;
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && SEL && !document.querySelector('dialog[open]')) {
+    clearSelection();
+  } else if ((e.metaKey || e.ctrlKey) && e.key === 'v' && SEL && LAST_CELL
+             && LAST_CELL !== SEL.cell) {
+    e.preventDefault();
+    pasteInto(LAST_CELL);
+  }
+});
 
 /* ---- drag a booking ----------------------------------------------------
    A move is exactly what the planner does by hand all day — "Kepos slips to

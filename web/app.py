@@ -1762,6 +1762,69 @@ def api_clear_week(request: Request, c: ClearWeek):
     return JSONResponse(res)
 
 
+class PasteItem(BaseModel):
+    person_id: str
+    project_id: str
+    hours: float = Field(gt=0, le=24, allow_inf_nan=False)
+
+
+class PasteAlloc(BaseModel):
+    # fully-resolved pairs: the browser has already applied the grouping (a
+    # target row supplies the person, or the project, depending on the view)
+    items: list[PasteItem] = Field(min_length=1, max_length=20)
+    dates: list[str] = Field(min_length=1, max_length=31)
+    also_assign: bool = True
+
+
+@app.post("/api/allocation/paste")
+def api_paste_allocation(request: Request, p: PasteAlloc):
+    """Write the bookings selected in one day onto several other days.
+
+    A copy, not a move: the pairs named here are *set* to those hours on every
+    target day, and anything else booked on those days is left alone — see
+    ops.paste_allocations.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    days = []
+    for iso in p.dates:
+        d = _parse_date(iso)
+        if not d:
+            return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+        if d.weekday() < 5:
+            days.append(d.isoformat())
+    if not days:
+        return JSONResponse({"ok": False, "error": "weekdays only"}, status_code=400)
+    items = [{"person_id": i.person_id, "project_id": i.project_id, "hours": i.hours}
+             for i in p.items]
+    try:
+        res = ops.paste_allocations(items, days)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Pasting %d bookings onto %s failed", len(items), days)
+        return JSONResponse({"ok": False, "error": "could not paste those bookings"},
+                            status_code=400)
+    if p.also_assign:
+        # same contract as every other write here: booking someone onto a
+        # project makes them a member of it, so /assignments can't drift
+        assigned = []
+        for person_id, project_id in {(i.person_id, i.project_id) for i in p.items}:
+            try:
+                ops.set_project_member(project_id, person_id, True)
+                assigned.append({"person_id": person_id, "project_id": project_id})
+            except Exception:
+                logging.exception("Paste saved but adding %s to project %s failed",
+                                  person_id, project_id)
+        res["assigned"] = assigned
+    return JSONResponse(res)
+
+
 class ClearDay(BaseModel):
     date: str                           # the day column to wipe
     person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter

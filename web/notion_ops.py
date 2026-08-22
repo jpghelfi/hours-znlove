@@ -619,6 +619,53 @@ def copy_week_allocations(from_monday: str, to_monday: str,
     return {"ok": True, "copied": len(plan), "hours": round(sum(plan.values()), 2)}
 
 
+def paste_allocations(items: list[dict], dates: list[str]) -> dict:
+    """Write the same set of bookings onto each of several days.
+
+    The copy counterpart to a drag, and it deliberately reads differently: a
+    drag **adds** its hours where it lands, because those hours physically
+    moved, while a paste **sets** the pairs it names. "Make Wednesday look like
+    Monday" means Kepos 6h — not 8h because Wednesday already had 2h of it.
+
+    Only the pairs being pasted are touched: everything else already booked on
+    the target day survives. Replacing a whole day is Clear day followed by a
+    paste, and both halves already exist.
+
+    `items` is [{person_id, project_id, hours}, …] — fully resolved pairs, so
+    this works the same whether the planner is grouped by person (the pills are
+    projects, the target row supplies the person) or by project (the other way
+    round). Resolving that is the caller's job; here a pair is a pair.
+
+    `_write_lock` is taken **per day, not for the whole paste**: this can be
+    hundreds of writes, and holding the lock across all of them would freeze
+    every weekly-grid save in the app meanwhile. Each day is an independent
+    upsert, so fairness costs nothing here.
+    """
+    days = []
+    for iso in dates:
+        d = dt.date.fromisoformat(iso)
+        if d.weekday() < 5 and iso not in days:   # weekends are never planned
+            days.append(iso)
+    pairs = []
+    for i in items:
+        hours = round(float(i.get("hours") or 0), 2)
+        if i.get("person_id") and i.get("project_id") and hours > 0:
+            pairs.append((i["person_id"], i["project_id"], hours))
+    if not pairs or not days:
+        return {"ok": True, "written": 0, "cells": []}
+    if len(pairs) * len(days) > MAX_COPY_ROWS:
+        raise ValueError(f"that would write {len(pairs) * len(days)} bookings — more than "
+                         f"the {MAX_COPY_ROWS} one paste will make")
+    cells = []
+    for iso in days:
+        with _write_lock:
+            for person_id, project_id, hours in pairs:
+                _set_allocation_locked(person_id, project_id, iso, hours)
+                cells.append({"date": iso, "person_id": person_id,
+                              "project_id": project_id, "hours": hours})
+    return {"ok": True, "written": len(cells), "cells": cells}
+
+
 def clear_allocations(date_from: str, date_to: str, person_ids: list[str] | None = None,
                       project_id: str | None = None) -> dict:
     """Delete every booking in [date_from, date_to] that the given filters keep.
