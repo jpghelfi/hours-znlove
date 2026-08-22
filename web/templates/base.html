@@ -43,6 +43,25 @@
      dialog is still validated on submit and can't be focused to complain, which
      makes the form's own submit button do nothing at all. #}
   {% block modals %}{% endblock %}
+  {# The app's own alert/confirm. A native dialog is drawn by the browser above
+     the page — wrong typeface, wrong colors, "hours-znlove.onrender.com says"
+     as a heading — and on a desktop Chrome it hangs off the top of the window,
+     nowhere near what you clicked. This one is a <dialog>, so it still traps
+     focus, still closes on Esc and still lands in the top layer above every
+     other dialog on the page, but it lives inside the viewport and looks like
+     the rest of the app. Driven by zAlert()/zConfirm() below. #}
+  {# Plain buttons rather than a <form method="dialog">: that form submits and
+     sets returnValue, but the `close` event a promise would have to wait on
+     doesn't reliably follow it, and a confirm whose promise never settles is a
+     button that silently does nothing. These call back directly. #}
+  <dialog class="zdlg" id="zdlg" aria-labelledby="zdlg-title">
+    <h2 class="zdlg-title" id="zdlg-title"></h2>
+    <p class="zdlg-body" id="zdlg-body"></p>
+    <div class="zdlg-actions">
+      <button type="button" class="btn" id="zdlg-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="zdlg-ok">OK</button>
+    </div>
+  </dialog>
   <footer class="foot">Notion is the source of truth · entries sync to the Time Entries database</footer>
   <script>
     function effectiveTheme(){var t=document.documentElement.getAttribute('data-theme');return t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
@@ -100,6 +119,68 @@
         barTimer = setTimeout(navStop, 30000);
       }
       window.navStart = navStart;
+
+      /* zAlert(message, opts) / zConfirm(message, opts) — the app's own
+         replacements for window.alert and window.confirm. Both return a
+         Promise (zConfirm's resolves true/false), so every call site reads
+         `await zConfirm(...)` where it used to read `confirm(...)`.
+
+         opts: {title, ok, cancel, danger}. Esc and the backdrop both count as
+         Cancel, which is what the native pair does. A dialog opened while
+         another zdlg is already up replaces it — two of these can only come
+         from a double click, and the second question is the live one. */
+      function zModal(message, opts) {
+        opts = opts || {};
+        var dlg = document.getElementById('zdlg');
+        if (!dlg || !dlg.showModal) {   // no <dialog> support: don't lose the question
+          return Promise.resolve(opts.ask ? window.confirm(message) : (window.alert(message), true));
+        }
+        // a question already on screen is answered "no" before it's replaced,
+        // so its caller isn't left waiting on a promise that can't settle
+        if (zModal.settle) zModal.settle(false);
+        document.getElementById('zdlg-title').textContent =
+          opts.title || (opts.ask ? 'Are you sure?' : 'Heads up');
+        document.getElementById('zdlg-body').textContent = message;  // \n honoured by CSS
+        var ok = document.getElementById('zdlg-ok');
+        var cancel = document.getElementById('zdlg-cancel');
+        ok.textContent = opts.ok || (opts.ask ? 'Yes' : 'OK');
+        ok.classList.toggle('danger', !!opts.danger);
+        ok.classList.toggle('primary', !opts.danger);
+        cancel.textContent = opts.cancel || 'Cancel';
+        cancel.hidden = !opts.ask;   // an alert has nothing to cancel
+        return new Promise(function (resolve) {
+          // every way out of the dialog lands here, exactly once
+          function settle(answer) {
+            if (!settle.done) {
+              settle.done = true;
+              if (zModal.settle === settle) zModal.settle = null;
+              ok.removeEventListener('click', onOk);
+              cancel.removeEventListener('click', onCancel);
+              dlg.removeEventListener('cancel', onEsc);
+              dlg.removeEventListener('click', onBackdrop);
+              if (dlg.open) dlg.close();
+              resolve(answer);
+            }
+          }
+          function onOk() { settle(true); }
+          function onCancel() { settle(false); }
+          function onEsc() { settle(false); }          // Esc — `cancel` always fires
+          function onBackdrop(e) { if (e.target === dlg) settle(false); }
+          ok.addEventListener('click', onOk);
+          cancel.addEventListener('click', onCancel);
+          dlg.addEventListener('cancel', onEsc);
+          dlg.addEventListener('click', onBackdrop);
+          zModal.settle = settle;
+          dlg.showModal();
+          ok.focus();
+        });
+      }
+      window.zAlert = function (message, opts) {
+        return zModal(message, Object.assign({}, opts, {ask: false})).then(function () {});
+      };
+      window.zConfirm = function (message, opts) {
+        return zModal(message, Object.assign({}, opts, {ask: true}));
+      };
 
       // How tall the sticky top bar actually is — it wraps to two lines on a
       // narrow window, so anything that docks under it (the planner grid) has

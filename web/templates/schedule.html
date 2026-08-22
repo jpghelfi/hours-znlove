@@ -238,10 +238,10 @@ let POP = null;  // {cell, row, date, personId, projectId, editing}
    copies exactly the rows on screen. */
 async function copyLastWeek(btn) {
   const scope = FOCUS_PEOPLE.length || FOCUS_PROJECT ? '\n\nOnly what the current filter shows will be copied.' : '';
-  if (!confirm('Copy the bookings from the week of ' + COPY_FROM_LABEL
+  if (!await zConfirm('Copy the bookings from the week of ' + COPY_FROM_LABEL
                + ' into the week of ' + WEEK_LABEL + '?'
                + '\n\nBookings already in this week are kept; a day/project that exists in both takes last week\'s hours.'
-               + scope)) return;
+               + scope, {title: 'Copy last week', ok: 'Copy'})) return;
   setBusy(btn, true);
   const restore = () => setBusy(btn, false);
   try {
@@ -251,14 +251,14 @@ async function copyLastWeek(btn) {
                             person_ids: FOCUS_PEOPLE, project_id: FOCUS_PROJECT || null})
     });
     const data = await res.json();
-    if (!data.ok) { alert('Copy failed: ' + (data.error || '')); return restore(); }
-    if (!data.copied) { alert('Nothing booked in the week of ' + COPY_FROM_LABEL + ' to copy.'); return restore(); }
+    if (!data.ok) { zAlert(data.error || 'Something went wrong.', {title: 'Copy failed'}); return restore(); }
+    if (!data.copied) { zAlert('Nothing was booked in the week of ' + COPY_FROM_LABEL + ', so there is nothing to copy.', {title: 'Nothing to copy'}); return restore(); }
     // a whole week changed — redraw from the server, not cell by cell. The
     // re-query costs seconds, so keep the bar running across the reload.
     navStart();
     location.reload();
   } catch (e) {
-    alert('Copy failed — check your connection.');
+    zAlert('That copy never reached the server — check your connection.', {title: 'Copy failed'});
     restore();
   }
 }
@@ -269,8 +269,9 @@ async function copyLastWeek(btn) {
 async function clearWeek(btn) {
   const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT;
   const what = filtered ? 'every booking the current filter shows' : 'every booking';
-  if (!confirm('Delete ' + what + ' in the week of ' + WEEK_LABEL + '?'
-               + '\n\nThis cannot be undone.')) return;
+  if (!await zConfirm('This deletes ' + what + ' in the week of ' + WEEK_LABEL + '.'
+               + '\n\nThis cannot be undone.',
+               {title: 'Clear this week?', ok: 'Delete them', danger: true})) return;
   setBusy(btn, true);
   const restore = () => setBusy(btn, false);
   try {
@@ -280,12 +281,12 @@ async function clearWeek(btn) {
                             project_id: FOCUS_PROJECT || null})
     });
     const data = await res.json();
-    if (!data.ok) { alert('Clear failed: ' + (data.error || '')); return restore(); }
-    if (!data.cleared) { alert('Nothing booked in the week of ' + WEEK_LABEL + ' to clear.'); return restore(); }
+    if (!data.ok) { zAlert(data.error || 'Something went wrong.', {title: 'Clear failed'}); return restore(); }
+    if (!data.cleared) { zAlert('Nothing is booked in the week of ' + WEEK_LABEL + '.', {title: 'Nothing to clear'}); return restore(); }
     navStart();
     location.reload();
   } catch (e) {
-    alert('Clear failed — check your connection.');
+    zAlert('That clear never reached the server — check your connection.', {title: 'Clear failed'});
     restore();
   }
 }
@@ -431,9 +432,10 @@ async function savePop(forceHours) {
       .filter(c => c.pill && parseFloat(c.pill.dataset.hours) !== hours);
     if (hit.length) {
       const days = hit.map(c => dayLabel(c.date) + ' (' + fmt(parseFloat(c.pill.dataset.hours)) + 'h)');
-      if (!confirm(label + ' is already booked on ' + days.join(', ')
-                   + '. Saving replaces ' + (hit.length === 1 ? 'that' : 'those')
-                   + ' with ' + fmt(hours) + 'h.')) return;
+      if (!await zConfirm(label + ' is already booked on ' + days.join(', ')
+                   + '.\n\nSaving replaces ' + (hit.length === 1 ? 'that' : 'those')
+                   + ' with ' + fmt(hours) + 'h.',
+                   {title: 'Replace what is booked?', ok: 'Replace'})) return;
     }
   }
   err.hidden = true;
@@ -464,7 +466,8 @@ async function savePop(forceHours) {
     retotal();
     closePop();
     if (data.replace_failed) {
-      alert('Saved the new booking, but the old one is still there — remove it by hand.');
+      await zAlert('The new booking was saved, but the old one is still there — remove it by hand.',
+                   {title: 'Half saved'});
       navStart(); location.reload();
     }
   } catch (e) {
@@ -644,7 +647,8 @@ async function cellDrop(ev, cell) {
     const data = await res.json();
     if (!data.ok) {
       paint(dstHours, srcHours);   // put the week back
-      alert('That move was refused, so nothing changed:\n\n' + (data.error || 'unknown error'));
+      zAlert(data.error || 'The server refused it without saying why.',
+             {title: 'Move refused — nothing changed'});
       return;
     }
     if (data.assigned) {
@@ -654,7 +658,8 @@ async function cellDrop(ev, cell) {
     paint(data.hours, data.from_hours || 0);   // the server's numbers win
   } catch (e) {
     paint(dstHours, srcHours);
-    alert('That move never reached the server, so nothing changed — check your connection.');
+    zAlert('That move never reached the server, so nothing changed — check your connection.',
+           {title: 'Move failed'});
   } finally {
     const still = findPill(cell, toPerson, toProject);
     if (still) still.classList.remove('is-pending');
@@ -678,14 +683,16 @@ function dayLabel(iso) {
 
 async function clearScope(iso, personIds, projectId, cells, question) {
   const n = cells.reduce((t, c) => t + c.querySelectorAll('.pill').length, 0);
-  if (!n) { alert('Nothing booked there to delete.'); return false; }
-  if (!confirm(question(n) + '\n\nThis cannot be undone.')) return false;
+  if (!n) { zAlert('Nothing is booked there.', {title: 'Nothing to delete'}); return false; }
+  // the question is the heading; the body carries only what it costs
+  if (!await zConfirm('This cannot be undone.',
+                      {title: question(n), ok: 'Delete', danger: true})) return false;
   const res = await fetch('/api/allocation/clear-day', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({date: iso, person_ids: personIds, project_id: projectId})
   });
   const data = await res.json();
-  if (!data.ok) { alert('Clear failed: ' + (data.error || '')); return false; }
+  if (!data.ok) { zAlert(data.error || 'Something went wrong.', {title: 'Delete failed'}); return false; }
   cells.forEach(c => {
     c.querySelectorAll('.pill').forEach(p => p.remove());
     refreshCell(c);
@@ -704,7 +711,7 @@ async function clearCell(cell) {
       n => 'Delete ' + n + (n === 1 ? ' booking' : ' bookings') + ' for '
            + who + ' on ' + dayLabel(cell.dataset.date) + '?');
   } catch (e) {
-    alert('Clear failed — check your connection.');
+    zAlert('That delete never reached the server — check your connection.', {title: 'Delete failed'});
   }
 }
 
@@ -718,7 +725,7 @@ async function clearDay(iso, btn) {
            + (filtered ? ' the current filter shows' : '')
            + ' on ' + dayLabel(iso) + '?');
   } catch (e) {
-    alert('Clear failed — check your connection.');
+    zAlert('That delete never reached the server — check your connection.', {title: 'Delete failed'});
   } finally {
     setBusy(btn, false);
   }

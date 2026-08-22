@@ -63,7 +63,7 @@ function toggleTimer() {
   const st = tState();
   const sel = document.querySelector('select[name=project_id]');
   if (!st) {
-    if (!sel.value) { alert('Pick a project first'); return; }
+    if (!sel.value) { zAlert('Choose a project before starting the timer.', {title: 'Pick a project'}); return; }
     localStorage.setItem(TKEY, JSON.stringify({ start: Date.now(), project: sel.value }));
   } else {
     const hrs = Math.max(0.25, Math.round(((Date.now() - st.start) / 3600000) * 4) / 4);
