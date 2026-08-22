@@ -110,6 +110,16 @@ of that gesture that doesn't silently lose hours. `ops.move_allocation` writes
 the target and deletes the source under one `_write_lock`, so nothing can
 interleave between the two and strand the hours.
 
+The drop is **optimistic**: the pill is drawn in its new place on the next
+frame (about a millisecond), and the Notion round-trip — a query plus one or
+two writes, seconds on a cold free instance — runs behind it. Everything needed
+to undo the move is captured before the DOM is touched, so a refusal or a
+dropped connection puts the week back exactly as it was and says why in a
+dialog; that is the only case where the wait would have been worth watching.
+When the response does arrive its numbers are laid over the guess, so a
+concurrent edit elsewhere can't leave a wrong total on screen. Until then the
+pill wears a quiet `.is-pending` outline — settled, just not yet acknowledged.
+
 One subtlety worth keeping: while a drag is live, the cell's own `+` and `×`
 buttons get `pointer-events: none`. A drop that lands on a `<button>` is refused
 by the browser and the pill snaps back — and the `+` sits exactly where an empty

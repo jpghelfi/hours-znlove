@@ -279,9 +279,14 @@ table.plan { min-width: 720px; }
    invites you to aim. Taking them out of the hit-testing makes the whole
    cell one uniform drop target. */
 .plan.is-dnd .addbtn, .plan.is-dnd .cellx { pointer-events: none; }
-.plan .plan-cell.is-saving { background: var(--saving); }
-/* the drop is a real write; don't let a second one start on top of it */
-.plan .plan-cell.is-saving .pill { pointer-events: none; }
+/* A dropped pill is drawn in its new place immediately and the Notion write
+   runs behind it, so this is the only trace of the wait: the pill reads as
+   settled, just not yet acknowledged. Deliberately quiet — a refusal is
+   reported out loud, and everything else needs no comment. */
+.plan .pill.is-pending { opacity: .72; outline: 1px dashed currentColor; outline-offset: -2px; }
+@media (prefers-reduced-motion: no-preference) {
+  .plan .pill.is-pending { transition: opacity .15s ease; }
+}
 
 /* empties one cell — hidden while the cell has nothing in it, which is also
    how a cell filled in without a reload gets its × back */

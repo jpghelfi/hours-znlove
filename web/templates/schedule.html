@@ -606,8 +606,34 @@ async function cellDrop(ev, cell) {
   const label = BY === 'person'
     ? ((PROJECTS.find(p => p.id === toProject) || {}).name || src.label)
     : ((PEOPLE.find(p => p.id === toPerson) || {}).name || src.label);
-  const swatch = (PROJECTS.find(p => p.id === toProject) || {}).swatch;
-  cell.classList.add('is-saving');
+  const swatch = swatchFor(toProject), srcSwatch = swatchFor(src.projectId);
+
+  /* Optimistic: the pill lands where it was dropped *now*, and the Notion
+     round-trip (a query and one or two writes, seconds on a cold instance)
+     happens behind it. Everything needed to undo the move is captured first,
+     so a refusal or a dropped connection puts the week back exactly as it was
+     and says why — the only case where the wait would have been worth staring
+     at. The server's own numbers are laid over the guess when they arrive. */
+  const findPill = (c, pid, prid) =>
+    c.querySelector('.pill[data-person="' + pid + '"][data-project="' + prid + '"]');
+  const srcPill = findPill(src.cell, src.personId, src.projectId);
+  const srcHours = srcPill ? parseFloat(srcPill.dataset.hours) || 0 : 0;
+  const dstPill = findPill(cell, toPerson, toProject);
+  const dstHours = dstPill ? parseFloat(dstPill.dataset.hours) || 0 : 0;
+  if (!srcHours) return;
+  // the server adds when a day already books the pair — guess the same
+  const guess = Math.round((srcHours + dstHours) * 100) / 100;
+
+  const paint = (toHours, fromHours) => {
+    patchCell(toRow, toDate, toPerson, toProject, label, toHours, swatch);
+    if (!copy) patchCell(fromRow, src.date, src.personId, src.projectId, src.label,
+                         fromHours, srcSwatch);
+    retotal();
+  };
+  paint(guess, 0);
+  const landed = findPill(cell, toPerson, toProject);
+  if (landed) landed.classList.add('is-pending');
+
   try {
     const res = await fetch('/api/allocation/move', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -616,19 +642,29 @@ async function cellDrop(ev, cell) {
                             copy})
     });
     const data = await res.json();
-    if (!data.ok) { alert('Move failed: ' + (data.error || '')); return; }
+    if (!data.ok) {
+      paint(dstHours, srcHours);   // put the week back
+      alert('That move was refused, so nothing changed:\n\n' + (data.error || 'unknown error'));
+      return;
+    }
     if (data.assigned) {
       const proj = PROJECTS.find(p => p.id === toProject);
       if (proj && !proj.member_ids.includes(toPerson)) proj.member_ids.push(toPerson);
     }
-    patchCell(toRow, toDate, toPerson, toProject, label, data.hours, swatch);
-    if (!copy) patchCell(fromRow, src.date, src.personId, src.projectId, src.label, 0, undefined);
-    retotal();
+    paint(data.hours, data.from_hours || 0);   // the server's numbers win
   } catch (e) {
-    alert('Move failed — check your connection.');
+    paint(dstHours, srcHours);
+    alert('That move never reached the server, so nothing changed — check your connection.');
   } finally {
-    cell.classList.remove('is-saving');
+    const still = findPill(cell, toPerson, toProject);
+    if (still) still.classList.remove('is-pending');
   }
+}
+
+/* A project's pill color, so a reverted or re-drawn pill keeps the one it had
+   rather than falling back to the first palette slot. */
+function swatchFor(projectId) {
+  return (PROJECTS.find(p => p.id === projectId) || {}).swatch;
 }
 
 /* ---- wiping a cell and a day column ------------------------------------
