@@ -1618,6 +1618,11 @@ class Alloc(BaseModel):
     through: Optional[str] = None   # inclusive end of a repeat range; None = just `date`
     hours: float = Field(ge=0, le=24, allow_inf_nan=False)
     also_assign: bool = True        # scheduling someone implies project membership
+    # The pair this save replaces, when the popover's select was changed on an
+    # existing booking: "that day is Kepos, not Nowsta". Only one side can
+    # differ from the pair above — the row pins the other one down.
+    from_person_id: Optional[str] = None
+    from_project_id: Optional[str] = None
 
 
 _MAX_RANGE_DAYS = 90  # a fat-fingered "through" can't write hundreds of rows
@@ -1650,6 +1655,22 @@ def api_allocation(request: Request, alloc: Alloc):
                                        day.isoformat(), end.isoformat(), alloc.hours)
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save allocation"}, status_code=400)
+    # Changing a booking's project (or its person) is a delete plus a write,
+    # not an edit: the pair *is* the Notion row's identity. Deliberately after
+    # the write above and outside its try — if this half fails the day holds
+    # both bookings, which is visible and fixable on the spot; the other order
+    # could drop the hours entirely.
+    old_person = alloc.from_person_id or alloc.person_id
+    old_project = alloc.from_project_id or alloc.project_id
+    if (old_person, old_project) != (alloc.person_id, alloc.project_id):
+        try:
+            ops.set_allocation_range(old_person, old_project,
+                                     day.isoformat(), end.isoformat(), 0)
+            res["replaced"] = True
+        except Exception:
+            logging.exception("Wrote the new booking but could not clear %s/%s on %s–%s",
+                              old_person, old_project, day, end)
+            res["replace_failed"] = True
     if alloc.hours and alloc.also_assign:
         # keep /assignments honest: booking someone onto a project makes them a
         # member of it (idempotent, so a re-book is a no-op). Deliberately not
@@ -1730,6 +1751,89 @@ def api_clear_week(request: Request, c: ClearWeek):
     except Exception:
         logging.exception("Clearing the week of %s failed", mon)
         return JSONResponse({"ok": False, "error": "could not clear that week"}, status_code=400)
+    return JSONResponse(res)
+
+
+class ClearDay(BaseModel):
+    date: str                           # the day column to wipe
+    person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter
+    project_id: Optional[str] = None
+
+
+@app.post("/api/allocation/clear-day")
+def api_clear_day(request: Request, c: ClearDay):
+    """Wipe one day — a whole day column, or a single cell when the caller
+    narrows it to that row's own person/project. Same filter contract as the
+    week clear: it only ever removes what the planner is showing."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    day = _parse_date(c.date)
+    if not day:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    try:
+        res = ops.clear_allocations(day.isoformat(), day.isoformat(),
+                                    c.person_ids, c.project_id)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Clearing the day of %s failed", day)
+        return JSONResponse({"ok": False, "error": "could not clear that day"}, status_code=400)
+    return JSONResponse(res)
+
+
+class MoveAlloc(BaseModel):
+    person_id: str
+    project_id: str
+    date: str
+    to_person_id: str
+    to_project_id: str
+    to_date: str
+    copy: bool = False              # ⌥-drag duplicates instead of moving
+    also_assign: bool = True
+
+
+@app.post("/api/allocation/move")
+def api_move_allocation(request: Request, m: MoveAlloc):
+    """Drag a booking onto another day, another row, or both. The hours are
+    re-read from Notion rather than trusted from the browser — see
+    ops.move_allocation."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    src, dst = _parse_date(m.date), _parse_date(m.to_date)
+    if not src or not dst:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    if dst.weekday() >= 5:
+        return JSONResponse({"ok": False, "error": "weekday required"}, status_code=400)
+    try:
+        res = ops.move_allocation(m.person_id, m.project_id, src.isoformat(),
+                                  m.to_person_id, m.to_project_id, dst.isoformat(),
+                                  copy=m.copy)
+    except Exception:
+        logging.exception("Moving %s/%s from %s to %s failed",
+                          m.person_id, m.project_id, src, dst)
+        return JSONResponse({"ok": False, "error": "could not move that booking"},
+                            status_code=400)
+    if not res.get("ok"):
+        return JSONResponse(res, status_code=400)
+    if m.also_assign:
+        # same contract as a fresh booking: dropping someone onto a project
+        # makes them a member of it, so /assignments can't drift
+        try:
+            ops.set_project_member(m.to_project_id, m.to_person_id, True)
+            res["assigned"] = True
+        except Exception:
+            logging.exception("Move saved but adding %s to project %s failed",
+                              m.to_person_id, m.to_project_id)
     return JSONResponse(res)
 
 

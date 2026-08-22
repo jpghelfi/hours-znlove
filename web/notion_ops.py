@@ -619,36 +619,90 @@ def copy_week_allocations(from_monday: str, to_monday: str,
     return {"ok": True, "copied": len(plan), "hours": round(sum(plan.values()), 2)}
 
 
-def clear_week_allocations(monday: str, person_ids: list[str] | None = None,
-                           project_id: str | None = None) -> dict:
-    """Delete a whole week of bookings in one go — the counterpart to clearing
-    a day cell by cell.
+def clear_allocations(date_from: str, date_to: str, person_ids: list[str] | None = None,
+                      project_id: str | None = None) -> dict:
+    """Delete every booking in [date_from, date_to] that the given filters keep.
+
+    One function behind all three "wipe what I can see" buttons — a whole week,
+    one day column, one day cell — because they differ only in how narrow the
+    range and the filters are: a cell is a single day scoped to its own row.
 
     Scoped to whatever the planner is filtered to (person_ids / project_id), so
-    the button removes exactly the bookings on screen and nothing behind a
+    a button removes exactly the bookings on screen and nothing behind a
     filter. Deletes by page id — the rows this same read returned — rather than
     re-deriving (person, project, day) keys, so a duplicate row left over from
     an old race goes too instead of surviving as a ghost.
 
     Notion has no bulk archive, so this is one write per booking under a single
-    _write_lock, capped like a copy.
+    _write_lock, capped like a copy — checked before the first write, so a
+    too-big range is refused whole rather than half-deleted.
     """
-    mon = dt.date.fromisoformat(monday)
     pick = set(person_ids or [])
     doomed = []
-    for a in alloc_rows(monday, (mon + dt.timedelta(days=4)).isoformat()):
+    for a in alloc_rows(date_from, date_to):
         if pick and a["person_id"] not in pick:
             continue
         if project_id and a["project_id"] != project_id:
             continue
         doomed.append(a)
     if len(doomed) > MAX_COPY_ROWS:
-        raise ValueError(f"that week has {len(doomed)} bookings — more than the {MAX_COPY_ROWS} a clear will delete")
+        raise ValueError(f"that range has {len(doomed)} bookings — more than the {MAX_COPY_ROWS} a clear will delete")
     with _write_lock:
         for a in doomed:
             _notion.pages.update(a["id"], archived=True)
     return {"ok": True, "cleared": len(doomed),
             "hours": round(sum(a["hours"] for a in doomed), 2)}
+
+
+def clear_week_allocations(monday: str, person_ids: list[str] | None = None,
+                           project_id: str | None = None) -> dict:
+    """Delete a whole week of bookings in one go — Mon–Fri of `monday`, under
+    the page's filters. A thin week-shaped wrapper over clear_allocations."""
+    mon = dt.date.fromisoformat(monday)
+    return clear_allocations(monday, (mon + dt.timedelta(days=4)).isoformat(),
+                             person_ids, project_id)
+
+
+def move_allocation(person_id: str, project_id: str, date_iso: str,
+                    to_person_id: str, to_project_id: str, to_date: str,
+                    copy: bool = False) -> dict:
+    """Drag one booking onto another day, another row, or both.
+
+    The hours moved are re-read from Notion rather than taken from the browser:
+    the pill on screen can be a fold of duplicate rows for one (person,
+    project, day) pair, and it can be stale. Whatever is actually booked on the
+    source day is what lands on the target.
+
+    Landing on a day that already books the same pair **adds** to it — you
+    dropped 3h of Kepos onto a day already holding 2h of Kepos, and 5h is the
+    only reading of that gesture that doesn't silently lose hours.
+
+    Move (the default) deletes the source afterwards; `copy` leaves it. Both
+    halves happen under one _write_lock, so a concurrent planner edit can't
+    interleave between the write and the delete and strand the hours.
+    """
+    src_hours = 0.0
+    for a in alloc_rows(date_iso, date_iso):
+        if a["person_id"] == person_id and a["project_id"] == project_id:
+            src_hours += a["hours"]
+    if not src_hours:
+        return {"ok": False, "error": "nothing booked there any more"}
+    same = (person_id, project_id, date_iso) == (to_person_id, to_project_id, to_date)
+    if same:
+        return {"ok": True, "hours": src_hours, "from_hours": src_hours, "moved": 0}
+    dst_hours = 0.0
+    for a in alloc_rows(to_date, to_date):
+        if a["person_id"] == to_person_id and a["project_id"] == to_project_id:
+            dst_hours += a["hours"]
+    total = round(src_hours + dst_hours, 2)
+    if total > 24:
+        return {"ok": False, "error": "that would book more than 24h of one project in a day"}
+    with _write_lock:
+        _set_allocation_locked(to_person_id, to_project_id, to_date, total)
+        if not copy:
+            _set_allocation_locked(person_id, project_id, date_iso, 0)
+    return {"ok": True, "hours": total, "from_hours": 0 if not copy else src_hours,
+            "moved": src_hours}
 
 
 def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours: float) -> dict:

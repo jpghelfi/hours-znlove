@@ -101,6 +101,18 @@
       }
       window.navStart = navStart;
 
+      // How tall the sticky top bar actually is — it wraps to two lines on a
+      // narrow window, so anything that docks under it (the planner grid) has
+      // to be told, not guess. Kept in a CSS variable, refreshed on resize.
+      var topbar = document.querySelector('.topbar');
+      function measureTopbar() {
+        if (!topbar) return;
+        document.documentElement.style.setProperty(
+          '--topbar-h', Math.round(topbar.getBoundingClientRect().height) + 'px');
+      }
+      measureTopbar();
+      window.addEventListener('resize', measureTopbar);
+
       // An invalid control the user can't see is a dead end: the browser
       // refuses the submit, then has nothing to focus and says nothing, so the
       // button just stops working. That cost a day of lost hours once — say it

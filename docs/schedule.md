@@ -86,9 +86,74 @@ Clicking a day cell (or an existing pill) opens the assign popover:
 - **Repeat through** — a date. Every weekday from the clicked day through that date gets the same booking, in one request.
 - **Remove** — clears the pair over the same range.
 
-When editing an existing pill the select is disabled: changing who or what means removing the booking and adding the other one, not silently rewriting it.
+Editing an existing pill can change **anything about it**, the project included: the select stays live, and picking another project (or, in the Projects view, another person) rewrites the booking in place. Underneath that is still a delete plus a write — the (person, project) pair *is* the Notion row's identity — so the save carries `from_person_id`/`from_project_id` and the route clears the old pair over the same weekday range. The new booking is written first and the clear is deliberately outside its `try`: if the second half fails, the day shows both bookings, which is visible and fixable, where the other order could drop the hours entirely.
+
+Because a typed number is a statement rather than an increment, swapping onto a project the day already books **replaces** its hours. That could quietly shrink a 6h booking to the 1h being edited, so the browser asks first, naming both numbers.
+
+**Remove** always removes the booking that was clicked, even if the select was changed first — "Remove" on an existing pill can't mean the other one.
 
 Saving POSTs once to `/api/allocation` and patches the affected cells, meters and totals in place. Days that the range touched but that aren't on screen (a "repeat through" reaching into next week) are simply skipped by the patcher — a reload shows them.
+
+### Dragging a booking
+
+Moving work is what a planner does all day — "Kepos slips to Thursday", "give
+that day to Franco" — so a pill is draggable rather than open-remove-reopen-add.
+The pill carries the (person, project) pair; where it lands supplies the day
+and, across rows, the other half of the pair. Hold **⌥** (or Ctrl) to copy
+instead of moving. Both cells, their meters and every total repaint in place.
+
+The hours are settled by the server, not sent from the browser: a pill can be a
+fold of duplicate rows for one (person, project, day) pair, and it can be stale.
+Landing on a day that already books the same pair **adds** to it — you dropped
+3h of Kepos onto a day already holding 2h of Kepos, and 5h is the only reading
+of that gesture that doesn't silently lose hours. `ops.move_allocation` writes
+the target and deletes the source under one `_write_lock`, so nothing can
+interleave between the two and strand the hours.
+
+One subtlety worth keeping: while a drag is live, the cell's own `+` and `×`
+buttons get `pointer-events: none`. A drop that lands on a `<button>` is refused
+by the browser and the pill snaps back — and the `+` sits exactly where an empty
+cell invites you to aim, so without this the feature reads as "drag doesn't
+work". The pills themselves must keep their pointer events: taking them away
+mid-drag cancels the drag outright in Chromium.
+
+Drag-and-drop is pointer-only. On touch, the popover is still the way to move a
+booking.
+
+### Clearing a cell, a day or a week
+
+Three sizes of the same gesture, all going through one function
+(`ops.clear_allocations(date_from, date_to, person_ids, project_id)`) and all
+scoped to whatever the planner is filtered to, so a button only ever deletes
+what is on screen:
+
+| Control | Scope |
+| --- | --- |
+| **×** in a day cell (on hover) | that row's person/project, that one day |
+| **🗑** under a day's date | that whole day column |
+| **Clear week** | Mon–Fri |
+
+A cell's `×` is rendered always and hidden by CSS while the cell is empty, so a
+cell that fills in without a reload gets its `×` back. All three delete by page
+id — the rows the read just returned — rather than re-deriving upsert keys, so a
+duplicate row left by an old race goes too instead of surviving as a ghost. Each
+confirms, and none of them can be undone.
+
+### The day headers stay put
+
+`.grid thead th` has been `position: sticky` all along, but sticky needs a
+scroll container that actually scrolls: `.grid-wrap` only ever scrolled
+sideways, so vertically the header left with the page and a long roster scrolled
+into columns you could no longer name. The planner grid is now bounded to the
+viewport and scrolls inside itself (`.plan-scroll`), which gives the header
+something to stick to; the totals row sticks to the bottom edge for the same
+reason, and the person column keeps its existing sticky-left.
+
+The grid is *also* sticky itself, docked just under the top bar — otherwise the
+little the page still scrolls (the hint below the grid, the footer) would slide
+the whole box, sticky header and all, up behind the bar. The bar wraps to two
+lines on a narrow window, so `base.html` measures it into a `--topbar-h`
+variable rather than letting the CSS guess.
 
 ### Capacity
 
@@ -107,7 +172,11 @@ Each project gets one of eight palette slots from a hash of its id (`_swatch` in
  "through": "2026-08-07", "hours": 4, "also_assign": true}
 ```
 
-`date` must be a weekday; `through` (optional) must be on or after it and no more than 90 days out, so a fat-fingered date can't write hundreds of rows. `hours: 0` deletes. `also_assign` adds the person to the project's `People` property, keeping `/schedule` and `/assignments` consistent.
+`date` must be a weekday; `through` (optional) must be on or after it and no more than 90 days out, so a fat-fingered date can't write hundreds of rows. `hours: 0` deletes. `also_assign` adds the person to the project's `People` property, keeping `/schedule` and `/assignments` consistent. Optional `from_person_id` / `from_project_id` name the pair this save replaces (an edit that switched project), cleared over the same range.
+
+`POST /api/allocation/move` — the drag. `{person_id, project_id, date}` → `{to_person_id, to_project_id, to_date}`, plus `copy` (⌥-drag) and `also_assign`. No hours: the server reads what is actually booked on the source day.
+
+`POST /api/allocation/clear-day` — `{date, person_ids, project_id}`. One day under the page's filters; a cell adds its own row to that scope. `clear-week` is the same call, Mon–Fri wide.
 
 Underneath, `ops.set_allocation_range` walks the weekdays of the range and does an exact-date upsert per day (`_set_allocation_locked`), holding `_write_lock` once for the whole range so concurrent saves can't duplicate rows. Duplicate rows left over from older races are folded into one on the next write.
 

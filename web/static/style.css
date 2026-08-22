@@ -238,6 +238,75 @@ table.plan { min-width: 720px; }
 .addbtn:focus-visible { opacity: 1; outline: 2px solid var(--ring); outline-offset: 1px; }
 .plan-hint { margin-top: 12px; }
 
+/* ---- the planner scrolls inside itself ---------------------------------
+   `.grid thead th` has been position:sticky all along, but sticky needs a
+   scroll container that actually scrolls: .grid-wrap only ever scrolled
+   sideways, so vertically the header just left with the page and you lost
+   track of which column was which day. Bounding the planner to the viewport
+   gives the header something to stick to — and the totals row sticks to the
+   bottom edge for the same reason. Short weeks are unaffected: a table under
+   the max-height never scrolls. */
+/* The grid is also sticky itself, docked just under the top bar: bounding it
+   to the viewport is not enough on its own, because the little the *page*
+   still scrolls (the hint under the grid, the footer) would slide the whole
+   box — sticky header and all — up behind the bar. --topbar-h is measured in
+   base.html, since the bar wraps to two lines on a narrow window. */
+.plan-scroll {
+  position: sticky; top: calc(var(--topbar-h, 60px) + 10px); z-index: 1;
+  max-height: calc(100vh - var(--topbar-h, 60px) - 120px);
+  min-height: 240px; overflow: auto;
+}
+/* above the body's sticky first column (z-index 1), and the corner cells
+   above their own row so the person column can't paint over them */
+.plan-scroll thead th { z-index: 3; }
+.plan-scroll thead .col-project { z-index: 4; }
+.plan-scroll tfoot td { position: sticky; bottom: 0; z-index: 3; }
+.plan-scroll tfoot .col-project { z-index: 4; }
+/* the last body row's border disappears under the sticky footer otherwise */
+.plan-scroll tfoot td { box-shadow: 0 -1px 0 var(--line); }
+@media (max-width: 700px) { .plan-scroll { max-height: calc(100vh - 150px); } }
+
+/* ---- dragging a booking ------------------------------------------------ */
+.plan .pill[draggable="true"] { cursor: grab; }
+.plan .pill.is-dragging { opacity: .4; cursor: grabbing; }
+/* while a drag is live every cell is a target — say so, faintly, so the
+   landing spots are visible before the pointer reaches them */
+.plan.is-dnd .plan-cell { outline: 1px dashed var(--line); outline-offset: -3px; }
+.plan.is-dnd .plan-cell.is-over { outline: 2px solid var(--ring); background: var(--active-bg); }
+/* The cell's own buttons are dead zones mid-drag: a drop that lands on the +
+   (or the ×) is refused by the browser and the booking snaps back, which
+   reads as "drag doesn't work" — and the + sits exactly where an empty cell
+   invites you to aim. Taking them out of the hit-testing makes the whole
+   cell one uniform drop target. */
+.plan.is-dnd .addbtn, .plan.is-dnd .cellx { pointer-events: none; }
+.plan .plan-cell.is-saving { background: var(--saving); }
+/* the drop is a real write; don't let a second one start on top of it */
+.plan .plan-cell.is-saving .pill { pointer-events: none; }
+
+/* empties one cell — hidden while the cell has nothing in it, which is also
+   how a cell filled in without a reload gets its × back */
+.cellx {
+  position: absolute; top: 6px; right: 5px; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 5px; background: none;
+  color: var(--muted); font-size: 15px; line-height: 1; opacity: 0;
+  transition: opacity .12s ease, color .12s ease, background .12s ease;
+}
+.plan-cell:hover .cellx { opacity: .75; }
+.cellx:hover { opacity: 1; color: var(--over); background: var(--card); }
+.cellx:focus-visible { opacity: 1; outline: 2px solid var(--ring); outline-offset: 1px; }
+.plan-cell.is-empty .cellx { display: none; }
+
+/* clears the whole day column, in that day's header */
+.dayx {
+  display: block; margin: 3px auto 0; padding: 0 4px; border: 0; background: none;
+  font-size: 11px; line-height: 1.4; color: var(--muted); opacity: .45; border-radius: 5px;
+  transition: opacity .12s ease, background .12s ease;
+}
+.col-day:hover .dayx { opacity: 1; }
+.dayx:hover { background: var(--card); }
+.dayx:focus-visible { opacity: 1; outline: 2px solid var(--ring); outline-offset: 1px; }
+
 /* assign popover */
 dialog.pop {
   border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
