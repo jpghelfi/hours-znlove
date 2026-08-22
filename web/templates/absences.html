@@ -178,7 +178,8 @@ function absSyncEnd() {
 absSyncEnd();
 
 async function dropAbsence(btn, id) {
-  if (!confirm('Remove this absence?')) return;
+  if (!await zConfirm('This deletes the absence and the days it covers.',
+                      {title: 'Remove this absence?', ok: 'Remove', danger: true})) return;
   setBusy(btn, true);
   try {
     const res = await fetch('/api/absence/delete', {
@@ -193,7 +194,7 @@ async function dropAbsence(btn, id) {
     location.reload();
   } catch (e) {
     setBusy(btn, false);
-    alert('Remove failed: ' + e.message);
+    zAlert(e.message, {title: 'Remove failed'});
   }
 }
 </script>

@@ -76,7 +76,10 @@ async function saveCell(input) {
   const hours = parseFloat(input.value) || 0;
   // blanking an existing value deletes the entry — confirm, and allow revert
   if (!hours && parseFloat(input.dataset.prev)) {
-    if (!confirm('Remove this entry?')) { input.value = input.dataset.prev; return; }
+    if (!await zConfirm('Blanking the hours deletes this entry.',
+                        {title: 'Remove this entry?', ok: 'Remove', danger: true})) {
+      input.value = input.dataset.prev; return;
+    }
   }
   input.classList.add('saving');
   try {
@@ -86,11 +89,12 @@ async function saveCell(input) {
     });
     const data = await res.json();
     input.classList.remove('saving');
-    if (!data.ok) { input.classList.add('err'); alert('Save failed: ' + (data.error||'unknown')); return; }
+    if (!data.ok) { input.classList.add('err'); zAlert(data.error || 'Something went wrong.', {title: 'Save failed'}); return; }
     input.classList.remove('err'); input.classList.add('saved');
     setTimeout(() => input.classList.remove('saved'), 800);
     recalc();
-  } catch (e) { input.classList.remove('saving'); input.classList.add('err'); alert('Network error'); }
+  } catch (e) { input.classList.remove('saving'); input.classList.add('err');
+    zAlert('That save never reached the server — check your connection.', {title: 'Save failed'}); }
 }
 
 function recalc() {
@@ -122,7 +126,7 @@ function addRowWith(pid, prName) {
 }
 function addRow() {
   const pr = document.getElementById('add-project');
-  if (!pr.value) { alert('Pick a project'); return; }
+  if (!pr.value) { zAlert('Choose a project before adding a row.', {title: 'Pick a project'}); return; }
   addRowWith(pr.value, pr.selectedOptions[0].dataset.name);
 }
 const PREV_PROJECTS = {{ prev_projects|tojson }};

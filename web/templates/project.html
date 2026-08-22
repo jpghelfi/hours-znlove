@@ -258,7 +258,8 @@ async function saveEntry(input) {
   const hours = parseFloat(input.value) || 0;
   // blanking a value deletes the entry — confirm, and revert if they back out
   if (!hours && parseFloat(input.dataset.prev)) {
-    if (!confirm('Remove this entry? The hours and its description are deleted.')) {
+    if (!await zConfirm('The hours and the description are deleted.',
+                        {title: 'Remove this entry?', ok: 'Remove', danger: true})) {
       input.value = input.dataset.prev;
       return;
     }
@@ -275,7 +276,7 @@ async function saveEntry(input) {
     if (!data.ok) {
       input.classList.add('err');
       input.value = input.dataset.prev || input.value;
-      alert('Save failed: ' + (data.error || 'unknown'));
+      zAlert(data.error || 'Something went wrong.', {title: 'Save failed'});
       return;
     }
     // an entry shows up twice — under its person and in the list below — so
@@ -298,7 +299,7 @@ async function saveEntry(input) {
     input.classList.remove('saving');
     input.classList.add('err');
     input.value = input.dataset.prev || input.value;
-    alert('Network error — nothing was saved.');
+    zAlert('That save never reached the server — nothing was changed.', {title: 'Save failed'});
   }
 }
 </script>

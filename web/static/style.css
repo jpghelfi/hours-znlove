@@ -329,6 +329,33 @@ dialog.pop label .subtle { font-size: 11.5px; }
 .pop-actions .btn[hidden] { display: none; }
 .pop-err { margin-top: 12px; background: var(--err); color: var(--err-ink); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; font-weight: 600; }
 
+/* ---- the app's alert/confirm (zAlert/zConfirm in base.html) -------------
+   Same shell as the assign popover, so a question and a form read as the same
+   surface. Centred in the viewport — a native dialog is pinned to the top of
+   the browser window, which on a tall screen is nowhere near what you
+   clicked. */
+dialog.zdlg {
+  border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--ink);
+  padding: 20px; width: min(420px, calc(100vw - 32px));
+  box-shadow: 0 18px 40px rgba(0,5,40,.22);
+}
+dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
+.zdlg-title { margin: 0 0 8px; font-size: 17px; letter-spacing: -0.01em; }
+/* the messages carry their own line breaks — keep them without markup */
+.zdlg-body { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); white-space: pre-line; }
+.zdlg-body:empty { display: none; }
+.zdlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.zdlg-actions .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+/* destructive: the confirming button carries the warning, not the wording */
+.zdlg-actions .danger { background: var(--err-ink); color: var(--card); border-color: var(--err-ink); }
+.zdlg-actions .danger:hover { filter: brightness(1.1); }
+/* .btn's display:inline-block outranks the UA [hidden] rule — restore it */
+.zdlg-actions .btn[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  dialog.zdlg[open] { animation: zdlg-in .12s ease-out; }
+  @keyframes zdlg-in { from { opacity: 0; transform: translateY(-6px); } }
+}
+
 /* nav user */
 .topbar nav .who { color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
 .topbar nav a.logout { color: var(--muted); font-size: 13px; }

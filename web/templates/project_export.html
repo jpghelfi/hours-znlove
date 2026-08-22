@@ -266,7 +266,7 @@ async function saveInvoice() {
   const prompt = {{ 'true' if existing_invoice else 'false' }}
     ? 'Replace the saved invoice for {{ label }}, {{ rng.label }} with ' + billed + ' h?'
     : 'Record {{ label }}, {{ rng.label }} as invoiced for ' + billed + ' h?';
-  if (!confirm(prompt)) return;
+  if (!await zConfirm(prompt, {title: 'Record this invoice?', ok: 'Save invoice'})) return;
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = 'Saving…';
@@ -331,7 +331,7 @@ async function makeSheet() {
 async function sendBook() {
   const btn = document.getElementById('sendbtn');
   const to = document.getElementById('to').value.trim();
-  if (!confirm('Send this spreadsheet to:\n\n' + to)) return;
+  if (!await zConfirm(to, {title: 'Send this spreadsheet to:', ok: 'Send'})) return;
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = 'Sending…';
