@@ -327,7 +327,7 @@ def _():
         {"id": "c", "name": "Charlie", "budget": budget(hours=10)},
         {"id": "d", "name": "Delta", "budget": None},
     ]
-    rows = webapp._budget_rows({}, projects, {"b": 2, "c": 40})
+    rows = webapp._budget_rows(projects, {"b": 2, "c": 40})
     assert [r["name"] for r in rows] == ["Charlie", "Bravo", "Alpha", "Delta"], \
         [r["name"] for r in rows]
     # the unbudgeted block keeps its stable alphabetical order, so typing a
@@ -337,14 +337,34 @@ def _():
 
 @check("a project with no budget still reports its tracked hours")
 def _():
-    rows = webapp._budget_rows({}, [{"id": "a", "name": "A", "budget": None}], {"a": 9})
+    rows = webapp._budget_rows([{"id": "a", "name": "A", "budget": None}], {"a": 9})
     assert rows[0]["tracked"] == 9 and rows[0]["pct"] is None
     assert rows[0]["status"] == "none"
 
 
+@check("a 0 h budget never yields a None percentage")
+def _():
+    # Regression: pct was None whenever hours was 0, and the template formats
+    # it with %.0f — so one project budgeted at 0 took the whole page down
+    # with a 500. A budget is a budget; only "unbudgeted" has no percentage.
+    zero = budget(hours=0)
+    for tracked, want in ((0, 0.0), (3, 100.0)):
+        r = webapp._budget_rows([{"id": "a", "name": "A", "budget": zero}],
+                                {"a": tracked})[0]
+        assert r["pct"] == want, (tracked, r["pct"])
+        assert isinstance(r["bar"], float) and 0 <= r["bar"] <= 100
+        assert f"{r['pct']:.0f}"      # what the template does
+
+
+@check("only an unbudgeted row has no percentage")
+def _():
+    r = webapp._budget_rows([{"id": "a", "name": "A", "budget": None}], {"a": 3})[0]
+    assert r["pct"] is None and r["bar"] == 0
+
+
 @check("the bar caps at 100% while the number keeps going")
 def _():
-    rows = webapp._budget_rows({}, [{"id": "a", "name": "A", "budget": budget(hours=10)}],
+    rows = webapp._budget_rows([{"id": "a", "name": "A", "budget": budget(hours=10)}],
                                {"a": 35})
     assert rows[0]["bar"] == 100 and round(rows[0]["pct"]) == 350
 

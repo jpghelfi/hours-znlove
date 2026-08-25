@@ -2271,7 +2271,19 @@ def _budget_status(b: Optional[dict], tracked: float) -> str:
     return "ok"
 
 
-def _budget_rows(rng: dict, projects: list, tracked_by_id: dict) -> list[dict]:
+def _budget_pct(b: dict, tracked: float) -> float:
+    """How much of the budget is spent, as a percentage.
+
+    A 0 h budget is a legitimate setting ("no hours allowed here"), and 0/0 has
+    no meaningful value — so it reads as 0% while nothing is logged and 100%
+    once anything is. Never returns None: the page formats this with %.0f.
+    """
+    if not b["hours"]:
+        return 100.0 if tracked > 0 else 0.0
+    return tracked / b["hours"] * 100
+
+
+def _budget_rows(projects: list, tracked_by_id: dict) -> list[dict]:
     """One row per project, budgeted rows first (worst first), then the rest.
 
     The two-block sort is deliberate. Trouble-first is right for every visit
@@ -2290,9 +2302,13 @@ def _budget_rows(rng: dict, projects: list, tracked_by_id: dict) -> list[dict]:
             "id": p["id"], "name": p["name"], "budget": b, "tracked": tracked,
             "status": status, "status_label": label, "status_chip": chip,
             "remaining": (b["hours"] - tracked) if b else None,
-            # capped at 100 for the bar's width; the number beside it is not
-            "pct": (tracked / b["hours"] * 100) if (b and b["hours"]) else None,
-            "bar": min(100, tracked / b["hours"] * 100) if (b and b["hours"]) else 0,
+            # `pct` is None only when there is no budget at all — a budget of 0
+            # is a real budget, and leaving its percentage None would blow up
+            # the template's %.0f. 0/0 has no true value, so it reads as 0%
+            # until something is logged and 100% (fully spent) after.
+            "pct": (_budget_pct(b, tracked) if b else None),
+            # the bar is capped at 100 for its width; the number beside it isn't
+            "bar": min(100.0, _budget_pct(b, tracked)) if b else 0,
             "_rank": rank,
         })
     rows.sort(key=lambda r: (r["budget"] is None, r["_rank"],
@@ -2319,7 +2335,7 @@ def budgets_page(request: Request, start: Optional[str] = None,
         if e["project_id"]:
             tracked[e["project_id"]] = tracked.get(e["project_id"], 0.0) + (e["hours"] or 0)
 
-    rows = _budget_rows(rng, shown, tracked)
+    rows = _budget_rows(shown, tracked)
     budgeted = [r for r in rows if r["budget"]]
     return templates.TemplateResponse(request, "budgets.html", {
         "user": user, "is_admin": True, "rng": rng, "rows": rows,
@@ -2358,7 +2374,7 @@ def budgets_csv(request: Request, start: Optional[str] = None,
     w = csv.writer(buf)
     w.writerow(["project", "month", "budget", "tracked", "remaining", "used_pct",
                 "policy", "overrun_pct", "warn_pct", "status"])
-    for r in _budget_rows(rng, shown, tracked):
+    for r in _budget_rows(shown, tracked):
         b = r["budget"]
         w.writerow([
             r["name"], rng["label"],
@@ -2435,7 +2451,11 @@ def api_budget_status(request: Request, project: str = "", date: str = ""):
     date = date or dt.date.today().isoformat()
     if not _parse_date(date) or len(date) != 10:
         return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
-    if not project or project not in _member_project_ids(user.get("id")):
+    # `member_of=None` means "don't filter" to list_projects, so an identity
+    # with no Notion user id would match every project. Check it explicitly
+    # rather than letting a falsy id widen the membership test into a wildcard.
+    uid = user.get("id")
+    if not uid or not project or project not in _member_project_ids(uid):
         return JSONResponse({"ok": True, "budget": False})
     b = ops.budget_for(project)
     if not b:
