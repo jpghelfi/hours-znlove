@@ -18,19 +18,28 @@ unrelated importer and stays untouched.
 
 ## 1. What Harvest actually does (the reference design)
 
-Taken from Harvest's real Project payload, so these are the exact field names and
-semantics being copied — not a paraphrase:
+Taken from Harvest's real Project payload and their help docs, so these are the exact
+field names, UI labels and semantics being copied — not a paraphrase:
 
-| Harvest field | Meaning |
-| --- | --- |
-| `budget` | The number (hours, or money when the budget is cost-based) |
-| `budget_by` | `project` · `project_cost` · `task` · `task_fees` · `person` · `none` |
-| `budget_is_monthly` | **The budget resets every calendar month** rather than running for the project's life |
-| `notify_when_over_budget` | Per-project switch for the alert |
-| `over_budget_notification_percentage` | Threshold, **default 80** — alert at 80 % of budget |
-| `over_budget_notification_date` | Last date an alert fired — **the dedup stamp**, so it doesn't nag daily |
-| `show_budget_to_all` | Whether non-admins can see the budget |
-| `cost_budget`, `cost_budget_include_expenses`, `fee`, `is_fixed_fee`, `hourly_rate` | The money side |
+| Harvest field | UI label | Meaning |
+| --- | --- | --- |
+| `budget` | — | The number (hours, or money when the budget is cost-based) |
+| `budget_by` | the **Budget** dropdown | `project` = *"Total project hours"* · `task` = *"Hours per task"* · `person` = *"Hours per person"* · `project_cost` = *"Total project fees"* · `task_fees` = *"Fees per task"* · `none` = *"No budget"* |
+| `budget_is_monthly` | *"Budget resets every month"* | **The budget resets on the 1st of each calendar month** rather than running for the project's life |
+| `notify_when_over_budget` + `over_budget_notification_percentage` | *"Send email alerts if project exceeds X% of budget"* | **One** threshold per project, email only. Default 80 % |
+| `over_budget_notification_date` | — | Read-only; last date an alert fired — **the dedup stamp**, so it doesn't nag daily |
+| `show_budget_to_all` | *"Show project report to everyone on the project"* | Whether non-admins can see the budget |
+| `cost_budget`, `cost_budget_include_expenses`, `fee`, `is_fixed_fee`, `hourly_rate` | — | The money side |
+
+Per-person and per-task budget *amounts* don't live on the project at all — they're a
+`budget` field on each User Assignment / Task Assignment sub-resource. And Harvest ships
+a purpose-built read for the dashboard: `GET /v2/reports/project_budget` returns
+`budget`, **`budget_spent`, `budget_remaining`**, `budget_is_monthly`, `budget_by` per
+project — which is exactly the column set §4 lands on, arrived at independently.
+
+**One footgun worth copying the fix for:** in Harvest a per-person/per-task budget left
+**blank** doesn't count against the budget, but one entered as **0** is instantly over
+budget. Same trap exists here, which is why §2 insists empty ≠ 0.
 
 Two things worth taking from that list, and one worth deliberately *not* taking:
 
@@ -48,17 +57,33 @@ Two things worth taking from that list, and one worth deliberately *not* taking:
 
 ### The gap this plan closes
 
-**Harvest has no hard stop.** There is no field on the Project object for "prevent
-tracking past the budget", and there is no such setting in its UI — `notify_when_over_budget`
-is the entire enforcement story. Harvest warns; it never refuses. That is the most
-common complaint about the feature, and it's precisely what JP asked for on top:
+**Harvest has no hard stop, and no warning at entry time either.** There is no field on
+the Project object for "prevent tracking past the budget" and no such setting in its UI.
+Harvest's own FAQ says it outright:
+
+> *"No, Harvest doesn't have a way to automatically prevent your teammates from tracking
+> time to a project that's met its budget."*
+
+`notify_when_over_budget` is the entire enforcement story: an email the **morning after**
+the threshold is crossed, repeating weekly while over (monthly for monthly budgets).
+Nothing appears while someone is actually typing hours. Harvest's documented workarounds
+are all blunt — **archive the project** (blocks new time, stays reportable), tell the team
+to switch to non-billable tasks, or turn on *"Show project report to everyone"* and hope
+people self-monitor. Reviewers consistently describe Harvest budgets as visibility-only.
+
+That is precisely the gap JP asked to close:
 
 > *"proejct maye have dif logics.. that dont allow more hours tracked.. or allow until
 > certin limie (eg 10%) or no limit"*
 
-So the policy field below is **the one thing this build has that Harvest doesn't**, and
-it's the part that needs the most care — see §5 on why enforcement here can only ever
-be advisory.
+So **two** pieces of this build have no prior art in Harvest to copy: the blocking policy
+(§5) and the live meter on the log-hours form (§5, end). The meter is the cheaper of the
+two and probably the more valuable — Harvest's whole failure mode is that the feedback
+arrives a day late, by email, to someone who isn't the person logging the hours.
+
+Note also: this app's `Active` checkbox on a project is already the rough equivalent of
+Harvest's archive workaround. It's the only "stop logging to this" lever that exists
+today, and it's all-or-nothing.
 
 ---
 
@@ -125,13 +150,42 @@ budget property read must use `props.get("Monthly budget", {}).get("number")`-st
 access that degrades to "no budget" rather than raising, and the control centre should
 say *"budget column missing — was it renamed?"* rather than 500.
 
+### The known flaw: changing a budget rewrites history
+
+One number per project means **raising a budget from 40 h to 60 h in September makes every
+past month recompute at 60 h**. August, which really did blow a 40 h budget, silently
+reads as comfortable — and since §4 sorts over-budget projects to the top, it quietly
+disappears from the list.
+
+This is inherited from Harvest, which has the identical problem and admits it:
+
+> *"There's currently no way to change a monthly recurring budget without affecting all
+> historical data."*
+
+Harvest's fix is to **duplicate the project** whenever the budget changes, which is worse
+than the disease — it fragments every report. Don't copy that.
+
+Accept it for phases 0–1 and be honest on screen: the control centre is *"where are we
+this month"*, and the current month is always computed against the current budget, which
+is correct. Past months are advisory. Two cheap mitigations if it bites:
+
+- **Show it, don't hide it.** When viewing a past month, label the budget column
+  *"current budget"* rather than implying it's what was in force at the time.
+- **Snapshot on invoice.** `save_invoice` already stores `hours_tracked` for a month;
+  storing the budget alongside it costs one property and gives a real historical record
+  at exactly the moment someone cared enough to bill it.
+
+The full fix is the per-month override db below, and this is the reason to build it —
+not the "March is 60 h" scenario.
+
 ### Deliberately deferred
 
-- **Per-month overrides** (March is 60 h, every other month is 40 h). One number applies
-  to every month, exactly as Harvest's `budget_is_monthly` does. If this is ever needed,
-  it's a `Budgets` db keyed on (project, month) copying the Invoices upsert pattern
-  (`src/setup_invoices_db.py`, `save_invoice` at `notion_ops.py:1476`), read as an
-  override layered over the project default — the same shape as invoice `Adjustments`.
+- **Per-month overrides** (March is 60 h, every other month is 40 h — and, per the flaw
+  above, a durable record of what each past month's budget actually was). One number
+  applies to every month for now, exactly as Harvest's `budget_is_monthly` does. When
+  needed, it's a `Budgets` db keyed on (project, month) copying the Invoices upsert
+  pattern (`src/setup_invoices_db.py`, `save_invoice` at `notion_ops.py:1476`), read as
+  an override layered over the project default — the same shape as invoice `Adjustments`.
 - **Total (non-monthly) project budgets** — Harvest's `budget_is_monthly = false`. A
   `Budget period` select (`Monthly` / `Whole project`) added later; the control centre's
   math is the same, only the date window changes.
@@ -146,6 +200,12 @@ say *"budget column missing — was it renamed?"* rather than 500.
 
 A project's **month usage** = the sum of `Hours` on Time Entries whose `Project` relation
 is that project and whose **`Date` falls in the calendar month**.
+
+**Every hour counts.** Harvest's "Total project hours" counts billable *and* non-billable
+time, with a billable-only mode that's a global preference rather than per-project. This
+app has no billable flag on an entry at all, so the question doesn't arise — but it's
+worth knowing that's a deliberate match rather than an oversight, and that adding a
+billable flag later would immediately raise "does it count against the budget?".
 
 > Keyed on the entry's `Date`, not on when it was created. A backfill logged in September
 > against an August date spends **August's** budget. This is the only reading consistent
@@ -231,7 +291,12 @@ Render instance.
 
 - **The bar already exists.** `cap` / `cap-full` / `cap-over` in `schedule.html:127`
   and `cap_pct` (`app.py:407`) are the tracked-vs-target bar from the week page — reuse
-  the classes rather than inventing a second visual language for the same idea.
+  the classes rather than inventing a second visual language for the same idea. This also
+  happens to match Harvest's own treatment (blue burn bar, red once over), so the page
+  will read as familiar to anyone who's used it.
+- **Columns**: `budget` / `budget_spent` / `budget_remaining` is exactly what Harvest's
+  own `GET /v2/reports/project_budget` returns for its dashboard — worth noting only
+  because it's independent confirmation that this is the right column set, not a guess.
 - **Status**, in precedence order: `Over` (≥ 100 %) → `Blocked` (at the cap, so no more
   can be logged) → `Warning` (≥ warn %) → `On track` → `No budget`.
 - **Sort**: over-budget first, then by percentage descending, then name. The point of the
@@ -328,6 +393,13 @@ piece to build first once the data exists.
 
 Harvest's model, kept: a per-project percentage threshold, and a **date stamp of the last
 alert** so it fires once, not on every save.
+
+Two of Harvest's choices deliberately *not* kept. Its alert lands the **morning after**
+the crossing (~3am) and then repeats weekly while over — a batch job, because Harvest has
+one. This plan fires **at the write that crosses**, which is both more useful and cheaper
+here, since there's no scheduler to build. And Harvest's recipients are **derived from
+permissions** rather than configured, which is why nobody can quite predict who gets one;
+a plain configured list is better at this size.
 
 - `Warn at %` on the project (default `BUDGET_WARN_PCT`, **95** — Harvest defaults to 80;
   95 fits a monthly allowance better, and it's per-project anyway).
