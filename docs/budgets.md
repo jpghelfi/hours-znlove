@@ -84,6 +84,16 @@ protect a number.
 The cap refuses the hour that *crosses* the limit, so filling a 40 h budget to exactly
 40 h is allowed.
 
+**The check and the write happen under `_write_lock` together.** Checking outside it is a
+time-of-check/time-of-use race: two people submitting 1 h each against a project sitting
+at 39 h of a 40 h cap would both read 39, both compute 40, both pass, and the month would
+end at 41. `set_cell` always serialized; `create_entry` does now too. Because the lock is
+**not reentrant** and `set_cell` calls `create_entry` from inside its own lock,
+`create_entry` only ever takes the lock on the `enforce=True` path — and `set_cell` always
+passes `enforce=False`, having already run the check itself against the delta. Both halves
+are tested, including one that holds the lock and calls the unenforced path to prove the
+weekly grid can't deadlock.
+
 **Three write paths can't be policed**: `src/log_hours.py`, `src/sync_harvest.py`, and
 Notion itself (it's the database — anyone with access can type a row in). So a hard cap
 binds *this app's UI for non-admins*, not the data. **`/budgets` is the real control; the
@@ -197,11 +207,18 @@ boots.
 
 ## Tests
 
-`./.venv/bin/python tests/test_budgets.py` — 36 checks, no Notion calls, no pytest
+`./.venv/bin/python tests/test_budgets.py` — 40 checks, no Notion calls, no pytest
 dependency. Covers the parsing (including a renamed column and the empty-vs-0 trap), the
 month bounds, the cap (crossing, overrun, reductions, a 0 h budget, floating-point
 exactness), `set_cell`'s delta arithmetic including folded duplicates, the six statuses,
-the two-block sort, and the alert stamp's whole state machine.
+the two-block sort, the alert stamp's whole state machine, and two threaded tests for the
+lock — one that fails if the check leaves the lock, one that proves the unenforced path
+can't deadlock the weekly grid.
+
+A warning learned the hard way: the race test's first version passed with *or without* the
+fix, because its fake month-total read re-read a counter after its sleep and so quietly saw
+the other thread's write. A stale read has to capture the value **before** the delay. If
+you touch that test, re-verify it by reverting the lock and watching it fail.
 
 ## Not built
 
