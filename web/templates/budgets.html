@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Budgets · Hours Tracker{% endblock %}
+{% block nav_budgets %}active{% endblock %}
+{% block content %}
+{% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
+
+<div class="week-head">
+  <div>
+    <h1>Budgets</h1>
+    <div class="subtle">
+      {{ rng.label }} ·
+      {% if n_budgeted %}
+        <strong>{{ '%g'|format(total_tracked) }}</strong> h tracked against
+        {{ '%g'|format(total_budget) }} h budgeted
+        {%- if n_trouble %} · <span class="over">{{ n_trouble }} need{{ '' if n_trouble == 1 else 's' }} attention</span>{% endif %}
+      {% else %}
+        no budgets set yet — type one into any row below
+      {% endif %}
+    </div>
+  </div>
+  <div class="weeknav">
+    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}">←</a>
+    <a class="btn" href="/budgets?start={{ rng.now }}{{ qsp }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}">→</a>
+  </div>
+</div>
+
+<form class="range-form" method="get" action="/budgets">
+  <label class="period-pick">Month
+    {# navStart() by hand, as on /project: form.submit() fires no submit event,
+       so base.html's progress bar would never see this #}
+    <input type="month" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
+  </label>
+  <span class="seg-label filters-label">Projects</span>
+  {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
+  <a class="btn" href="/budgets.csv?start={{ rng.value }}{{ qsp }}">⬇ CSV</a>
+</form>
+
+{# The served percentages are computed from the budgets as they were when the
+   page rendered, so a save makes the totals in the header stale. Same bar
+   /project uses after an inline hours edit. #}
+<div class="stalebar" id="stalebar" hidden role="status">
+  Budgets changed · <a href="" onclick="location.reload();return false;">Refresh</a> to update the totals
+</div>
+
+<div class="card wide">
+  <table class="grid flat" id="btable">
+    <thead>
+      <tr>
+        <th class="left">Project</th>
+        <th class="bcol">Budget<span class="th-sub">h / month</span></th>
+        <th>Tracked</th>
+        <th>Left</th>
+        <th class="left usedcol">Used</th>
+        <th class="left">When it runs out</th>
+        <th class="bcol">Warn at<span class="th-sub">%</span></th>
+        <th class="left">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr data-project="{{ r.id }}" class="brow {{ 'unbudgeted' if not r.budget }}">
+        <td class="left">
+          {# straight into the existing drill-down, so "why is this over?" is
+             one click and no new screen #}
+          <a href="/project?project={{ r.id }}&period=monthly&start={{ rng.value }}">{{ r.name }}</a>
+        </td>
+        <td class="bcol">
+          {# every row is already the editor: no "＋ Add budget" to click into
+             first, because the first pass over this page is ~37 numbers typed
+             one after another #}
+          <input class="bnum budget" type="number" min="0" step="0.5" inputmode="decimal"
+                 value="{{ '%g'|format(r.budget.hours) if r.budget else '' }}"
+                 placeholder="—" aria-label="Monthly budget for {{ r.name }}">
+        </td>
+        <td class="tracked">{{ '%g'|format(r.tracked) }}</td>
+        <td class="hnum {{ 'over' if r.budget and r.remaining < 0 }}">
+          {%- if r.budget %}{{ '%g'|format(r.remaining) }}{% else %}<span class="subtle">—</span>{% endif %}
+        </td>
+        <td class="usedcol">
+          {%- if r.budget %}
+          <div class="cap {{ 'cap-over' if r.status in ('over','over_cap') else ('cap-full' if r.status in ('warn','blocked') else 'cap-ok') }}">
+            <i style="width: {{ '%.1f'|format(r.bar) }}%"></i>
+          </div>
+          <div class="cap-num">{{ '%.0f'|format(r.pct) }}%</div>
+          {%- else %}<span class="subtle">—</span>{% endif %}
+        </td>
+        <td class="left nowrap">
+          <select class="bpolicy" aria-label="Budget policy for {{ r.name }}"
+                  {{ 'disabled' if not r.budget }}>
+            {% for p in policies %}
+            <option value="{{ p }}" {{ 'selected' if r.budget and r.budget.policy == p }}>{{ p }}</option>
+            {% endfor %}
+          </select>
+          {# only meaningful when the policy blocks; blank means "stop exactly
+             at the budget" #}
+          <span class="overrun {{ 'hidden' if not (r.budget and r.budget.policy == policy_block) }}">
+            +<input class="bnum bsm boverrun" type="number" min="0" step="1" inputmode="numeric"
+                    value="{{ '%g'|format(r.budget.overrun_pct) if r.budget and r.budget.overrun_pct else '' }}"
+                    placeholder="0" aria-label="Allowed overrun % for {{ r.name }}">%
+          </span>
+        </td>
+        <td class="bcol">
+          <input class="bnum bsm bwarn" type="number" min="1" max="1000" step="1" inputmode="numeric"
+                 value="{{ '%g'|format(r.budget.warn_pct) if r.budget and r.budget.warn_pct_set else '' }}"
+                 placeholder="{{ '%g'|format(warn_default) }}" {{ 'disabled' if not r.budget }}
+                 aria-label="Warn at % for {{ r.name }}">
+        </td>
+        <td class="left"><span class="chip {{ r.status_chip }}">{{ r.status_label }}</span></td>
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="8">
+        No projects here. {% if sel_ids %}<a href="/budgets?start={{ rng.value }}">Show every project</a>.{% endif %}
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card wide">
+  <div class="subtle small">
+    <p><strong>A budget is per calendar month</strong> and resets on the 1st — nothing carries
+    over in either direction. Leave the field empty for a project that isn't budgeted;
+    <strong>0 is not the same as empty</strong>, it means no hours are allowed at all.</p>
+    <p><strong>Warn only</strong> tracks and warns but never refuses.
+    <strong>{{ policy_block }}</strong> refuses entries past the budget (plus the overrun, if
+    you set one) — for everyone except admins, who are never blocked. It can't police the
+    CLI scripts or edits made directly in Notion either, so this page, not the cap, is what
+    actually tells you where things stand.</p>
+    <p>{% if alerts_on %}Threshold emails are <strong>on</strong>: each project sends once when it
+    passes its warning percentage and once when it passes 100%, per month.
+    {% else %}Threshold emails are off. Set <code>BUDGET_ALERTS_ENABLED=1</code> to turn them on.{% endif %}</p>
+  </div>
+</div>
+
+<script>
+const stale = () => { document.getElementById('stalebar').hidden = false; };
+
+// Save one field at a time, on blur — never a page-level Save button. Typing
+// ~37 budgets in one sitting shouldn't risk losing 36 of them to one bad
+// keystroke, and there's no draft state worth keeping.
+async function saveBudget(tr, patch, el) {
+  const body = Object.assign({ project_id: tr.dataset.project }, patch);
+  el && el.classList.remove('bad');
+  try {
+    const res = await fetch('/api/budget', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'could not save');
+    applyBudget(tr, data.budget);
+    stale();
+    return true;
+  } catch (err) {
+    if (el) { el.classList.add('bad'); el.title = err.message; }
+    return false;
+  }
+}
+
+// Reflect what came back, so a row can't claim a budget it doesn't have —
+// clearing the number has to disable the controls that only make sense with one.
+function applyBudget(tr, b) {
+  const has = !!b;
+  tr.classList.toggle('unbudgeted', !has);
+  tr.querySelector('.bpolicy').disabled = !has;
+  tr.querySelector('.bwarn').disabled = !has;
+  if (has) {
+    tr.querySelector('.bpolicy').value = b.policy;
+    tr.querySelector('.overrun').classList.toggle(
+      'hidden', b.policy !== {{ policy_block|tojson }});
+    // an unset threshold shows as blank against its placeholder, not as the
+    // resolved default — otherwise clearing it looks like it didn't take
+    tr.querySelector('.bwarn').value = b.warn_pct_set ? b.warn_pct : '';
+    tr.querySelector('.boverrun').value = b.overrun_pct || '';
+  } else {
+    tr.querySelector('.overrun').classList.add('hidden');
+    tr.querySelector('.boverrun').value = '';
+    tr.querySelector('.bwarn').value = '';
+  }
+}
+
+document.querySelectorAll('tr.brow').forEach(tr => {
+  const budget = tr.querySelector('.budget');
+  const policy = tr.querySelector('.bpolicy');
+  const overrun = tr.querySelector('.boverrun');
+  const warn = tr.querySelector('.bwarn');
+  if (!budget) return;
+
+  let last = budget.value;
+  budget.addEventListener('blur', () => {
+    if (budget.value === last) return;   // nothing typed: don't write
+    const raw = budget.value.trim();
+    last = budget.value;
+    // an emptied field clears the budget — the only off switch, and it has to
+    // be distinguishable from "didn't touch it"
+    saveBudget(tr, raw === '' ? { clear: true } : { hours: parseFloat(raw) }, budget);
+  });
+  // Enter commits and drops to the next row's budget field: typing a column of
+  // numbers should never involve the mouse.
+  budget.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const all = [...document.querySelectorAll('tr.brow .budget')];
+    const next = all[all.indexOf(budget) + 1];
+    next ? next.focus() : budget.blur();
+  });
+
+  policy.addEventListener('change', () => {
+    tr.querySelector('.overrun').classList.toggle(
+      'hidden', policy.value !== {{ policy_block|tojson }});
+    saveBudget(tr, { policy: policy.value }, policy);
+  });
+
+  let lastOver = overrun.value;
+  overrun.addEventListener('blur', () => {
+    if (overrun.value === lastOver) return;
+    lastOver = overrun.value;
+    saveBudget(tr, { overrun_pct: parseFloat(overrun.value || '0') }, overrun);
+  });
+
+  let lastWarn = warn.value;
+  warn.addEventListener('blur', () => {
+    if (warn.value === lastWarn) return;
+    const raw = warn.value.trim();
+    lastWarn = warn.value;
+    // blanking it really does clear the stored value — showing an empty field
+    // while Notion kept the old number would be a lie the next reload exposes
+    saveBudget(tr, raw === '' ? { clear_warn: true } : { warn_pct: parseFloat(raw) }, warn);
+  });
+});
+</script>
+{% endblock %}

@@ -61,6 +61,21 @@ services:
         sync: false
       - key: REPORT_TO
         value: zarco@znlove.xyz,angie@znlove.xyz
+      # Budget threshold emails, on their own switch for the same reason
+      # REPORT_EMAIL_ENABLED exists: the GOOGLE_* values above also power the
+      # Sheets export, and connecting Google must not start emailing people
+      # about budgets uninvited. The rest of the feature — /budgets, the cap,
+      # the meter on the log form — works with this off.
+      - key: BUDGET_ALERTS_ENABLED
+        value: "0"
+      # Falls back to REPORT_TO when unset.
+      - key: BUDGET_ALERT_TO
+        sync: false
+      # Percentage of a project's monthly budget at which it warns, when the
+      # project's own "Warn at %" is blank. Harvest defaults to 80; 95 fits a
+      # monthly allowance better.
+      - key: BUDGET_WARN_PCT
+        value: "95"
       # The one board "＋ New ticket" writes to (a data source id). Creating is
       # the only ticket feature that *writes* to Notion, so it targets exactly
       # one board named here — never one the browser picks — and the button
