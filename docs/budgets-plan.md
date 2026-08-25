@@ -227,10 +227,10 @@ projected = month_total - hours_being_replaced + hours_submitted
 - `POST /entry` — a new row, so `hours_being_replaced = 0`.
 - `POST /api/cell` — the existing (person, project, date) cell's hours, which `set_cell`
   already looks up before writing.
-- `POST /api/entry/hours` — the entry's current hours. `set_entry_hours` (`:746`)
-  already retrieves the page (and its `Project` relation and `Date`) at `:862` for the
-  parent check, so the project, the month and the old value are all in hand with **no
-  extra read**.
+- `POST /api/entry/hours` — not enforced at all, since it's admin-only (§5). Worth noting
+  anyway because it's the one place the data was already free: `set_entry_hours` (`:850`)
+  retrieves the page — with its `Project` relation and `Date` — at `:862` for the parent
+  check, so if this ever did need a budget check it would cost **no extra read**.
 
 ### Trap 2 — never block a write that reduces the total
 
@@ -241,6 +241,10 @@ permanently stuck.
 **Rule: if `projected <= month_total`, allow it unconditionally.** A hard cap only ever
 refuses writes that *increase* the month's hours. This applies to zeroing an entry
 (which archives it) too.
+
+The admin exemption (§5) covers the worst version of this — an admin can always unstick a
+project — but the rule still has to hold for everyone else, or a person who fat-fingers
+`50` instead of `5` into their own grid cell can't undo it themselves.
 
 ### Where the limit sits
 
@@ -297,8 +301,10 @@ Render instance.
 - **Columns**: `budget` / `budget_spent` / `budget_remaining` is exactly what Harvest's
   own `GET /v2/reports/project_budget` returns for its dashboard — worth noting only
   because it's independent confirmation that this is the right column set, not a guess.
-- **Status**, in precedence order: `Over` (≥ 100 %) → `Blocked` (at the cap, so no more
-  can be logged) → `Warning` (≥ warn %) → `On track` → `No budget`.
+- **Status**, in precedence order: `Over cap` (past the cap — only reachable by an admin
+  write or an unpoliced path, so it's the row most worth looking at) → `Over` (≥ 100 %)
+  → `Blocked` (sitting *at* the cap, so nobody but an admin can add to it) → `Warning`
+  (≥ warn %) → `On track` → `No budget`.
 - **Sort**: over-budget first, then by percentage descending, then name. The point of the
   page is the projects in trouble; they go at the top without being filtered for.
 - **Projects with no budget still appear**, greyed, showing tracked hours. They're how
@@ -335,24 +341,60 @@ what gets pasted into a client conversation.
 
 ## 5. Enforcement — and being honest about what it can't do
 
-The three web chokepoints where hours are written:
+### Admins are never blocked — decided
 
-| Route | Handler | ops call |
-| --- | --- | --- |
-| `POST /entry` (log-hours form, incl. the timer's stop) | `submit_entry` `app.py:227` | `ops.create_entry` `:352` |
-| `POST /api/cell` (weekly grid) | `api_cell` `app.py:2135` | `ops.set_cell` `:783` |
-| `POST /api/entry/hours` (admin inline fix) | `api_entry_hours` `app.py:1917` | `ops.set_entry_hours` `:746` |
+**A cap never refuses an admin.** They can always track, on any project, past any limit.
+
+That's a bigger simplification than it sounds, because it removes a whole chokepoint:
+
+| Route | Handler | ops call | Enforced? |
+| --- | --- | --- | --- |
+| `POST /entry` (log-hours form, incl. the timer's stop) | `submit_entry` `app.py:227` | `ops.create_entry` `:352` | **yes**, for non-admins |
+| `POST /api/cell` (weekly grid) | `api_cell` `app.py:2135` | `ops.set_cell` `:887` | **yes**, for non-admins |
+| `POST /api/entry/hours` (admin inline fix) | `api_entry_hours` `app.py:1917` | `ops.set_entry_hours` `:850` | **no — already admin-only** |
+
+So phase 3 touches **two** write paths, not three. `/api/entry/hours` is gated on
+`auth.is_admin` before it ever reaches the ops layer, which means the "correcting an
+over-budget project is now impossible" trap can't even arise there — the admin fixing a
+number is exempt by construction.
+
+It also makes the CLIs consistent rather than a hole: `src/log_hours.py` and
+`src/sync_harvest.py` are run by an admin from a terminal, so their bypassing the cap is
+now the *correct* behaviour, not a gap to apologise for. Drop the `--over-budget` flag
+idea; there's nothing to opt out of.
+
+The trade this accepts: a budget can be blown by the person most able to change the
+budget, without the friction that would make them think about it. The answer is
+visibility, not friction — see "an admin overrun must be loud" below.
 
 The timer is client-only (`form.html:45`, `localStorage`) and submits through
 `POST /entry` — no separate chokepoint.
 
-**Put the check inside the three `notion_ops` functions, not in the routes.** They're the
-functions that already know the (project, date, old hours) triple, they already hold
-`_write_lock`, and a check in the route can't see the value `set_cell` is about to
-replace. A `BudgetExceeded` exception carrying `{project, month, budget, limit, tracked,
-attempted}` lets each route render it in its own idiom: an inline form error on `/entry`,
-a rejected cell that snaps back to its old value on `/api/cell`, a 409 with a message on
-`/api/entry/hours`.
+**Put the check inside the `notion_ops` functions, not in the routes.** They're the
+functions that already know the (project, date, old hours) triple, and they already hold
+`_write_lock`; a check in the route can't see the value `set_cell` is about to replace.
+Pass the exemption *in* — `create_entry(..., enforce=not is_admin)` — rather than having
+the ops layer call `auth.is_admin` itself, which would make `notion_ops` depend on the
+auth module for the first time and make the CLIs (which have no user at all) awkward to
+reason about. Default `enforce=False` so every existing caller, CLIs included, keeps
+working unchanged and only the two routes opt in.
+
+A `BudgetExceeded` exception carrying `{project, month, budget, limit, tracked, attempted}`
+lets each route render it in its own idiom: an inline form error on `/entry`, and a
+rejected cell that snaps back to its old value on `/api/cell`.
+
+### An admin overrun must be loud
+
+Since admins pass through silently, the control centre has to be the thing that notices.
+Two small requirements fall out of this decision:
+
+- The **notification in §6 fires regardless of who wrote the hours.** An admin crossing
+  95 % still trips the warn stamp — the alert is about the project, not about policing a
+  person.
+- A project **over its own cap** gets its own status on `/budgets` (`Over cap`, distinct
+  from `Over`), because that state is now reachable only by an admin write or by one of
+  the unpoliced paths below. It means "someone deliberately went past a limit that was
+  set" and is exactly the row worth looking at.
 
 ### Three write paths that cannot be policed
 
@@ -362,17 +404,18 @@ a rejected cell that snaps back to its old value on `/api/cell`, a 409 with a me
 3. **Notion itself.** Notion is the database; anyone with access can type a row into the
    Time Entries table or use a Notion form.
 
-So a "hard cap" is a cap on *this app's UI*, not on the data. That's not a flaw to fix,
-it's the architecture — but it must be said plainly in the UI, or someone will trust it
-as an accounting control. Two mitigations, both cheap:
+So a "hard cap" is a cap on *this app's UI for non-admins*, not on the data. That's not a
+flaw to fix, it's the architecture — but it must be said plainly in the UI, or someone
+will trust it as an accounting control.
 
-- Route the two CLIs through `ops.set_cell` / `ops.create_entry` so they inherit the
-  check, with an explicit `--over-budget` flag to bypass it. (`sync_harvest` should
-  probably always bypass and *report* overruns instead — refusing to import time that
-  was genuinely worked is the wrong answer.)
-- The control centre is the backstop: it reads the truth from Notion, so a project that
-  went over by a route the app can't see still shows up red. **The dashboard is the real
-  control, the cap is a convenience.**
+Given admins are exempt anyway, the CLIs need no special handling: both are admin tools,
+so leaving them on the `enforce=False` default is the consistent answer, not a compromise.
+`sync_harvest` in particular must never refuse — declining to import hours somebody
+genuinely worked would corrupt the record to protect a number.
+
+That leaves **the control centre as the backstop**. It reads the truth from Notion, so
+hours that arrived by a route the app can't see still show up red. **The dashboard is the
+real control; the cap is a nudge for the people not in a position to change the budget.**
 
 ### The warning nobody reads is the one at the moment of typing
 
@@ -443,7 +486,7 @@ Each phase is independently shippable and leaves the app working.
 | **0 — Schema** | `ensure_budget_properties()`; `list_projects` returns `budget`; TTL cache. Nothing enforced, nothing shown. Budgets can be typed into Notion by hand and read back. | `notion_ops.py`, `app.py` `_startup` |
 | **1 — Control centre** | `GET /budgets` + `/budgets.csv` + nav entry + `POST /api/budget` inline editing. **The whole "where are we vs budget" ask, delivered.** | new `budgets.html`, `app.py`, `notion_ops.py` |
 | **2 — The meter** | `GET /api/budget/status` + the live line on the log-hours form. Warning at the moment of typing. | `form.html`, `app.py` |
-| **3 — Enforcement** | `BudgetExceeded` in the three ops functions; per-route error rendering; the reduce-is-always-allowed rule; CLI `--over-budget` flag. | `notion_ops.py`, `app.py`, `week.html`, `project.html`, `src/log_hours.py` |
+| **3 — Enforcement** | `BudgetExceeded` in `create_entry` + `set_cell` behind an `enforce=` flag; `/entry` and `/api/cell` pass `enforce=not is_admin`; the reduce-is-always-allowed rule; the `Over cap` status. No CLI changes. | `notion_ops.py`, `app.py`, `form.html`, `week.html` |
 | **4 — Alerts** | `mailer.send_plain`, `Budget notified` stamp, `BUDGET_ALERTS_ENABLED`. | `mailer.py`, `notion_ops.py` |
 | **5 — Later, if asked** | Per-month overrides db · whole-project (non-monthly) budgets · `show_budget_to_all` for non-admins. | — |
 
@@ -464,15 +507,18 @@ phase 1 for a couple of weeks and the numbers have been sanity-checked against r
 No new database, so **no `databases.json` / Render id wiring** — the one piece of setup
 work this feature doesn't need.
 
-## 9. Open questions
+## 9. Decisions taken
 
-1. **Should a hard cap stop admins too?** The plan says yes — the admin's escape hatch is
-   raising the budget on `/budgets`, which leaves a trace, rather than a silent override
-   that doesn't. Worth confirming, since it's the decision most likely to annoy someone
-   at 6 pm on a Friday.
-2. **Is the budget per calendar month, or per invoicing month?** They're the same today.
+- **Admins are never blocked** (JP, 2026-08-24). A cap applies to non-admins only; admins
+  can always track, on any project, past any limit. See §5 — this drops enforcement from
+  three write paths to two, makes the CLIs consistent by default, and shifts the burden
+  onto the control centre to make an admin overrun visible after the fact.
+
+## 10. Open questions
+
+1. **Is the budget per calendar month, or per invoicing month?** They're the same today.
    If a client's month ever runs 15th–14th, this needs to know.
-3. **Do the ~37 active projects have known budgets to seed?** Only one Notion project
+2. **Do the ~37 active projects have known budgets to seed?** Only one Notion project
    name carries an hours suffix (`Vital Signals - OSS (80h)`) — the rest of the
    suffixes live on the Harvest-side names (`SaltWorks - OSS (40h)`,
    `Streamside OSS - 60h (2026)`, per `docs/harvest-sync.md`). So budgets will be typed
