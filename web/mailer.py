@@ -208,9 +208,15 @@ def send_plain(to: list[str], subject: str, body: str) -> dict:
     """
     via = budget_transport()
     if not via:
-        raise NotConfigured(
-            ", ".join(([] if budget_alerts_enabled() else ["BUDGET_ALERTS_ENABLED=1"])
-                      + gmail_api.missing_vars()))
+        # Name the switch first, then the credentials — the Gmail ones, since
+        # that's the path that works on Render (its free tier blocks the SMTP
+        # ports). If SMTP creds are already present, the switch is the only
+        # thing missing and listing Gmail vars would send someone the wrong way.
+        need = [] if budget_alerts_enabled() else ["BUDGET_ALERTS_ENABLED=1"]
+        has_smtp = os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD")
+        if not (gmail_api.configured() or has_smtp):
+            need += gmail_api.missing_vars()
+        raise NotConfigured(", ".join(need))
     from_addr = sender()
     msg = EmailMessage()
     if from_addr:

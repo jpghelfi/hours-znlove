@@ -2401,6 +2401,9 @@ class BudgetEdit(BaseModel):
     policy: Optional[str] = None
     overrun_pct: Optional[float] = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
     warn_pct: Optional[float] = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
+    # blanking the field falls back to BUDGET_WARN_PCT; `gt=0` means the number
+    # itself can't carry that signal, so it needs its own flag like `clear`
+    clear_warn: bool = False
 
 
 @app.post("/api/budget")
@@ -2421,7 +2424,9 @@ def api_budget(request: Request, b: BudgetEdit):
         saved = ops.set_budget(
             b.project_id,
             hours=(None if b.clear else (b.hours if b.hours is not None else ops._UNSET)),
-            policy=b.policy, overrun_pct=b.overrun_pct, warn_pct=b.warn_pct,
+            policy=b.policy, overrun_pct=b.overrun_pct,
+            warn_pct=(None if b.clear_warn
+                      else (b.warn_pct if b.warn_pct is not None else ops._UNSET)),
         )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

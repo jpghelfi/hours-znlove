@@ -452,10 +452,96 @@ def _():
         assert ops.budget_alert("p", "2026-08-24") is None
 
 
-@check("a 0 h budget doesn't divide by zero")
+@check("a 0 h budget alerts instead of dividing by zero")
 def _():
-    with fake_alert(budget(hours=0), 5):
+    # Regression: guarding `not b["hours"]` skipped the whole function, so a
+    # 0-budget project could never alert. Non-admins are refused outright
+    # there, so the only hours that land on one came from an admin going past
+    # the cap — precisely the case worth an email.
+    with fake_alert(budget(hours=0), 5) as f:
+        a = ops.budget_alert("p", "2026-08-24")
+        assert a and a["level"] == "over", a
+        assert f.written == ["2026-08:over"]
+
+
+@check("a 0 h budget with nothing logged stays quiet")
+def _():
+    with fake_alert(budget(hours=0), 0) as f:
         assert ops.budget_alert("p", "2026-08-24") is None
+        assert f.written == []
+
+
+# ---- concurrency -------------------------------------------------------
+
+@check("two concurrent /entry saves can't both slip past the same cap")
+def _():
+    # Time-of-check/time-of-use: with the check outside the lock, two people
+    # submitting 1 h each against a project at 39 h of a 40 h cap would both
+    # read 39, both compute 40, both pass, and the month would end at 41.
+    # create_entry holds _write_lock across check-and-write to stop that.
+    import threading
+    import time as _t
+
+    state = {"tracked": 39.0}
+    ok, refused = [], []
+
+    def slow_month_hours(pid, date):
+        # Capture *before* the delay, then return the stale value: that is what
+        # a real Notion read does. Re-reading after the sleep would quietly see
+        # the other thread's write and the test could never fail.
+        seen = state["tracked"]
+        _t.sleep(0.05)              # widen the window the race needs
+        return seen
+
+    class _N:
+        class pages:
+            @staticmethod
+            def create(*a, **k):
+                state["tracked"] += 1.0
+
+    old = (ops.budget_for, ops.project_month_hours, ops._notion,
+           ops._project_name_map)
+    ops.budget_for = lambda pid: budget(hours=40, policy=ops.POLICY_BLOCK)
+    ops.project_month_hours = slow_month_hours
+    ops._notion = _N
+    ops._project_name_map = lambda: {"p": "Test Project"}
+    try:
+        def submit():
+            try:
+                ops.create_entry("u", "p", "2026-08-24", 1.0, enforce=True)
+                ok.append(1)
+            except ops.BudgetExceeded:
+                refused.append(1)
+
+        ts = [threading.Thread(target=submit) for _ in range(2)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+    finally:
+        (ops.budget_for, ops.project_month_hours, ops._notion,
+         ops._project_name_map) = old
+
+    assert len(ok) == 1 and len(refused) == 1, (ok, refused)
+    assert state["tracked"] == 40.0, state      # the cap held
+
+
+@check("an unenforced create_entry never takes the write lock")
+def _():
+    # set_cell calls create_entry from *inside* _write_lock, and the lock is
+    # not reentrant — so the enforce=False path must not reach for it, or
+    # every weekly-grid save deadlocks.
+    class _N:
+        class pages:
+            @staticmethod
+            def create(*a, **k): pass
+
+    old_n, old_m = ops._notion, ops._project_name_map
+    ops._notion = _N
+    ops._project_name_map = lambda: {"p": "Test Project"}
+    try:
+        with ops._write_lock:                 # simulate set_cell holding it
+            ops.create_entry("u", "p", "2026-08-24", 1.0)   # must not block
+    finally:
+        ops._notion, ops._project_name_map = old_n, old_m
 
 
 # ---- the switch --------------------------------------------------------

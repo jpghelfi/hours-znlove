@@ -169,6 +169,10 @@ function applyBudget(tr, b) {
     tr.querySelector('.bpolicy').value = b.policy;
     tr.querySelector('.overrun').classList.toggle(
       'hidden', b.policy !== {{ policy_block|tojson }});
+    // an unset threshold shows as blank against its placeholder, not as the
+    // resolved default — otherwise clearing it looks like it didn't take
+    tr.querySelector('.bwarn').value = b.warn_pct_set ? b.warn_pct : '';
+    tr.querySelector('.boverrun').value = b.overrun_pct || '';
   } else {
     tr.querySelector('.overrun').classList.add('hidden');
     tr.querySelector('.boverrun').value = '';
@@ -220,8 +224,9 @@ document.querySelectorAll('tr.brow').forEach(tr => {
     if (warn.value === lastWarn) return;
     const raw = warn.value.trim();
     lastWarn = warn.value;
-    // blank means "use the default", which is what leaving it unset already does
-    if (raw !== '') saveBudget(tr, { warn_pct: parseFloat(raw) }, warn);
+    // blanking it really does clear the stored value — showing an empty field
+    // while Notion kept the old number would be a lie the next reload exposes
+    saveBudget(tr, raw === '' ? { clear_warn: true } : { warn_pct: parseFloat(raw) }, warn);
   });
 });
 </script>

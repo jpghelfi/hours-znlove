@@ -364,10 +364,20 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     CLIs, the Harvest importer — keeps working exactly as before, and only the
     routes that serve a non-admin turn it on. A new row adds all of its hours,
     so the delta is simply `hours`.
+
+    When enforcing, the check and the write happen under `_write_lock`
+    together. Checking outside it is a time-of-check/time-of-use race: two
+    people submitting 1 h each against a project sitting at 39 h of a 40 h cap
+    would both read 39, both compute 40, both pass, and the month would end at
+    41 — past a cap that is supposed to be a hard stop. set_cell already
+    serializes for exactly this reason.
+
+    **`_write_lock` is not reentrant**, so this only ever takes it on the
+    enforce path — set_cell calls this from *inside* its own lock, and does so
+    with `enforce=False` (it has already run the check itself, against the
+    delta rather than the raw hours). Keep it that way or this deadlocks.
     """
-    if enforce:
-        check_budget(project_id, date, hours)
-    pname_map = _project_name_map()
+    pname_map = _project_name_map()   # a Notion read: do it before any lock
     props = {
         "Entry": {"title": [{"text": {"content": f"{pname_map.get(project_id, 'Entry')} — {date}"}}]},
         "Project": {"relation": [{"id": project_id}]},
@@ -382,7 +392,18 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
         # properties untouched, so nothing changes for the CLI or Notion forms.
         props[_TASK_URL_PROP] = {"url": task_url}
         props[_TASK_PROP] = {"rich_text": [{"text": {"content": task_label[:200]}}]}
-    _notion.pages.create(parent={"type": "data_source_id", "data_source_id": TIME_DS}, properties=props)
+
+    def _write():
+        _notion.pages.create(parent={"type": "data_source_id", "data_source_id": TIME_DS},
+                             properties=props)
+
+    if not enforce:
+        _write()
+        return
+    budget_for(project_id)      # warm the cache before taking the global lock
+    with _write_lock:
+        check_budget(project_id, date, hours)
+        _write()
 
 
 # ---- weekly grid -------------------------------------------------------
@@ -1947,12 +1968,14 @@ _UNSET = object()  # "leave this property alone", which None can't mean here
 def set_budget(project_id: str, hours: float | None = _UNSET,  # type: ignore[assignment]
                policy: str | None = None,
                overrun_pct: float | None = None,
-               warn_pct: float | None = None) -> dict:
+               warn_pct: float | None = _UNSET) -> dict:  # type: ignore[assignment]
     """Write one project's budget settings. Only what's passed is written.
 
     `hours=None` **clears** the budget (the project stops being budgeted);
     omitting `hours` leaves it untouched. The two have to be distinguishable,
     or editing a policy on its own would silently wipe the number next to it.
+    `warn_pct` works the same way: None clears it back to the env default,
+    omitting it leaves whatever is there.
 
     Only the named properties are written — a project page's People property is
     the assignment list /schedule and /assignments both depend on, and
@@ -1981,10 +2004,14 @@ def set_budget(project_id: str, hours: float | None = _UNSET,  # type: ignore[as
         # 0 and blank mean the same thing (cap exactly at the budget), so store
         # the blank — otherwise the column fills up with noise-value zeroes.
         props[BUDGET_OVERRUN_PROP] = {"number": float(overrun_pct) or None}
-    if warn_pct is not None:
-        if not 0 < warn_pct <= 1000:
-            raise ValueError("the warning threshold must be a percentage")
-        props[BUDGET_WARN_PROP] = {"number": float(warn_pct)}
+    if warn_pct is not _UNSET:
+        if warn_pct is None:
+            # blanked on the page: fall back to BUDGET_WARN_PCT again
+            props[BUDGET_WARN_PROP] = {"number": None}
+        else:
+            if not 0 < warn_pct <= 1000:
+                raise ValueError("the warning threshold must be a percentage")
+            props[BUDGET_WARN_PROP] = {"number": float(warn_pct)}
     if (policy is None and hours not in (_UNSET, None)
             and not budget_for(project_id)):
         # First budget on this project: default the policy rather than leaving
@@ -2020,10 +2047,14 @@ def budget_alert(project_id: str, date: str) -> dict | None:
     so an admin overrun is exactly the case this has to catch.
     """
     b = budget_for(project_id)
-    if not b or not b["hours"]:
+    if not b:
         return None
     tracked = project_month_hours(project_id, date)
-    pct = tracked / b["hours"] * 100
+    # A 0 h budget can't be divided by, but it must still alert: non-admins are
+    # refused outright, so the only way hours reach a 0-budget project is an
+    # admin going past the cap — which is exactly what this is here to catch.
+    # Guard the division, not the whole function.
+    pct = (100.0 if tracked > 0 else 0.0) if not b["hours"] else tracked / b["hours"] * 100
     if pct >= 100:
         level = "over"
     elif pct >= b["warn_pct"]:
