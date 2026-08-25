@@ -45,15 +45,41 @@ def enabled() -> bool:
     return os.environ.get("REPORT_EMAIL_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def transport() -> str:
-    """Which transport a send would use: "gmail", "smtp", or "" for none."""
-    if not enabled():
+def budget_alerts_enabled() -> bool:
+    """Whether budget threshold emails are switched on (BUDGET_ALERTS_ENABLED).
+
+    Its own switch, for the same reason enabled() is separate from having
+    credentials: the one Google authorization powers the Sheets export and the
+    report email, and turning either of those on must not silently start
+    emailing people every time a project nears its budget.
+    """
+    return os.environ.get("BUDGET_ALERTS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def budget_recipients() -> list[str]:
+    """Who a budget alert goes to. Falls back to the report recipients."""
+    raw = os.environ.get("BUDGET_ALERT_TO", "").strip()
+    return _split(raw) if raw else default_recipients()
+
+
+def _transport_for(switch: bool) -> str:
+    if not switch:
         return ""
     if gmail_api.configured():
         return "gmail"
     if os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
         return "smtp"
     return ""
+
+
+def transport() -> str:
+    """Which transport a report send would use: "gmail", "smtp", or "" for none."""
+    return _transport_for(enabled())
+
+
+def budget_transport() -> str:
+    """Same, for budget alerts, which ride their own switch."""
+    return _transport_for(budget_alerts_enabled())
 
 
 def sender() -> str:
@@ -137,19 +163,11 @@ def build_message(to: list[str], subject: str, body: str,
     return msg
 
 
-def send_report(to: list[str], subject: str, body: str,
-                attachment: bytes, filename: str) -> dict:
-    """Send one message with the workbook attached, over whichever transport is
-    configured. Returns {"ok", "to", "from", "via"}."""
-    via = transport()
-    if not via:
-        raise NotConfigured(", ".join(missing_vars()))
-    from_addr = sender()
-    msg = build_message(to, subject, body, attachment, filename, from_addr)
-
+def _deliver(msg: EmailMessage, via: str, from_addr: str) -> dict:
+    """Hand one built message to the chosen transport."""
     if via == "gmail":
         gmail_api.send(msg)
-        return {"ok": True, "to": to, "from": from_addr or "your Google account",
+        return {"ok": True, "to": msg["To"], "from": from_addr or "your Google account",
                 "via": "gmail"}
 
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -164,4 +182,42 @@ def send_report(to: list[str], subject: str, body: str,
             s.starttls()
             s.login(user, password)
             s.send_message(msg)
-    return {"ok": True, "to": to, "from": from_addr, "via": "smtp"}
+    return {"ok": True, "to": msg["To"], "from": from_addr, "via": "smtp"}
+
+
+def send_report(to: list[str], subject: str, body: str,
+                attachment: bytes, filename: str) -> dict:
+    """Send one message with the workbook attached, over whichever transport is
+    configured. Returns {"ok", "to", "from", "via"}."""
+    via = transport()
+    if not via:
+        raise NotConfigured(", ".join(missing_vars()))
+    from_addr = sender()
+    msg = build_message(to, subject, body, attachment, filename, from_addr)
+    out = _deliver(msg, via, from_addr)
+    out["to"] = to
+    return out
+
+
+def send_plain(to: list[str], subject: str, body: str) -> dict:
+    """Send a body-only message — no attachment — over the budget-alert switch.
+
+    send_report requires a workbook; a budget alert is three lines of text.
+    Same transports, same credentials, different switch: BUDGET_ALERTS_ENABLED
+    rather than REPORT_EMAIL_ENABLED.
+    """
+    via = budget_transport()
+    if not via:
+        raise NotConfigured(
+            ", ".join(([] if budget_alerts_enabled() else ["BUDGET_ALERTS_ENABLED=1"])
+                      + gmail_api.missing_vars()))
+    from_addr = sender()
+    msg = EmailMessage()
+    if from_addr:
+        msg["From"] = from_addr
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = subject
+    msg.set_content(body)
+    out = _deliver(msg, via, from_addr)
+    out["to"] = to
+    return out

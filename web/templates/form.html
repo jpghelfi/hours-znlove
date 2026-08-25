@@ -16,6 +16,12 @@
         {% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
       </select>
     </label>
+    {# The budget meter. Harvest's whole failure mode is that budget feedback
+       arrives the next morning, by email, to somebody other than the person
+       who logged the hours — this is the fix, and it's why it shows even for
+       projects nobody caps. Keyed on the date field, so backfilling into a
+       previous month reports that month. #}
+    <div class="bmeter" id="bmeter" hidden aria-live="polite"></div>
 
     <div class="timer-row">
       <button type="button" class="btn" id="timerBtn" onclick="toggleTimer()">▶ Start timer</button>
@@ -77,6 +83,55 @@ function toggleTimer() {
 // restore a running timer on page load (survives navigation/reload)
 (function () { const st = tState(); if (st && st.project) { const s = document.querySelector('select[name=project_id]'); if (s) s.value = st.project; } })();
 setInterval(renderTimer, 1000); renderTimer();
+
+// ---- the budget meter -------------------------------------------------
+// Shows where the picked project stands this month, before the entry is
+// saved. A budget that only announces itself by refusing the save is a budget
+// nobody can plan around.
+(function () {
+  const box = document.getElementById('bmeter');
+  const proj = document.querySelector('select[name=project_id]');
+  const date = document.querySelector('input[name=date]');
+  if (!box || !proj || !date) return;
+  let seq = 0;
+
+  async function refresh() {
+    box.hidden = true;
+    if (!proj.value) return;
+    const mine = ++seq;   // a slow reply for an old project must not land
+    let d;
+    try {
+      const url = '/api/budget/status?project=' + encodeURIComponent(proj.value) +
+                  '&date=' + encodeURIComponent(date.value || '');
+      d = await (await fetch(url)).json();
+    } catch (e) { return; }        // silent: this is an extra, not the form
+    if (mine !== seq || !d.ok || !d.budget) return;
+
+    const name = proj.options[proj.selectedIndex].textContent;
+    const g = n => (Math.round(n * 100) / 100).toString();
+    let msg = '<strong>' + name + '</strong> · ' + g(d.tracked) + ' of ' +
+              g(d.hours) + ' h in ' + d.month + ' · ';
+    msg += d.remaining < 0
+      ? '<strong>' + g(-d.remaining) + ' h over</strong>'
+      : '<strong>' + g(d.remaining) + ' h left</strong>';
+    // The number that actually decides whether this entry saves, which is not
+    // the same as the hours left when an overrun is allowed.
+    if (d.capped && d.can_log !== null) {
+      msg += d.can_log > 0
+        ? ' · up to ' + g(d.can_log) + ' h can still be logged'
+        : ' · <strong>this project is capped — no more hours can be logged</strong>';
+    }
+    box.className = 'bmeter lvl-' + d.level;
+    box.innerHTML = '<div class="cap ' +
+      (d.level === 'over' ? 'cap-over' : (d.level === 'warn' ? 'cap-full' : 'cap-ok')) +
+      '"><i style="width:' + Math.min(100, d.pct) + '%"></i></div><div>' + msg + '</div>';
+    box.hidden = false;
+  }
+
+  proj.addEventListener('change', refresh);
+  date.addEventListener('change', refresh);
+  refresh();
+})();
 </script>
 {% endblock %}
 

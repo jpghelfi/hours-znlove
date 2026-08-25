@@ -956,3 +956,41 @@ td.desc .tlink { margin-left: 8px; }
 .plan-cell.is-static { cursor: default; }
 .plan-cell.is-static:hover { background: transparent; }
 .plan-cell.is-static .pill:hover { border-color: transparent; }
+
+/* ---- /budgets: the control centre -------------------------------------
+   The first pass over this page is ~37 budgets typed one after another, so
+   every row renders its inputs rather than an "add" affordance, and the cells
+   are sized for a column of numbers rather than for prose. */
+.brow .bnum {
+  width: 78px; padding: 6px 8px; text-align: right;
+  font-variant-numeric: tabular-nums; font-size: 14px;
+}
+.brow .bnum.bsm { width: 56px; }
+.brow .bnum.bad { border-color: var(--over); background: var(--err); }
+.grid th.bcol, .grid td.bcol { width: 1%; white-space: nowrap; }
+.th-sub { display: block; font-size: 10px; font-weight: 500; text-transform: none; opacity: .65; letter-spacing: 0; }
+.grid td.hnum { font-variant-numeric: tabular-nums; text-align: right; font-weight: 600; }
+.grid td.hnum.over { color: var(--over); }
+.grid th.usedcol, .grid td.usedcol { min-width: 110px; }
+/* the bar is the week page's capacity meter, reused rather than re-invented */
+.usedcol .cap { margin-top: 2px; }
+.usedcol .cap-num { margin: 3px 0 0; }
+.brow .bpolicy { padding: 5px 8px; font-size: 13px; max-width: 150px; }
+.brow .overrun { margin-left: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.brow .overrun.hidden { display: none; }
+/* an unbudgeted project still shows its tracked hours — that's how you notice
+   one that ought to have a budget — but it recedes */
+.brow.unbudgeted td { color: var(--muted); }
+.brow.unbudgeted .budget::placeholder { opacity: .5; }
+.card.wide .subtle.small { font-size: 12.5px; line-height: 1.55; }
+.card.wide .subtle.small p { margin: 0 0 8px; }
+.card.wide .subtle.small p:last-child { margin-bottom: 0; }
+.week-head .subtle .over { color: var(--over); font-weight: 700; }
+/* the log-form budget meter: where this project stands this month, shown
+   before the entry is saved rather than in tomorrow's email */
+.bmeter { margin: -6px 0 2px; font-size: 13px; color: var(--muted); }
+.bmeter[hidden] { display: none; }
+.bmeter .cap { margin-bottom: 5px; }
+.bmeter strong { color: var(--ink); font-weight: 700; }
+.bmeter.lvl-warn strong { color: var(--chart); }
+.bmeter.lvl-over strong { color: var(--over); }

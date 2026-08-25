@@ -99,6 +99,7 @@ def _startup() -> None:
     ops.ensure_admin_property()
     ops.ensure_task_properties()
     ops.ensure_invoice_properties()
+    ops.ensure_budget_properties()
 
 
 @app.get("/healthz")
@@ -200,17 +201,23 @@ def logout(request: Request):
 # ---- app pages ---------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = None):
+def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = None,
+              detail: str = ""):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
+    # A refused entry explains itself in numbers ("40 h budget, 38 already
+    # logged, 2 left"), which no fixed string can do — so that one error
+    # carries its own message. It round-trips through the URL, so it's capped
+    # and, like everything else in a template, escaped on the way out.
+    message = detail[:300] if err == "budget" and detail else _ENTRY_ERRORS.get(err or "")
     return templates.TemplateResponse(request, "form.html", {
         "user": user,
         "is_admin": auth.is_admin(user),
         "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
         "ticket_create": ops.ticket_create_enabled(),
-        "ok": ok, "err": _ENTRY_ERRORS.get(err) if err else None,
+        "ok": ok, "err": message,
     })
 
 
@@ -220,7 +227,46 @@ _ENTRY_ERRORS = {
     "project": "Pick one of your projects.",
     "save": "Couldn't save the entry — try again.",
     "task": "That doesn't look like a link to a Notion page.",
+    "budget": "That would take the project past its monthly budget.",
 }
+
+
+def _maybe_alert_budget(project_id: str, date: str) -> None:
+    """Fire the budget threshold email, if this write just crossed one.
+
+    Called *after* a successful write, and it must never turn a saved entry
+    into an error: the hours are the point, the email is a courtesy. Every
+    failure — no transport configured, Google down, a renamed Notion column —
+    is logged and swallowed.
+
+    Notice it doesn't care who logged the hours. Admins pass through the cap
+    untouched, so an admin overrun is precisely the case this exists to catch.
+    """
+    if not mailer.budget_alerts_enabled():
+        return
+    try:
+        alert = ops.budget_alert(project_id, date)
+        if not alert:
+            return
+        over = alert["level"] == "over"
+        subject = (f"{alert['project']} is over its {alert['month']} budget"
+                   if over else
+                   f"{alert['project']} is near its {alert['month']} budget")
+        left = alert["remaining"]
+        body = (
+            f"{alert['project']} — {alert['month']}\n\n"
+            f"Budget:   {alert['budget']:g} h\n"
+            f"Tracked:  {alert['tracked']:g} h ({alert['pct']:.0f}%)\n"
+            f"{'Over by: ' if left < 0 else 'Remaining:'} {abs(left):g} h\n\n"
+            + ("Time can still be logged against it — the policy is warn only.\n"
+               if alert["policy"] == ops.POLICY_WARN else
+               f"Logging is capped at {alert['limit']:g} h for anyone who isn't "
+               "an admin.\n")
+            + "\nThis is sent once per project per month."
+        )
+        mailer.send_plain(mailer.budget_recipients(), subject, body)
+    except Exception as exc:  # noqa: BLE001 — a courtesy must not fail a save
+        logging.warning("budget alert not sent: %s", mailer.explain(exc))
 
 
 @app.post("/entry")
@@ -255,10 +301,18 @@ def submit_entry(
     # the label the picker resolved, else the one in the link's own slug
     label = (task_label.strip() or task["label"] or "Notion ticket") if task else ""
     try:
+        # Admins are never blocked by a budget cap — they're the people who can
+        # change the budget, so friction here would only teach them to route
+        # around it. Everyone else is held to the project's policy.
         ops.create_entry(user.get("id"), project_id, date, hours, description,
-                         task_url=task["url"] if task else "", task_label=label)
+                         task_url=task["url"] if task else "", task_label=label,
+                         enforce=not auth.is_admin(user))
+    except ops.BudgetExceeded as exc:
+        return RedirectResponse(
+            url=f"/?err=budget&detail={quote(str(exc)[:300])}", status_code=303)
     except Exception:
         return RedirectResponse(url="/?err=save", status_code=303)
+    _maybe_alert_budget(project_id, date)
     return RedirectResponse(url="/?ok=1", status_code=303)
 
 
@@ -1929,12 +1983,19 @@ def api_entry_hours(request: Request, e: EntryHours):
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
     try:
-        return JSONResponse(ops.set_entry_hours(e.entry_id, e.hours))
+        # No budget check here at all: this route is already admin-only, and
+        # admins are never capped. That exemption is what keeps an over-budget
+        # project fixable — the edit that corrects it can't be the edit that's
+        # refused.
+        res = ops.set_entry_hours(e.entry_id, e.hours)
     except ValueError:
         return JSONResponse({"ok": False, "error": "not a time entry"}, status_code=400)
     except Exception:
         logging.exception("Editing entry %s failed", e.entry_id)
         return JSONResponse({"ok": False, "error": "could not save that entry"}, status_code=400)
+    if res.get("project_id") and res.get("date"):
+        _maybe_alert_budget(res["project_id"], res["date"])
+    return JSONResponse(res)
 
 
 # ---- absences ----------------------------------------------------------
@@ -2149,6 +2210,253 @@ def api_cell(request: Request, cell: Cell):
     if cell.hours and cell.project_id not in _member_project_ids(person_id):
         return JSONResponse({"ok": False, "error": "not a member of that project"}, status_code=403)
     try:
-        return JSONResponse(ops.set_cell(person_id, cell.project_id, cell.date, cell.hours))
+        # Admins are never held to a cap (they set the budgets). For everyone
+        # else set_cell compares the *delta*, since this is an upsert: lowering
+        # a cell on an over-budget project must always be allowed.
+        result = ops.set_cell(person_id, cell.project_id, cell.date, cell.hours,
+                              enforce=not auth.is_admin(user))
+    except ops.BudgetExceeded as exc:
+        # 409, not 400: the request was well-formed, the state refused it. The
+        # grid uses this to snap the cell back and show the numbers.
+        return JSONResponse({"ok": False, "error": str(exc), "budget": True},
+                            status_code=409)
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save entry"}, status_code=400)
+    _maybe_alert_budget(cell.project_id, cell.date)
+    return JSONResponse(result)
+
+
+# ---- budgets -----------------------------------------------------------
+#
+# The control centre: every project's tracked-vs-budget position for one
+# calendar month. Admin-only, one period at a time (reusing _period_range's
+# monthly granularity so this page can't drift from /project, /invoices and
+# /absences), and **one Notion read for the whole table** — a single
+# entries_between for the month, grouped by project_id in Python, the way
+# _all_projects_hours already does it. One query per project would be 37 round
+# trips on a free Render instance.
+
+_BUDGET_STATUS = {
+    # key -> (label, chip class, sort rank). Lower rank sorts first: the
+    # projects in trouble are the point of the page.
+    "over_cap": ("Over cap", "chip-over", 0),
+    "over": ("Over", "chip-over", 1),
+    "blocked": ("At the cap", "chip-over", 2),
+    "warn": ("Warning", "chip-under", 3),
+    "ok": ("On track", "chip-ok", 4),
+    "none": ("No budget", "chip-none", 5),
+}
+
+
+def _budget_status(b: Optional[dict], tracked: float) -> str:
+    """Which of the six states a project is in this month.
+
+    Order matters. `over_cap` is listed first because it's the one state that
+    shouldn't be reachable by ordinary use: non-admins are refused at the cap,
+    so hours past it arrived from an admin, a CLI, or Notion itself. That makes
+    it the row most worth looking at, not the worst-sounding label.
+    """
+    if not b:
+        return "none"
+    eps = 1e-9
+    capped = b["policy"] == ops.POLICY_BLOCK
+    if capped and tracked > b["limit"] + eps:
+        return "over_cap"
+    if tracked > b["hours"] + eps:
+        return "over"
+    if capped and tracked >= b["limit"] - eps:
+        return "blocked"
+    if tracked >= b["hours"] * b["warn_pct"] / 100 and tracked > 0:
+        return "warn"
+    return "ok"
+
+
+def _budget_rows(rng: dict, projects: list, tracked_by_id: dict) -> list[dict]:
+    """One row per project, budgeted rows first (worst first), then the rest.
+
+    The two-block sort is deliberate. Trouble-first is right for every visit
+    after the budgets exist, and wrong for the first one — with 37 numbers
+    still to type, a list that reorders under the cursor on every save is
+    unusable. Rows with no budget keep a stable alphabetical order until they
+    get one, so the page settles itself as it fills up.
+    """
+    rows = []
+    for p in projects:
+        b = p.get("budget")
+        tracked = round(tracked_by_id.get(p["id"], 0.0), 2)
+        status = _budget_status(b, tracked)
+        label, chip, rank = _BUDGET_STATUS[status]
+        rows.append({
+            "id": p["id"], "name": p["name"], "budget": b, "tracked": tracked,
+            "status": status, "status_label": label, "status_chip": chip,
+            "remaining": (b["hours"] - tracked) if b else None,
+            # capped at 100 for the bar's width; the number beside it is not
+            "pct": (tracked / b["hours"] * 100) if (b and b["hours"]) else None,
+            "bar": min(100, tracked / b["hours"] * 100) if (b and b["hours"]) else 0,
+            "_rank": rank,
+        })
+    rows.sort(key=lambda r: (r["budget"] is None, r["_rank"],
+                             -(r["pct"] or 0), r["name"].lower()))
+    return rows
+
+
+@app.get("/budgets", response_class=HTMLResponse)
+def budgets_page(request: Request, start: Optional[str] = None,
+                 project: list[str] = Query(default=[])):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+
+    rng = _period_range("monthly", _project_anchor("monthly", start))
+    projects = ops.list_projects()
+    sel_ids, _ = _project_picks(projects, project)
+    shown = [p for p in projects if not sel_ids or p["id"] in sel_ids]
+
+    tracked: dict = {}
+    for e in ops.entries_between(rng["from"], rng["to"]):
+        if e["project_id"]:
+            tracked[e["project_id"]] = tracked.get(e["project_id"], 0.0) + (e["hours"] or 0)
+
+    rows = _budget_rows(rng, shown, tracked)
+    budgeted = [r for r in rows if r["budget"]]
+    return templates.TemplateResponse(request, "budgets.html", {
+        "user": user, "is_admin": True, "rng": rng, "rows": rows,
+        "projects": projects, "sel_ids": sel_ids,
+        "policies": list(ops.BUDGET_POLICIES),
+        "warn_default": ops.default_warn_pct(),
+        "policy_block": ops.POLICY_BLOCK,
+        "n_budgeted": len(budgeted),
+        "n_trouble": sum(1 for r in budgeted
+                         if r["status"] in ("over", "over_cap", "blocked")),
+        "total_budget": sum(r["budget"]["hours"] for r in budgeted),
+        "total_tracked": sum(r["tracked"] for r in rows),
+        "alerts_on": mailer.budget_alerts_enabled(),
+    })
+
+
+@app.get("/budgets.csv")
+def budgets_csv(request: Request, start: Optional[str] = None,
+                project: list[str] = Query(default=[])):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    rng = _period_range("monthly", _project_anchor("monthly", start))
+    projects = ops.list_projects()
+    sel_ids, _ = _project_picks(projects, project)
+    shown = [p for p in projects if not sel_ids or p["id"] in sel_ids]
+    tracked: dict = {}
+    for e in ops.entries_between(rng["from"], rng["to"]):
+        if e["project_id"]:
+            tracked[e["project_id"]] = tracked.get(e["project_id"], 0.0) + (e["hours"] or 0)
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["project", "month", "budget", "tracked", "remaining", "used_pct",
+                "policy", "overrun_pct", "warn_pct", "status"])
+    for r in _budget_rows(rng, shown, tracked):
+        b = r["budget"]
+        w.writerow([
+            r["name"], rng["label"],
+            f"{b['hours']:g}" if b else "",
+            f"{r['tracked']:g}",
+            f"{r['remaining']:g}" if b else "",
+            f"{r['pct']:.0f}" if r["pct"] is not None else "",
+            b["policy"] if b else "",
+            f"{b['overrun_pct']:g}" if b and b["overrun_pct"] else "",
+            f"{b['warn_pct']:g}" if b else "",
+            r["status_label"],
+        ])
+    from fastapi.responses import Response
+    fname = f"budgets_{rng['from'][:7]}.csv"
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+class BudgetEdit(BaseModel):
+    project_id: str
+    # None + clear=False means "don't touch the number"; clear=True wipes it.
+    hours: Optional[float] = Field(default=None, ge=0, le=100000, allow_inf_nan=False)
+    clear: bool = False
+    policy: Optional[str] = None
+    overrun_pct: Optional[float] = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    warn_pct: Optional[float] = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
+
+
+@app.post("/api/budget")
+def api_budget(request: Request, b: BudgetEdit):
+    """Set one project's budget from the control centre (admins).
+
+    Saves per field rather than per page: the first sitting on /budgets is ~37
+    numbers typed by hand, and one bad keystroke shouldn't cost the other 36.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        saved = ops.set_budget(
+            b.project_id,
+            hours=(None if b.clear else (b.hours if b.hours is not None else ops._UNSET)),
+            policy=b.policy, overrun_pct=b.overrun_pct, warn_pct=b.warn_pct,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Saving the budget for project %s failed", b.project_id)
+        return JSONResponse({"ok": False, "error": "could not save that budget"},
+                            status_code=400)
+    return JSONResponse({"ok": True, "budget": saved or None})
+
+
+@app.get("/api/budget/status")
+def api_budget_status(request: Request, project: str = "", date: str = ""):
+    """The live meter under the log-hours form's project field.
+
+    Everyone can read this, but only for a project they're a member of — the
+    same rule the form itself enforces on write. Keyed on the **entry's** date,
+    so backfilling into a previous month shows that month's position rather
+    than today's.
+
+    Harvest's whole failure mode is that budget feedback arrives the next
+    morning, by email, to somebody other than the person who logged the hours.
+    This is the fix, and it's why it exists even for projects nobody caps.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    date = date or dt.date.today().isoformat()
+    if not _parse_date(date) or len(date) != 10:
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    if not project or project not in _member_project_ids(user.get("id")):
+        return JSONResponse({"ok": True, "budget": False})
+    b = ops.budget_for(project)
+    if not b:
+        return JSONResponse({"ok": True, "budget": False})
+    try:
+        tracked = ops.project_month_hours(project, date)
+    except Exception:
+        logging.exception("Budget status for project %s failed", project)
+        return JSONResponse({"ok": True, "budget": False})
+    left = b["hours"] - tracked
+    capped = b["policy"] == ops.POLICY_BLOCK and not auth.is_admin(user)
+    return JSONResponse({
+        "ok": True, "budget": True,
+        "hours": b["hours"], "tracked": round(tracked, 2),
+        "remaining": round(left, 2),
+        "pct": round(tracked / b["hours"] * 100) if b["hours"] else 100,
+        "month": dt.date.fromisoformat(date).strftime("%B"),
+        "capped": capped,
+        # what's actually loggable right now, which is the number that decides
+        # whether this entry will be refused
+        "can_log": round(max(0.0, b["limit"] - tracked), 2) if capped else None,
+        "level": ("over" if left < 0 else
+                  ("warn" if tracked >= b["hours"] * b["warn_pct"] / 100 else "ok")),
+    })

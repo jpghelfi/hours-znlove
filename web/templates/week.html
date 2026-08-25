@@ -89,6 +89,16 @@ async function saveCell(input) {
     });
     const data = await res.json();
     input.classList.remove('saving');
+    if (data.budget) {
+      // The project is at its monthly cap. Nothing was written, so the cell
+      // has to go back to what it held — leaving the typed number on screen
+      // would read as saved, and the totals below would count it.
+      input.value = input.dataset.prev || '';
+      input.classList.remove('err');
+      zAlert(data.error, {title: 'Over the monthly budget'});
+      recalc();
+      return;
+    }
     if (!data.ok) { input.classList.add('err'); zAlert(data.error || 'Something went wrong.', {title: 'Save failed'}); return; }
     input.classList.remove('err'); input.classList.add('saved');
     setTimeout(() => input.classList.remove('saved'), 800);

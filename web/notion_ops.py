@@ -223,7 +223,11 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
     """List projects. If member_of (a Notion user id) is given, return only
     projects that user is a member of (the People property includes them).
     If include_members, each project dict also carries "member_ids" (every
-    id in the People property), for the schedule page's assignment view."""
+    id in the People property), for the schedule page's assignment view.
+
+    Every project also carries "budget" — its monthly hour budget dict, or None
+    when it isn't budgeted. It's parsed off the rows this query already returns,
+    so the budget costs no extra call anywhere it's wanted."""
     projects = []
     kwargs = {"data_source_id": PROJECTS_DS, "page_size": 100}
     while True:
@@ -238,7 +242,8 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
             members = [p["id"] for p in props.get("People", {}).get("people", [])]
             if member_of is not None and member_of not in members:
                 continue
-            project = {"id": row["id"], "name": name}
+            project = {"id": row["id"], "name": name,
+                       "budget": _budget_from_props(props)}
             if include_members:
                 project["member_ids"] = members
             projects.append(project)
@@ -350,7 +355,18 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
 # ---- writes ------------------------------------------------------------
 
 def create_entry(person_id: str | None, project_id: str, date: str, hours: float,
-                 description: str = "", task_url: str = "", task_label: str = "") -> None:
+                 description: str = "", task_url: str = "", task_label: str = "",
+                 enforce: bool = False) -> None:
+    """Write one new time entry.
+
+    `enforce` opts this write into the project's monthly budget cap (see
+    check_budget). It defaults to off so every existing caller — set_cell, the
+    CLIs, the Harvest importer — keeps working exactly as before, and only the
+    routes that serve a non-admin turn it on. A new row adds all of its hours,
+    so the delta is simply `hours`.
+    """
+    if enforce:
+        check_budget(project_id, date, hours)
     pname_map = _project_name_map()
     props = {
         "Entry": {"title": [{"text": {"content": f"{pname_map.get(project_id, 'Entry')} — {date}"}}]},
@@ -863,11 +879,19 @@ def set_entry_hours(entry_id: str, hours: float) -> dict:
         parent = page.get("parent") or {}
         if _bare(parent.get("data_source_id")) != _bare(TIME_DS):
             raise ValueError("not a time entry")
+        # The project and date come back with the result so a caller can decide
+        # whether the edit moved a budget without retrieving the page again —
+        # this route is admin-only and never capped, but an admin's correction
+        # still has to be able to trip the threshold alert.
+        rel = page["properties"].get("Project", {}).get("relation") or []
+        d = page["properties"].get("Date", {}).get("date") or {}
+        where = {"project_id": rel[0]["id"] if rel else None,
+                 "date": (d.get("start") or "")[:10] or None}
         if not hours:  # 0, None -> remove, like a blanked cell on the weekly grid
             _notion.pages.update(entry_id, archived=True)
-            return {"ok": True, "hours": 0, "deleted": True}
+            return {"ok": True, "hours": 0, "deleted": True, **where}
         _notion.pages.update(entry_id, properties={"Hours": {"number": hours}})
-        return {"ok": True, "hours": hours, "deleted": False}
+        return {"ok": True, "hours": hours, "deleted": False, **where}
 
 
 def _bare(notion_id: str | None) -> str:
@@ -884,13 +908,25 @@ def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
 
 
-def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
+def set_cell(person_id: str, project_id: str, date: str, hours: float,
+             enforce: bool = False) -> dict:
     """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry.
 
     Filters on Person in the query (not a Python scan), paginates, and
     consolidates duplicates: the grid shows one summed cell, so a save must
     leave exactly one row behind (or none for 0).
+
+    `enforce` opts the write into the project's budget cap. Note this is an
+    upsert, not an append: typing 3 into a cell that held 5 *lowers* the month
+    by 2, so the budget check compares against the **delta**, not the submitted
+    hours. Getting that wrong would refuse every ordinary grid correction on a
+    busy project.
     """
+    if enforce:
+        # Warm the budget cache *before* taking the lock. On a cache miss this
+        # pages every project, and _write_lock is global — holding it through
+        # that cold read would stall every other save in the app behind it.
+        budget_for(project_id)
     with _write_lock:
         matches = _query_all({
             "data_source_id": TIME_DS, "page_size": 100,
@@ -900,6 +936,11 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float) -> dict:
                 {"property": "Person", "people": {"contains": person_id}},
             ]},
         })
+        if enforce:
+            # Duplicates get folded into one below, so what this cell currently
+            # contributes to the month is their sum, not just the first row's.
+            was = sum(m["properties"]["Hours"]["number"] or 0 for m in matches)
+            check_budget(project_id, date, (hours or 0) - was)
         keep = matches[0] if matches else None
         for extra in matches[1:]:  # duplicates from old races/forms: fold into one
             _notion.pages.update(extra["id"], archived=True)
@@ -1669,3 +1710,342 @@ def delete_absence(absence_id: str, requester_id: str | None = None,
             raise PermissionError("that absence belongs to someone else")
         _notion.pages.update(absence_id, archived=True)
     return row
+
+
+# ---- project budgets ---------------------------------------------------
+#
+# A project may carry an optional **monthly** hour budget: an allowance that
+# resets on the 1st of every calendar month, never carrying over in either
+# direction. Modelled on Harvest's `budget_is_monthly`, with the one thing
+# Harvest doesn't have bolted on — a policy that can actually refuse a write.
+#
+# The config lives on the Projects data source rather than in a database of its
+# own, because it's per-project *settings* (exactly one value per project), not
+# dated events the way invoices and absences are. That also means it rides
+# along on the list_projects query the app already runs, so a budget check on a
+# hot write path costs no extra read.
+#
+# Two properties express all three behaviours that were asked for:
+#
+#     no limit, just track it   -> policy "Warn only"
+#     hard stop at the budget   -> policy "Block over limit", Overrun % blank
+#     allow up to 10% over      -> policy "Block over limit", Overrun % = 10
+#     no budget at all          -> Monthly budget empty
+#
+# Empty is emphatically not 0. An empty budget means "not budgeted"; a budget of
+# 0 means "no hours allowed here at all", and both are useful. (Harvest has the
+# same trap and documents it: a blank per-person budget is ignored, a 0 is
+# instantly over budget.)
+
+BUDGET_PROP = "Monthly budget"
+BUDGET_POLICY_PROP = "Budget policy"
+BUDGET_OVERRUN_PROP = "Overrun %"
+BUDGET_WARN_PROP = "Warn at %"
+BUDGET_NOTIFIED_PROP = "Budget notified"
+
+POLICY_WARN = "Warn only"
+POLICY_BLOCK = "Block over limit"
+BUDGET_POLICIES = (POLICY_WARN, POLICY_BLOCK)
+
+# Percentage of the budget at which the warning fires. 95 rather than Harvest's
+# 80: a monthly allowance is small enough that 80% is still an ordinary Tuesday.
+_DEFAULT_WARN_PCT = 95.0
+
+
+def default_warn_pct() -> float:
+    try:
+        return float(os.getenv("BUDGET_WARN_PCT", _DEFAULT_WARN_PCT))
+    except ValueError:
+        return _DEFAULT_WARN_PCT
+
+
+def ensure_budget_properties() -> None:
+    """Add the budget properties to the Projects db if they're missing.
+
+    Same shape as ensure_person_property/ensure_task_properties: read the
+    schema, add only what isn't there, one update. Safe to run on every boot.
+    """
+    ds = _notion.data_sources.retrieve(PROJECTS_DS)
+    have = ds["properties"]
+    missing = {}
+    if BUDGET_PROP not in have:
+        missing[BUDGET_PROP] = {"number": {}}
+    if BUDGET_POLICY_PROP not in have:
+        missing[BUDGET_POLICY_PROP] = {"select": {"options": [
+            {"name": POLICY_WARN, "color": "yellow"},
+            {"name": POLICY_BLOCK, "color": "red"},
+        ]}}
+    if BUDGET_OVERRUN_PROP not in have:
+        missing[BUDGET_OVERRUN_PROP] = {"number": {}}
+    if BUDGET_WARN_PROP not in have:
+        missing[BUDGET_WARN_PROP] = {"number": {}}
+    if BUDGET_NOTIFIED_PROP not in have:
+        missing[BUDGET_NOTIFIED_PROP] = {"rich_text": {}}
+    if missing:
+        _notion.data_sources.update(PROJECTS_DS, properties=missing)
+
+
+def _budget_from_props(props: dict) -> dict | None:
+    """Parse the budget properties off a project page, or None if unbudgeted.
+
+    Every read goes through .get(): these columns are addressed by name, and
+    this app has already been bitten by someone renaming a Notion column (see
+    alloc_person_prop, and the Time Entries 'Logged by' column that is
+    currently called 'melisa'). A renamed budget column must read as "no
+    budget" — the project simply stops being enforced — never as a 500.
+    """
+    hours = props.get(BUDGET_PROP, {}).get("number")
+    if hours is None:
+        return None
+    sel = props.get(BUDGET_POLICY_PROP, {}).get("select") or {}
+    policy = sel.get("name") or POLICY_WARN
+    if policy not in BUDGET_POLICIES:
+        policy = POLICY_WARN
+    overrun = props.get(BUDGET_OVERRUN_PROP, {}).get("number") or 0
+    warn = props.get(BUDGET_WARN_PROP, {}).get("number")
+    notified = props.get(BUDGET_NOTIFIED_PROP, {}).get("rich_text") or []
+    return {
+        "hours": float(hours),
+        "policy": policy,
+        "overrun_pct": float(overrun),
+        # None means "use the env default", resolved here so callers never have
+        # to know the difference.
+        "warn_pct": float(warn) if warn is not None else default_warn_pct(),
+        "warn_pct_set": warn is not None,
+        "notified": notified[0]["plain_text"] if notified else "",
+        "limit": float(hours) * (1 + float(overrun) / 100),
+    }
+
+
+_BUDGET_TTL = 60.0
+_budget_cache: dict = {"at": 0.0, "by_id": None}
+_budget_lock = threading.Lock()
+
+
+def project_budgets(refresh: bool = False) -> dict:
+    """Cached {project_id: budget dict} for every project that has a budget.
+
+    Cached for the same reason access_ids is: this is consulted on every hours
+    write, and most of those writes are for projects with no budget at all —
+    which this dict answers without touching Notion. A budget edited in Notion
+    takes up to _BUDGET_TTL seconds to bite.
+    """
+    now = time.monotonic()
+    if not refresh:
+        with _budget_lock:
+            if _budget_cache["by_id"] is not None and now - _budget_cache["at"] < _BUDGET_TTL:
+                return _budget_cache["by_id"]
+    try:
+        by_id = {p["id"]: p["budget"] for p in list_projects(active_only=False)
+                 if p.get("budget")}
+    except Exception:
+        logging.exception(
+            "Reading project budgets failed — were the budget columns renamed in "
+            "Notion? Treating every project as unbudgeted for now."
+        )
+        by_id = {}
+    with _budget_lock:
+        _budget_cache.update(at=now, by_id=by_id)
+    return by_id
+
+
+def budget_for(project_id: str) -> dict | None:
+    return project_budgets().get(project_id)
+
+
+def month_bounds(date_iso: str) -> tuple[str, str]:
+    """The calendar month containing `date_iso`, as (first_day, last_day).
+
+    Calendar month, decided: the 1st to the last day, the same window
+    _period_range uses everywhere else in the app. No billing-cycle offsets and
+    no proration for a project that starts mid-month.
+    """
+    d = dt.date.fromisoformat(date_iso[:10])
+    first = d.replace(day=1)
+    nxt = (first + dt.timedelta(days=32)).replace(day=1)
+    return first.isoformat(), (nxt - dt.timedelta(days=1)).isoformat()
+
+
+def project_month_hours(project_id: str, date_iso: str) -> float:
+    """Hours already tracked against one project in the calendar month of `date_iso`.
+
+    Keyed on the entries' own Date, so a backfill logged today against an
+    August date spends August's budget. Uses project_entries, which filters the
+    Project relation inside the Notion query rather than paging the whole db.
+    """
+    first, last = month_bounds(date_iso)
+    return sum(e["hours"] or 0 for e in project_entries(project_id, first, last))
+
+
+def _num(x: float) -> str:
+    """Format hours the way the app does elsewhere: 7 not 7.0, 7.5 stays 7.5."""
+    return f"{x:g}"
+
+
+class BudgetExceeded(Exception):
+    """A write was refused because it would take a project past its cap.
+
+    Carries the numbers so each route can phrase it in its own idiom rather
+    than re-deriving them.
+    """
+
+    def __init__(self, project: str, month: str, budget: float, limit: float,
+                 tracked: float, attempted: float):
+        self.project = project
+        self.month = month
+        self.budget = budget
+        self.limit = limit
+        self.tracked = tracked
+        self.attempted = attempted
+        self.remaining = max(0.0, limit - tracked)
+        over = " (including the allowed overrun)" if limit > budget else ""
+        super().__init__(
+            f"{project} has a {_num(budget)} h budget for {month} and "
+            f"{_num(tracked)} h are already logged, so there "
+            f"{'is' if self.remaining == 1 else 'are'} {_num(self.remaining)} h "
+            f"left{over}. This entry would add {_num(attempted)} h."
+        )
+
+
+def check_budget(project_id: str, date: str, delta: float) -> None:
+    """Raise BudgetExceeded if adding `delta` hours would cross the project's cap.
+
+    Three ways this returns quietly, and each matters:
+
+    * the project has no budget, or its policy is Warn only — the common case,
+      answered from the cache without a Notion read;
+    * `delta` is zero or negative. **A write that lowers a project's month
+      total is never refused**, or a project sitting over its cap could never be
+      corrected: every edit, including the one that fixes it, would be "over
+      budget";
+    * the projected total lands exactly on the limit. The cap refuses the hour
+      that *crosses* it, so filling a 40 h budget to exactly 40 h is allowed.
+
+    Note what isn't here: any notion of who is asking. Admins are exempt, but
+    that's decided by the caller passing enforce=False — this module never
+    reaches for auth, so the CLIs (which have no user at all) stay simple.
+    """
+    if delta <= 0:
+        return
+    b = budget_for(project_id)
+    if not b or b["policy"] != POLICY_BLOCK:
+        return
+    tracked = project_month_hours(project_id, date)
+    projected = tracked + delta
+    if projected <= b["limit"] + 1e-9:
+        return
+    raise BudgetExceeded(
+        project=_project_name_map().get(project_id, "This project"),
+        month=dt.date.fromisoformat(date[:10]).strftime("%B %Y"),
+        budget=b["hours"], limit=b["limit"], tracked=tracked, attempted=delta,
+    )
+
+
+_UNSET = object()  # "leave this property alone", which None can't mean here
+
+
+def set_budget(project_id: str, hours: float | None = _UNSET,  # type: ignore[assignment]
+               policy: str | None = None,
+               overrun_pct: float | None = None,
+               warn_pct: float | None = None) -> dict:
+    """Write one project's budget settings. Only what's passed is written.
+
+    `hours=None` **clears** the budget (the project stops being budgeted);
+    omitting `hours` leaves it untouched. The two have to be distinguishable,
+    or editing a policy on its own would silently wipe the number next to it.
+
+    Only the named properties are written — a project page's People property is
+    the assignment list /schedule and /assignments both depend on, and
+    rewriting the whole property bag would clobber it.
+
+    The id arrives from the browser, so the page's parent is checked before the
+    write, the way set_entry_hours and delete_absence do.
+    """
+    props: dict = {}
+    if hours is not _UNSET:
+        if hours is None:
+            # Notion clears a number with an explicit null. This is the only
+            # "off switch": an empty field, not a checkbox.
+            props[BUDGET_PROP] = {"number": None}
+        else:
+            if hours < 0:
+                raise ValueError("a budget can't be negative")
+            props[BUDGET_PROP] = {"number": float(hours)}
+    if policy is not None:
+        if policy not in BUDGET_POLICIES:
+            raise ValueError(f"unknown budget policy {policy!r}")
+        props[BUDGET_POLICY_PROP] = {"select": {"name": policy}}
+    if overrun_pct is not None:
+        if overrun_pct < 0:
+            raise ValueError("an overrun can't be negative")
+        # 0 and blank mean the same thing (cap exactly at the budget), so store
+        # the blank — otherwise the column fills up with noise-value zeroes.
+        props[BUDGET_OVERRUN_PROP] = {"number": float(overrun_pct) or None}
+    if warn_pct is not None:
+        if not 0 < warn_pct <= 1000:
+            raise ValueError("the warning threshold must be a percentage")
+        props[BUDGET_WARN_PROP] = {"number": float(warn_pct)}
+    if (policy is None and hours not in (_UNSET, None)
+            and not budget_for(project_id)):
+        # First budget on this project: default the policy rather than leaving
+        # the select blank. Typing a number is meant to be one keystroke
+        # sequence — nobody is choosing 37 policies up front — and Warn only is
+        # the safe default, since it changes nothing about who can log time.
+        props[BUDGET_POLICY_PROP] = {"select": {"name": POLICY_WARN}}
+    if not props:
+        return budget_for(project_id) or {}
+    with _write_lock:
+        page = _notion.pages.retrieve(project_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(PROJECTS_DS):
+            raise ValueError("not a project")
+        _notion.pages.update(project_id, properties=props)
+    project_budgets(refresh=True)  # the page re-renders straight after this
+    return budget_for(project_id) or {}
+
+
+def budget_alert(project_id: str, date: str) -> dict | None:
+    """Return an alert payload if this project just crossed a threshold, else None.
+
+    Called after a successful write. Two levels — `warn` at the project's own
+    percentage and `over` at 100% — and each fires **once per project per
+    month**, recorded in the Budget notified property as e.g. "2026-08:over".
+    That stamp is Harvest's `over_budget_notification_date` idea: without it,
+    every subsequent entry in an over-budget month sends another email.
+
+    A new month means the stamp no longer matches, so it fires again — which is
+    the intended behaviour for a budget that resets monthly.
+
+    Deliberately indifferent to who logged the hours. Admins are never blocked,
+    so an admin overrun is exactly the case this has to catch.
+    """
+    b = budget_for(project_id)
+    if not b or not b["hours"]:
+        return None
+    tracked = project_month_hours(project_id, date)
+    pct = tracked / b["hours"] * 100
+    if pct >= 100:
+        level = "over"
+    elif pct >= b["warn_pct"]:
+        level = "warn"
+    else:
+        return None
+    month = date[:7]
+    stamp = f"{month}:{level}"
+    # "over" supersedes "warn" within a month; dropping back never re-fires.
+    if b["notified"] == stamp or (level == "warn" and b["notified"] == f"{month}:over"):
+        return None
+    with _write_lock:
+        _notion.pages.update(project_id, properties={
+            BUDGET_NOTIFIED_PROP: {"rich_text": [{"text": {"content": stamp}}]},
+        })
+    project_budgets(refresh=True)
+    return {
+        "level": level,
+        "project": _project_name_map().get(project_id, "A project"),
+        "project_id": project_id,
+        "month": dt.date.fromisoformat(date[:10]).strftime("%B %Y"),
+        "budget": b["hours"], "tracked": tracked, "pct": pct,
+        "remaining": b["hours"] - tracked,
+        "policy": b["policy"], "limit": b["limit"],
+    }
