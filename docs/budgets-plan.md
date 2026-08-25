@@ -1,6 +1,7 @@
 # Monthly project budgets — implementation plan
 
-Status: **plan only**, nothing built yet. Written 2026-08-24.
+Status: **plan only**, nothing built yet. Written 2026-08-24; all open questions settled
+(§9), so this is ready to build from.
 
 Adds three things to the hours app:
 
@@ -207,6 +208,11 @@ app has no billable flag on an entry at all, so the question doesn't arise — b
 worth knowing that's a deliberate match rather than an oversight, and that adding a
 billable flag later would immediately raise "does it count against the budget?".
 
+**Calendar month, decided** (§9): the 1st to the last day, the same window `_period_range`
+already uses everywhere else. No billing-cycle offsets, no proration for a project that
+starts mid-month — a 40 h budget is 40 h in the month it started, however many days of it
+are left.
+
 > Keyed on the entry's `Date`, not on when it was created. A backfill logged in September
 > against an August date spends **August's** budget. This is the only reading consistent
 > with the rest of the app (`/reports`, `/project`, invoices all key on `Date`), and it
@@ -325,8 +331,39 @@ budget.
 
 Writing it is a `pages.update` on the project page. Note `set_project_member`
 (`notion_ops.py:537`) is currently the *only* write to a project page — this is the
-second, so it takes `_write_lock` (`:732`) like everything else, and must not clobber
+second, so it takes `_write_lock` (`:836`) like everything else, and must not clobber
 `People` by writing the whole property bag.
+
+### Day one is 37 empty fields — design for that
+
+There are no budgets to import (§9). Every one of the ~37 active projects gets its number
+typed in by hand, once, on this page. **That first sitting is the page's most demanding
+use, and it happens before any of the dashboard value exists** — so it can't be an
+afterthought bolted onto a reporting table.
+
+What that requires, none of it expensive:
+
+- **Every project renders an input, not a "＋ Add budget" affordance.** A row whose Budget
+  cell is an empty number field is already the editor; nothing to click into first.
+- **`Enter` and `Tab` commit and move to the next row's Budget field.** Typing 37 numbers
+  should never involve the mouse. This is the whole ergonomic ask.
+- **Save per field, on blur**, not a page-level Save button — one wrong keystroke shouldn't
+  cost the other 36, and there's no draft state to lose.
+- **Policy defaults to `Warn only` when a budget is first set**, so entering a number is
+  genuinely one keystroke sequence. Nobody choosing 37 policies up front. Overrun % and
+  Warn at % stay blank (→ env defaults) until someone deliberately touches them.
+- **Sort by name while budgets are being entered.** The over-budget-first sort is right for
+  every later visit and wrong for this one — a list that reorders under the cursor as you
+  type is unusable. Simplest honest rule: rows with no budget sort by name; once a budget
+  exists the trouble-first sort takes over. It settles itself as the page fills up.
+- The **stale-totals bar will fire on nearly every save** during that first pass, which is
+  correct but noisy. Debounce it, or suppress it while the row had no budget before —
+  there were no percentages to invalidate.
+
+Phase 0 is the escape hatch if any of this slips: the properties exist on the Projects db,
+so the numbers can be typed straight into the Notion table and the app reads them. Worth
+saying out loud, because it means **phase 1 can ship read-only and still be useful** — but
+also that phase 1 without the editing isn't finished.
 
 Clearing the Budget field writes `None` (Notion clears the number) → the project drops
 back to "no budget", and the policy stops applying. **This is the only "off switch"**,
@@ -484,7 +521,7 @@ Each phase is independently shippable and leaves the app working.
 | Phase | What | Touches |
 | --- | --- | --- |
 | **0 — Schema** | `ensure_budget_properties()`; `list_projects` returns `budget`; TTL cache. Nothing enforced, nothing shown. Budgets can be typed into Notion by hand and read back. | `notion_ops.py`, `app.py` `_startup` |
-| **1 — Control centre** | `GET /budgets` + `/budgets.csv` + nav entry + `POST /api/budget` inline editing. **The whole "where are we vs budget" ask, delivered.** | new `budgets.html`, `app.py`, `notion_ops.py` |
+| **1 — Control centre** | `GET /budgets` + `/budgets.csv` + nav entry + `POST /api/budget` inline editing, with the keyboard-first bulk entry §4 describes — the first sitting is 37 numbers typed by hand. **The whole "where are we vs budget" ask, delivered.** | new `budgets.html`, `app.py`, `notion_ops.py` |
 | **2 — The meter** | `GET /api/budget/status` + the live line on the log-hours form. Warning at the moment of typing. | `form.html`, `app.py` |
 | **3 — Enforcement** | `BudgetExceeded` in `create_entry` + `set_cell` behind an `enforce=` flag; `/entry` and `/api/cell` pass `enforce=not is_admin`; the reduce-is-always-allowed rule; the `Over cap` status. No CLI changes. | `notion_ops.py`, `app.py`, `form.html`, `week.html` |
 | **4 — Alerts** | `mailer.send_plain`, `Budget notified` stamp, `BUDGET_ALERTS_ENABLED`. | `mailer.py`, `notion_ops.py` |
@@ -509,18 +546,21 @@ work this feature doesn't need.
 
 ## 9. Decisions taken
 
-- **Admins are never blocked** (JP, 2026-08-24). A cap applies to non-admins only; admins
-  can always track, on any project, past any limit. See §5 — this drops enforcement from
-  three write paths to two, makes the CLIs consistent by default, and shifts the burden
-  onto the control centre to make an admin overrun visible after the fact.
+All three open questions are settled (JP, 2026-08-24). Nothing is blocking a build.
 
-## 10. Open questions
-
-1. **Is the budget per calendar month, or per invoicing month?** They're the same today.
-   If a client's month ever runs 15th–14th, this needs to know.
-2. **Do the ~37 active projects have known budgets to seed?** Only one Notion project
-   name carries an hours suffix (`Vital Signals - OSS (80h)`) — the rest of the
-   suffixes live on the Harvest-side names (`SaltWorks - OSS (40h)`,
-   `Streamside OSS - 60h (2026)`, per `docs/harvest-sync.md`). So budgets will be typed
-   in on `/budgets` rather than parsed out of names, and parsing names would be a bad
-   idea anyway: it would silently re-derive a budget every time someone renames a project.
+- **Admins are never blocked.** A cap applies to non-admins only; admins can always
+  track, on any project, past any limit. See §5 — this drops enforcement from three write
+  paths to two, makes the CLIs consistent by default, and shifts the burden onto the
+  control centre to make an admin overrun visible after the fact.
+- **The budget month is the calendar month.** 1st to last day, matching `_period_range`'s
+  existing monthly granularity, so `/budgets` can't drift from `/project`, `/invoices` and
+  `/absences`. No per-client billing cycles, no proration, no offset months — a budget
+  resets at midnight on the 1st and that is the only rule. If a client ever wants a
+  15th–14th cycle, it's a new concept and should be argued for on its own merits rather
+  than smuggled in as a budget option.
+- **No budgets to seed — every number gets typed in by hand.** So nothing parses project
+  names, which is the right outcome regardless: deriving `40` from `"SaltWorks - OSS (40h)"`
+  would silently re-derive a budget every time someone renamed a project, and would have
+  quietly disagreed with the Harvest-side name it was copied from. The consequence is that
+  the first sitting on `/budgets` is 37 empty fields, which §4 now designs for explicitly
+  rather than treating as an empty state.
