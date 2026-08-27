@@ -858,22 +858,90 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 .projgrid .entry-row td { background: var(--bg); font-weight: 500; }
 .projgrid .entry-row .col-project.sub {
   background: var(--bg); padding-left: 34px; font-weight: 500; color: var(--muted);
-  display: flex; gap: 10px; align-items: baseline;
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
 }
 .projgrid .entry-row .entry-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.projgrid .entry-row .entry-desc { color: var(--muted); font-size: 13.5px; }
+/* min-width:0 is what stops a long description (or a nowrap ticket link) from
+   pushing out of this flex cell: a flex item's default min-width:auto refuses
+   to shrink below its content, and the cell is *sticky*, so the spill painted
+   straight over the Hours input beside it. */
+.projgrid .entry-row .entry-desc { color: var(--muted); font-size: 13.5px; min-width: 0; }
 .projgrid .entry-row .cell { padding: 2px 4px; }
 .projgrid .entry-row .cell input { padding: 6px 4px; font-size: 14px; min-width: 60px; border-color: var(--line); }
 /* In the rollup an entry sits one level deeper — project ▸ person ▸ entry —
    so it indents past the person name it hangs off. */
 .projgrid .person-row .disclosure { font-weight: 500; color: var(--muted); }
 .projgrid .entry-row[data-parent] .col-project.sub { padding-left: 64px; }
+/* a column header with a narrow-screen short form: the wide one is what shows
+   until the mobile block below swaps them */
+.lbl-narrow { display: none; }
 .expand-all {
   float: right; background: none; border: 1px solid var(--line); color: var(--muted);
   font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .03em; padding: 3px 9px; border-radius: 7px; cursor: pointer;
 }
 .expand-all:hover { color: var(--ink); background: var(--active-bg); }
+
+/* ---- By project on a phone ----
+   Five columns and a 520px floor meant this table only ever fit sideways: Days
+   and Entries sat off-screen, and the name column was squeezed until every
+   description wrapped a word per line while the ticket links (white-space:
+   nowrap, in a *sticky* cell) painted over the Hours input to their right.
+   Below 560px the table drops its min-width and every column is sized to the
+   screen instead — the share bar keeps only its percentage, and an entry row
+   stacks its date, description and ticket rather than laying them in a row
+   that never had the width. Scoped to .projgrid so the week/schedule/
+   assignment grids keep their horizontal scroll. */
+@media (max-width: 560px) {
+  /* fixed layout: the columns below are the widths, full stop. Auto layout
+     sizes a column to its widest unbreakable word, so one long project name
+     (or a ticket label) quietly pushed the table back off the screen. */
+  table.grid.projgrid { min-width: 0; table-layout: fixed; }
+  /* auto width: the name column takes whatever the numbers leave, and the
+     `.grid .col-project` 104px cap above must not apply here */
+  .projgrid td.col-project, .projgrid th.col-project {
+    min-width: 0; max-width: none; width: auto; padding-right: 6px;
+  }
+  .projgrid .col-hours { width: 52px; }
+  .projgrid .col-share { width: 40px; }
+  .projgrid .col-num { width: 40px; font-size: 12px; }
+  /* every column stays: in the rollup a project row's count pill is its number
+     of *people*, so its entry count is nowhere else on the page. Only the
+     header shrinks — "Entries" doesn't fit 40px, "Ent" does. */
+  /* .col-num's 12px is the more specific selector, so the header restates it */
+  .projgrid thead th, .projgrid thead th.col-num { font-size: 10px; letter-spacing: 0; }
+  .projgrid thead .lbl-narrow { display: inline; }
+  /* still read in full by a screen reader, which is why this isn't display:none */
+  .projgrid thead .lbl-wide {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  /* the bar needs room the phone doesn't have; the number carries the meaning */
+  .projgrid .share-track { display: none; }
+  .projgrid .share { justify-content: flex-end; gap: 0; }
+  .projgrid .share-pct { width: auto; font-size: 12px; }
+  /* the name is the one flex item allowed to take the slack — the caret and
+     the count pill keep their width, and only the name wraps. break-word, not
+     the cell's `anywhere`, so it wraps between words ("Franco / Panzarin")
+     rather than mid-word; the cell keeps `anywhere` because a description can
+     be a pasted URL, whose min width would otherwise widen the whole table. */
+  .projgrid .disclosure { text-align: left; align-items: baseline; gap: 6px; }
+  .projgrid .who-name { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+  .projgrid .caret { flex: none; line-height: 1.5; }
+  .projgrid .who-count { flex: none; }
+  /* shallower indents: 34/64px of the desktop nesting is most of a phone's
+     name column, and the row background already shows the level */
+  .projgrid .person-row .col-project.sub { padding-left: 18px; }
+  .projgrid .entry-row .col-project.sub { display: block; padding-left: 18px; }
+  .projgrid .entry-row[data-parent] .col-project.sub { padding-left: 28px; }
+  .projgrid .entry-row .entry-date { display: block; font-size: 12px; }
+  .projgrid .entry-row .entry-desc { display: block; }
+  .projgrid .entry-row .cell input { min-width: 44px; }
+  /* the one place a ticket label may break mid-word — it is the whole line */
+  .projgrid .entry-row .tlink, .entrylist td.desc .tlink {
+    display: block; margin-left: 0; margin-top: 2px; white-space: normal; overflow-wrap: anywhere;
+  }
+}
 
 /* Notion ticket picker on the log form: a search box whose results drop over
    the Save button, plus the chosen ticket as a chip. */

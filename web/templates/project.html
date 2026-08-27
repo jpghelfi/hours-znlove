@@ -96,7 +96,10 @@
       <th class="col-hours">Hours</th>
       <th class="col-share">Share</th>
       <th class="col-num">Days</th>
-      <th class="col-num">Entries</th>
+      {# "Ent" below 560px: the column is 40px wide there and "Entries" clips.
+         Both spans are always in the DOM — one is display:none — so the
+         header reads the same to a screen reader at either width. #}
+      <th class="col-num"><span class="lbl-wide">Entries</span><span class="lbl-narrow" aria-hidden="true">Ent</span></th>
     </tr>
   </thead>
   {% for g in d.groups %}
@@ -104,7 +107,7 @@
     <tr class="group-row {{ 'idle' if not g.hours }}">
       <td class="col-project">
         <button type="button" class="disclosure" onclick="toggleGroup(this)" aria-expanded="false">
-          <span class="caret" aria-hidden="true">▸</span>{{ g.project_name }}
+          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ g.project_name }}</span>
           <span class="who-count">{{ g.rows|length }}</span>
         </button>
       </td>
@@ -120,7 +123,7 @@
         {% if r.log %}
         <button type="button" class="disclosure person-disclosure" data-pkey="{{ r.key }}"
                 onclick="togglePerson(this)" aria-expanded="false">
-          <span class="caret" aria-hidden="true">▸</span>{{ r.person_name }}
+          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ r.person_name }}</span>
           <span class="who-count">{{ r.log|length }}</span>
         </button>
         {% else %}{{ r.person_name }}{% endif %}
@@ -168,7 +171,10 @@
       <th class="col-hours">Hours</th>
       <th class="col-share">Share</th>
       <th class="col-num">Days</th>
-      <th class="col-num">Entries</th>
+      {# "Ent" below 560px: the column is 40px wide there and "Entries" clips.
+         Both spans are always in the DOM — one is display:none — so the
+         header reads the same to a screen reader at either width. #}
+      <th class="col-num"><span class="lbl-wide">Entries</span><span class="lbl-narrow" aria-hidden="true">Ent</span></th>
     </tr>
   </thead>
   {% for r in d.rows %}
@@ -178,7 +184,7 @@
         {# somebody with nothing logged has nothing to expand into — plain name #}
         {% if r.log %}
         <button type="button" class="disclosure" onclick="toggleGroup(this)" aria-expanded="false">
-          <span class="caret" aria-hidden="true">▸</span>{{ r.person_name }}
+          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ r.person_name }}</span>
           <span class="who-count">{{ r.log|length }}</span>
         </button>
         {% else %}{{ r.person_name }}{% endif %}
