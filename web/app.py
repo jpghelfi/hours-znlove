@@ -997,10 +997,15 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     import io
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["date", "person", "project", "goal", "hours", "description", "task", "task_url"])
+    # the goal column exists only where goals do, so a workspace that never set
+    # them up downloads exactly the file it always did
+    goals_on = ops.goals_enabled()
+    head = ["date", "person", "project"] + (["goal"] if goals_on else [])
+    w.writerow(head + ["hours", "description", "task", "task_url"])
     for e in sorted(entries, key=lambda e: (e["date"], e["project"], e["person"])):
-        w.writerow([e["date"], e["person"], e["project"], e.get("goal", ""), e["hours"],
-                    e["description"], e.get("task", ""), e.get("task_url", "")])
+        w.writerow([e["date"], e["person"], e["project"]]
+                   + ([e.get("goal", "")] if goals_on else [])
+                   + [e["hours"], e["description"], e.get("task", ""), e.get("task_url", "")])
     from fastapi.responses import Response
     fname = f"{_export_slug(_export_label(sel, sel_ids))}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
