@@ -259,3 +259,206 @@ on data that only exists once phase 1 has been used for a month.
   against a goal teaches people to log against no goal.
 - **Don't make the goal required** on the log form for the same reason.
 - **Don't put it in the nav.** Nine tabs already wrap to three rows on a phone.
+
+---
+
+# The admin's view — how this actually works
+
+Everything below assumes the recommended model (a Goals db related from Time Entries).
+Four things were asked for; each gets a flow.
+
+## The model, adjusted for reuse
+
+One property is added to the sketch above, because "reuse it month after month" is a
+different shape from "80 h for the homepage":
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `Target hours` | number | empty = untargeted (the `Monthly budget` empty-is-not-0 rule) |
+| **`Target basis`** | select | **`Total`** (default) · **`Per month`** |
+
+That single select is the whole of "reuse":
+
+| | New homepage | Maintenance |
+| --- | --- | --- |
+| `Target hours` | 80 | 10 (or empty) |
+| `Target basis` | `Total` | `Per month` |
+| `Due` | 2026-10-31 | *(empty — it never ends)* |
+| Status when spent | `Done` | stays `Open` forever |
+| What the meter shows | 62 of 80 h · 78 % | 8 of 10 h **in August** |
+
+A **standing** goal is simply one with `Per month` and no `Due`. It is one Notion row that
+entries from January and December both point at — not a new row each month. That matters:
+a goal-per-month would mean 12 rows × 27 projects a year, and the picker would be unusable
+by March.
+
+**The consequence to design around:** a standing goal's lifetime total only ever grows. So
+every goal read-out is **period-scoped by default** — "Maintenance, 8 h in August" — with
+the all-time total available on the goal itself. A page that showed "Maintenance: 340 h"
+next to August's numbers would be noise.
+
+## Flow 1 · Creating a goal on the go
+
+No separate "manage goals" screen to visit first. Goals are created **from the place you
+needed one**, exactly the way `＋ New ticket` already works next to the ticket search on
+the log form.
+
+```
+/project · Fotosprint · August 2026
+
+  6 entries selected · 14.5 h                     [ File under… v ]
+                                                  +-------------------------+
+                                                  | (search) maint          |
+                                                  +-------------------------+
+                                                  | Maintenance      * Open |  <- this project's
+                                                  |-------------------------|
+                                                  | + Create "maint"        |
+                                                  | Maintenance             |  <- used on 6 other
+                                                  |   used on 6 projects    |     projects
+                                                  +-------------------------+
+```
+
+Three things in that one dropdown, in order:
+
+1. **This project's open goals**, filtered as you type. Closed ones are hidden unless you
+   ask — the picker stays short.
+2. **`＋ Create "<what you typed>"`** — one keystroke sequence from typing to filed. The
+   goal is created against the current project with `Status: Open` and no target;
+   everything else is editable later. Nobody sets a target while triaging entries.
+3. **Names already used on other projects.** "Maintenance" will exist ~27 times, once per
+   project, and the cross-project report groups them by name — so a typo forks the rollup
+   in two. Offering the existing spelling is what keeps that from happening (matched with
+   `_norm`, the same case/punctuation-insensitive compare `match_project_option` already
+   uses). Picking one **copies the name onto a new goal for this project**; it does not
+   share a row, because targets and status are per project.
+
+One thing the codebase already learned the hard way applies here: **the create dialog must
+render outside the entry form** (`base.html`'s `modals` block). A `required` field inside a
+closed `<dialog>` inside a form silently blocks every submit — that's what broke logging
+hours the day `TICKET_CREATE_DS_ID` was set.
+
+## Flow 2 · Filing many entries at once
+
+This is the flow that has to be genuinely fast, because it's the one that runs every month.
+
+```
+/project · Fotosprint · August 2026 · Hours per person
+
+  +----------------------------------------------------------------------+
+  | GOALS                       HOURS   SHARE   TARGET                    |
+  | > Maintenance                 8      12%    8 of 10 h/mo  ########..  |
+  | > New homepage               62      88%    62 of 80 h    #######...  |
+  | > Unassigned                 46       -          <- click to triage   |
+  |   Total                     116                                       |
+  +----------------------------------------------------------------------+
+
+  [x] 46 entries in this period · unassigned only v      [ File under… v ]
+  +----------------------------------------------------------------------+
+  | [x]  2026-08-21  Franco    4    Cambio de boton en productos (ARG)    |
+  | [x]  2026-08-20  Franco    4    Incidencia canje cupon - chile        |
+  | [ ]  2026-08-19  Matias    1.5  Capitalize P in Policy   · Maintenance|
+  | [x]  2026-08-18  Franco    2    Cambio de boton en productos (ARG)    |
+  +----------------------------------------------------------------------+
+```
+
+What makes it fast, in the order it matters:
+
+- **Start from Unassigned.** Clicking that row filters the list to exactly the entries that
+  need a decision. Triage is a shrinking pile, not a re-scan of 64 rows.
+- **Select all, then deselect.** The header checkbox takes the whole *filtered* set — "all
+  46 unassigned", not "the 20 on screen". Most sweeps are "all of these except two".
+- **Shift-click for a range**, since entries are date-ordered and goals tend to be
+  date-contiguous.
+- **Filter before selecting**: by person, by text in the description, by ticket. "Every
+  entry on ticket *Cookie consent solution*" is one click, and it's the one place the
+  17 %-covered ticket data is genuinely useful — as a *selector*, never as the grouping.
+- **The action bar states the stakes**: "6 entries · 14.5 h → Maintenance". Hours, not just
+  a row count, because hours are what moves in the report.
+- **Undo, for one action.** Assignment is idempotent and reversible (each entry's previous
+  goal is known), so the bar keeps "↩ Undo — 6 entries back to Unassigned" until the next
+  action. This is what makes selecting 46 rows a low-stakes click.
+
+**The unavoidable cost, stated plainly:** filing 46 entries is 46 Notion writes at ~3/s —
+**about 15 seconds**, and 200 entries is over a minute. So the bar shows real progress
+("filed 31 of 46…"), the rows tick over as they land, and a failure part-way names exactly
+what was and wasn't filed. It must not hold the global `_write_lock`; goal assignment races
+with nothing.
+
+Anything over a cap (`MAX_GOAL_ASSIGN`, ~300, mirroring `MAX_COPY_ROWS`) is refused
+**before the first write**, whole rather than half-applied — the rule `clear_week` already
+follows.
+
+## Flow 3 · The report, by goal
+
+Two places, answering two different questions.
+
+**`/project`** answers *"where did this project's month go?"* — the block at the top of the
+mockup above. Per goal: hours, share of the project, and the target meter (`8 of 10 h/mo`
+for a standing goal, `62 of 80 h` for a one-off). Clicking a goal filters the whole page to
+it.
+
+**`/reports`** answers *"what is the team spending on, across everything?"* — a **By goal**
+breakdown beside the existing by-project and by-person ones, for the same period and the
+same people filter:
+
+```
+BY GOAL · August 2026 · everyone
+
+  Maintenance          6 projects    64 h   #######...   18%
+  New homepage         Fotosprint    62 h   #######...   18%
+  Bug triage           4 projects    31 h   ###.......    9%
+  Unassigned          19 projects   189 h   ############ 55%
+```
+
+Two deliberate decisions in that table:
+
+- **Rows group by goal *name* across projects**, which is what makes a standing goal like
+  Maintenance worth having — "what does maintenance cost us company-wide" is a real
+  question, and it's unanswerable if every project's Maintenance is a separate row. The
+  per-project split is one click down. (This is why the create picker offers existing
+  names: the rollup keys on `_norm(name)`.)
+- **Unassigned is a row, at its real size.** In month one it will be the biggest row on the
+  page. That's the point — it's the backlog meter, and hiding it would make every other
+  percentage a lie.
+
+Both feed the exports: a `Goal` column in `/project.csv` and `/project.xlsx`, and a
+per-goal subtotal block in the workbook — which is likely the real client-facing payoff,
+since "62 h homepage, 8 h maintenance" is a far better line item than 46 dated rows.
+
+## Flow 4 · A month in the life
+
+**End of August, Fotosprint.** Open `/project`, pick the project, monthly period. The goals
+block says `Unassigned 46 h`. Click it; the list filters to those 46. Select all. Most were
+the homepage push — deselect the four maintenance ones. `File under… → New homepage`.
+Fifteen seconds, and the block reads `New homepage 62 · Maintenance 8 · Unassigned 4`.
+Select the last four, type `maint`, pick the existing **Maintenance** — done.
+
+**Two months later**, the homepage ships. Open the goal, set `Status: Done`. It leaves the
+picker, keeps its hours, and its 142 h total is on the goal. Maintenance is untouched and
+still collecting — that's the reuse.
+
+**Any month**, `/reports → By goal` shows Maintenance across all 27 projects for the month
+without anybody having created a single new goal row.
+
+## What this asks of admins, honestly
+
+- **~1 minute per project per month** to triage, if done monthly. Done quarterly it's the
+  same clicks over three times the rows and a slower write.
+- **Consistent naming**, which the picker is designed to enforce rather than trust.
+- **Nothing from anyone else.** Non-admins log hours exactly as they do today; the goal is
+  applied afterwards by the people who know what the work was for. That's the phase-1
+  design on purpose — a goal picker on the log form (phase 2) only pays off once the goals
+  exist and are stable, and asking 8 people to categorise their own hours from day one is
+  how this feature would die.
+
+## Revised phasing, with the admin flows attached
+
+| Phase | What the admin gets | Rough size |
+| --- | --- | --- |
+| **1** | Goals db + relation · create-on-the-go picker · select-many + File under… + Undo · goals block on `/project` with Unassigned | 2 days |
+| **2** | **By goal** on `/reports` (cross-project, grouped by name) · Goal column + per-goal subtotals in CSV/XLSX | ~1 day |
+| **3** | `Target hours` + `Target basis` and the meters · goal status lifecycle (Done/Dropped) | ~1 day |
+| later | goal picker on the log form · goal-aware planning on `/schedule` | — |
+
+Phase 1 and 2 together are the whole ask. Phase 3 is what makes a goal a *goal* rather
+than a label, and it's safe to defer precisely because nothing enforces it.
