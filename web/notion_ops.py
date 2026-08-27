@@ -2357,7 +2357,8 @@ def update_goal(goal_id: str, name: str | None = None, target: float | None = _U
 
 
 def set_entry_goals(entry_ids: list[str], goal_id: str | None,
-                    allowed_ids: set | None = None) -> dict:
+                    allowed_ids: set | None = None,
+                    project_id: str | None = None) -> dict:
     """File a batch of existing entries under a goal (None clears it).
 
     Addressed by page id, like set_entry_hours — but `allowed_ids` is what makes
@@ -2394,6 +2395,14 @@ def set_entry_goals(entry_ids: list[str], goal_id: str | None,
             g = goal_map().get(goal_id)
         if not g:
             raise ValueError("unknown goal")
+        # The goal must belong to the same project as the entries. The UI never
+        # offers another project's goal, but the id comes from the browser —
+        # and a mis-filed entry would go missing from *both* sides: absent from
+        # the named rows of either project's block (its goal isn't theirs) and
+        # absent from Unassigned (it has one), while still counting toward the
+        # project total the block is built never to contradict.
+        if project_id and g["project_id"] != project_id:
+            raise ValueError("that goal belongs to another project")
     value = {"relation": [{"id": goal_id}] if goal_id else []}
     updated, failed = 0, []
     for eid in ids:

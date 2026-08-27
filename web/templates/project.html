@@ -476,7 +476,7 @@ function clearTicks() {
   refreshBar();
 }
 
-function setGoalCell(entryId, name) {
+function setGoalCell(entryId, name, goalId) {
   // an entry shows up twice — under its person and in the list below — so both
   // copies follow the filing, the way saveEntry() already keeps hours in step
   document.querySelectorAll(`[data-goal-of="${CSS.escape(entryId)}"]`).forEach(el => {
@@ -484,7 +484,10 @@ function setGoalCell(entryId, name) {
     el.classList.toggle('is-none', !name);
   });
   const tr = document.querySelector(`#entrylist tr[data-entry="${CSS.escape(entryId)}"]`);
-  if (tr) tr.dataset.goal = '';
+  // the row now *is* filed under this goal, and the next filing's Undo reads
+  // this to know where to put it back — writing '' here would quietly turn
+  // every later undo into "clear the goal"
+  if (tr) tr.dataset.goal = goalId || '';
 }
 
 async function postBatch(ids, goalId) {
@@ -512,7 +515,7 @@ async function fileMany(pairs, goalId, goalName) {
       text.textContent = `filing ${Math.min(i + slice.length, pairs.length)} of ${pairs.length}…`;
       const data = await postBatch(slice.map(x => x.id), goalId);
       const bad = new Set(data.failed || []);
-      slice.forEach(x => { if (!bad.has(x.id)) setGoalCell(x.id, goalName); });
+      slice.forEach(x => { if (!bad.has(x.id)) setGoalCell(x.id, goalName, goalId); });
       done += data.updated || 0;
       (data.failed || []).forEach(id => failed.push(id));
     }

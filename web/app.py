@@ -2642,12 +2642,16 @@ def _goal_rows(project_id: str, entries: list[dict], goals: list[dict],
             continue          # a closed goal with nothing this period is history
         row = {**g, "hours": h, "entries": counts.get(g["id"], 0),
                "share": round(h / total * 100) if total else 0, "meter": None}
-        if monthly and g["target"]:
+        # `is not None`, not truthiness: 0 is a real target here — "no hours
+        # allowed at all" — the same empty-is-not-0 rule _goal_row keeps and
+        # Monthly budget documents
+        if monthly and g["target"] is not None:
             # a standing goal is measured this month; a one-off over its life
             used = h if g["basis"] == "Per month" else lifetime.get(g["id"], h)
             row["meter"] = {
                 "used": round(used, 2), "target": g["target"],
-                "pct": round(used / g["target"] * 100) if g["target"] else 0,
+                # a 0 h target is over the moment anything at all is logged
+                "pct": round(used / g["target"] * 100) if g["target"] else (100 if used else 0),
                 "over": used > g["target"],
                 "scope": "this month" if g["basis"] == "Per month" else "all time",
             }
@@ -2744,7 +2748,8 @@ def api_entry_goal(request: Request, a: GoalAssign):
     rng = _period_range(period, _project_anchor(period, a.start))
     try:
         allowed = {e["id"] for e in ops.project_entries(a.project_id, rng["from"], rng["to"])}
-        res = ops.set_entry_goals(a.entry_ids, a.goal_id or None, allowed_ids=allowed)
+        res = ops.set_entry_goals(a.entry_ids, a.goal_id or None, allowed_ids=allowed,
+                                  project_id=a.project_id)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except Exception:

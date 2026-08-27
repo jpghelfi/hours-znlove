@@ -305,6 +305,36 @@ def _():
     assert pages.updated == []
 
 
+@check("a goal from another project is refused — entries can't be filed across")
+def _():
+    # not reachable from the UI, but the goal id comes from the browser. A
+    # mis-filed entry would go missing from both projects' blocks while still
+    # counting toward the total, which is the one thing the block promises.
+    goals = [goal("g1", "Theirs", project="p2")]
+    with fake_goals(goals), fake_writes() as pages:
+        try:
+            ops.set_entry_goals(["e1"], "g1", allowed_ids={"e1"}, project_id="p1")
+            raise AssertionError("should have refused")
+        except ValueError as exc:
+            assert "another project" in str(exc)
+    assert pages.updated == []
+
+
+@check("a goal from the same project is filed normally")
+def _():
+    goals = [goal("g1", "Ours", project="p1")]
+    with fake_goals(goals), fake_writes() as pages:
+        res = ops.set_entry_goals(["e1"], "g1", allowed_ids={"e1"}, project_id="p1")
+    assert res["updated"] == 1 and len(pages.updated) == 1
+
+
+@check("clearing a goal needs no project — there is no goal to belong anywhere")
+def _():
+    with fake_goals([goal("g1", project="p2")]), fake_writes() as pages:
+        res = ops.set_entry_goals(["e1"], None, allowed_ids={"e1"}, project_id="p1")
+    assert res["updated"] == 1
+
+
 @check("filing when goals aren't set up is refused, not silently skipped")
 def _():
     with fake_goals([], prop=None):
@@ -401,6 +431,22 @@ def _():
     with fake_goals(goals):
         rows = webapp._goal_rows("p1", [entry("e1", 4, "g1", "Maintenance")], goals, "monthly")
     assert rows[0]["meter"] is None
+
+
+@check("a 0 h target still gets a meter — 0 is not the same as untargeted")
+def _():
+    # the empty-vs-0 trap the budgets docs spell out: empty means "no target",
+    # 0 means "no hours are supposed to go here at all"
+    goals = [goal("g1", "Should be idle", target=0, basis="Per month")]
+    with fake_goals(goals):
+        rows = webapp._goal_rows("p1", [], goals, "monthly")
+        assert rows[0]["meter"] is not None
+        assert rows[0]["meter"]["pct"] == 0 and rows[0]["meter"]["over"] is False
+        # anything logged against it is instantly over
+        rows = webapp._goal_rows("p1", [entry("e1", 2, "g1", "Should be idle")],
+                                 goals, "monthly")
+        assert rows[0]["meter"]["over"] is True
+        assert rows[0]["meter"]["pct"] == 100      # not a division by zero
 
 
 @check("a stale ?goal= degrades to the whole project, and 'none' is honoured")
