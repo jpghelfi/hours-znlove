@@ -104,6 +104,20 @@ re-reads the entries logged for **this project and period** in one query and
 refuses anything outside that set. Cheaper, and strictly stronger: it also stops
 an entry being filed under another project's goal.
 
+**The block updates without a reload.** It is server-rendered from the numbers
+as they were *before* the filing, so leaving it alone would mean the one summary
+on the page answers the action just taken with the old answer. The period's
+total never moves — only its distribution — so the rows are recomputed exactly
+in the browser: hours shift between goals, shares are re-derived from the same
+total, and a `Per month` meter follows the month while a `Total` one follows its
+life by the same delta. The "totals are stale · Refresh" bar still appears, for
+the person tables above, which can't be recomputed as cheaply.
+
+**Both bottom bars live in one sticky stack** (`.bottombars`). As independent
+`position: sticky` siblings they docked to the same offset and the file bar
+simply covered the stale bar — hiding the control that reconciles the page at
+precisely the moment a filing had made it necessary.
+
 **Undo is one action deep.** Each entry's previous goal is captured before the
 write, so undo re-files them where they were — including entries that had a
 different goal, not just unfiled ones. That's what makes ticking 46 rows a
@@ -142,6 +156,10 @@ form** — a `required` control inside a closed `<dialog>` inside a form makes t
 browser refuse the form's submit with nothing to focus to explain why. That is
 exactly how "Save entry" silently stopped working the day the ticket dialog
 shipped (`_task_dialog.html`).
+
+**Removing a goal from a selection asks first** (`zConfirm`, the app's own
+dialog — never a native `confirm`/`alert`, per the rule `base.html` documents).
+Every other destructive action here does the same, and Undo is only one deep.
 
 **`/reports` → By goal** — the cross-project view, grouped by goal name for the
 same period and people filter as the rest of the page. One project is named

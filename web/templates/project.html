@@ -13,6 +13,7 @@
     <h1>{{ sel.name if sel else (sel_names|length ~ ' projects' if sel_ids else 'All projects') }}</h1>
     <div class="subtle">
       {%- if is_all %}Hours per project · expand one to see its people{% else %}Hours per person{% endif %} · {{ rng.label }}
+      {%- if goal_sel %} · <strong>{% if goal_sel == unassigned %}not filed under a goal{% else %}{{ (goal_rows|selectattr('id', 'equalto', goal_sel)|first).name }}{% endif %}</strong> only{% endif %}
       {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|length ~ ' projects' }}{% endif %}</div>
   </div>
   <div class="weeknav">
@@ -179,6 +180,7 @@
     {% for g in goal_rows %}
     <div class="goalrow-wrap">
     <a class="goalrow{{ ' is-on' if goal_sel == g.id }}{{ ' is-none' if g.unassigned }}"
+       data-goal-row="{{ g.id }}" data-hours="{{ '%g'|format(g.hours) }}"
        href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{% if goal_sel != g.id %}&goal={{ g.id }}{% endif %}"
        {% if goal_sel == g.id %}aria-current="true"{% endif %}>
       <span class="goalrow-name">{{ g.name }}
@@ -186,11 +188,14 @@
       <span class="goalrow-h">{{ '%g'|format(g.hours) }}<span class="unit">h</span></span>
       <span class="goalrow-bar"><span class="goalrow-fill" style="width: {{ g.share }}%"></span></span>
       <span class="goalrow-share">{{ g.share }}%</span>
+      {# the target reads as text, not a second bar: two bars of different
+         scales in one row read as one broken bar, and /budgets already
+         established one-bar-plus-a-number as the idiom here #}
       {% if g.meter %}
       <span class="goalrow-meter{{ ' is-over' if g.meter.over }}"
+            data-used="{{ '%g'|format(g.meter.used) }}" data-target="{{ '%g'|format(g.meter.target) }}"
             title="{{ '%g'|format(g.meter.used) }} of {{ '%g'|format(g.meter.target) }} h, {{ g.meter.scope }}">
-        <span class="cap{{ ' cap-over' if g.meter.over }}"><i style="width: {{ [g.meter.pct, 100]|min }}%"></i></span>
-        {{ '%g'|format(g.meter.used) }}/{{ '%g'|format(g.meter.target) }} h
+        {{ '%g'|format(g.meter.used) }}/{{ '%g'|format(g.meter.target) }} h{% if g.basis == 'Per month' %}<span class="per">/mo</span>{% endif %}
       </span>
       {% elif not g.unassigned %}<span class="goalrow-meter subtle">{{ g.entries }} {{ 'entry' if g.entries == 1 else 'entries' }}</span>
       {% else %}<span class="goalrow-meter subtle">{{ g.entries }} to file</span>{% endif %}
@@ -207,7 +212,9 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="subtle">No goals on this project yet — make one, then tick entries below to file them under it.</div>
+  <div class="goalcard-empty">No goals on this project yet.
+    <button type="button" class="btn btn-primary btn-sm" onclick="newGoal()">＋ New goal</button>
+    <span class="subtle">then tick entries in the list below to file them under it.</span></div>
   {% endif %}
 </div>
 {% endif %}
@@ -272,20 +279,22 @@
 </div>
 {% endif %}
 
-<details class="card wide entrylist" id="entrylist">
-  <summary><span id="entry-count">{{ d.entries|length }}</span> entries in this period · <span class="subtle">edit any Hours cell to correct it</span></summary>
+{# open when a goal filter is on: that view exists to be triaged, and landing
+   on it with the rows collapsed hides the only action it is for #}
+<details class="card wide entrylist" id="entrylist"{{ ' open' if goal_sel }}>
+  <summary><span id="entry-count">{{ d.entries|length }}</span> entries in this period · <span class="subtle">{% if goals_on %}tick rows to file them under a goal, or edit{% else %}edit{% endif %} any Hours cell to correct it</span></summary>
   <div class="entrylist-scroll">
   <table class="grid flat">
     <thead><tr>
-      {% if goals_on %}<th class="col-tick"><input type="checkbox" id="pickAll" onclick="toggleAllTicks(this)"
-             aria-label="Select every entry listed"></th>{% endif %}
+      {% if goals_on %}<th class="col-tick"><label><input type="checkbox" id="pickAll" onclick="toggleAllTicks(this)"
+             aria-label="Select every entry listed"></label></th>{% endif %}
       <th class="left">Date</th>{% if is_all %}<th class="left">Project</th>{% endif %}<th class="left">Person</th><th>Hours</th>
       {% if goals_on %}<th class="left goal-col">Goal</th>{% endif %}<th class="left">Description</th></tr></thead>
     <tbody>
       {% for e in d.entries|sort(attribute='date', reverse=true) %}
       <tr data-entry="{{ e.id }}" data-hours="{{ e.hours }}" data-goal="{{ e.goal_id or '' }}">
-        {% if goals_on %}<td class="col-tick"><input type="checkbox" class="tick" onclick="onTick(event)"
-               aria-label="Select the entry of {{ e.date }} by {{ e.person }}"></td>{% endif %}
+        {% if goals_on %}<td class="col-tick"><label><input type="checkbox" class="tick" onclick="onTick(event)"
+               aria-label="Select the entry of {{ e.date }} by {{ e.person }}"></label></td>{% endif %}
         <td class="left nowrap">{{ e.date }}
           {%- if goals_on %}<span class="gchip gchip-inline goal-of{{ ' is-none' if not e.goal }}"
                 data-goal-of="{{ e.id }}">{{ e.goal }}</span>{% endif %}</td>
@@ -315,9 +324,15 @@
   </div>
 </details>
 
+{# Both bars are sticky to the bottom, so as siblings they landed on top of
+   each other — the file bar (z-index 26) completely covering the stale bar
+   that tells you the totals above are out of date, at exactly the moment a
+   filing has just made them out of date. One sticky container instead, with
+   the bars stacked inside it. #}
+<div class="bottombars">
 {% if goals_on %}
 <div class="filebar" id="filebar" hidden role="region" aria-label="File the selected entries">
-  <div class="filebar-count"><strong id="pickN">0</strong> selected · <span id="pickH">0</span> h</div>
+  <div class="filebar-count" aria-live="polite"><strong id="pickN">0</strong> selected · <span id="pickH">0</span> h</div>
   <label class="filebar-pick">File under
     <select id="goalPick" aria-label="Goal to file the selected entries under">
       <option value="">— pick a goal —</option>
@@ -329,7 +344,7 @@
   <button type="button" class="btn btn-primary" id="fileBtn" onclick="fileSelection()">File</button>
   <button type="button" class="btn" id="undoBtn" onclick="undoFiling()" hidden>↩ Undo</button>
   <button type="button" class="btn linkish" onclick="clearTicks()">Clear</button>
-  <div class="filebar-prog" id="fileProg" hidden><span id="fileProgText"></span></div>
+  <div class="filebar-prog" id="fileProg" hidden role="status"><span id="fileProgText"></span></div>
 </div>
 {% endif %}
 
@@ -338,6 +353,7 @@
 <div class="stalebar" id="stalebar" hidden role="status">
   <span>Hours changed — the totals above still show the old numbers.</span>
   <button type="button" class="btn btn-primary" onclick="location.reload()">↻ Refresh totals</button>
+</div>
 </div>
 
 <script>
@@ -440,7 +456,12 @@ function toggleAll(btn) {
 const GOAL_BATCH = {{ batch_size }};
 const PROJECT_ID = "{{ sel.id }}";
 const PERIOD = "{{ period }}", START = "{{ start_iso }}";
-let lastFiling = null;   // [{id, goal}] as they were *before* the last filing
+const GOAL_FILTER = "{{ goal_sel or '' }}";
+// {goalId, items:[{id, goal, hours}]} — where the last filing sent them, and
+// where each entry was before it. Undo needs both: the ids to move, the goals
+// to move them back to, and the goal they are sitting in right now so the
+// block above can be recomputed.
+let lastFiling = null;
 
 const ticks = () => Array.from(document.querySelectorAll('#entrylist tr[data-entry] .tick'));
 const picked = () => ticks().filter(t => t.checked).map(t => t.closest('tr'));
@@ -455,6 +476,10 @@ function refreshBar() {
   bar.hidden = !rows.length && !lastFiling;
   // the bar floats over the end of the list, so make room to scroll past it
   document.body.classList.toggle('is-filing', !bar.hidden);
+  // a File button that does nothing when pressed is worse than a disabled one
+  const pick = document.getElementById('goalPick');
+  document.getElementById('fileBtn').disabled =
+    !rows.length || !pick.value || pick.value === '__new';
   const all = ticks();
   const box = document.getElementById('pickAll');
   box.checked = all.length > 0 && rows.length === all.length;
@@ -501,7 +526,12 @@ function setGoalCell(entryId, name, goalId) {
   // the row now *is* filed under this goal, and the next filing's Undo reads
   // this to know where to put it back — writing '' here would quietly turn
   // every later undo into "clear the goal"
-  if (tr) tr.dataset.goal = goalId || '';
+  if (tr) {
+    tr.dataset.goal = goalId || '';
+    // in the triage view the row no longer belongs to what is on screen: fade
+    // it rather than leave it looking like work still to do
+    tr.classList.toggle('is-filed', !!goalId && GOAL_FILTER === '{{ unassigned }}');
+  }
 }
 
 async function postBatch(ids, goalId) {
@@ -523,31 +553,91 @@ async function fileMany(pairs, goalId, goalName) {
   prog.hidden = false;
   let done = 0;
   const failed = [];
+  const landed = [];
+  const verb = goalId ? 'filed' : 'unfiled';
   try {
     for (let i = 0; i < pairs.length; i += GOAL_BATCH) {
       const slice = pairs.slice(i, i + GOAL_BATCH);
-      text.textContent = `filing ${Math.min(i + slice.length, pairs.length)} of ${pairs.length}…`;
+      // rows *finished*, not the end of the batch in flight — saying
+      // "filing 25 of 46" before a single one has landed is the one thing
+      // batching exists to avoid
+      text.textContent = `filing… ${done} of ${pairs.length} done`;
       const data = await postBatch(slice.map(x => x.id), goalId);
       const bad = new Set(data.failed || []);
-      slice.forEach(x => { if (!bad.has(x.id)) setGoalCell(x.id, goalName, goalId); });
+      slice.forEach(x => {
+        if (bad.has(x.id)) return;
+        setGoalCell(x.id, goalName, goalId);
+        landed.push(x);
+      });
       done += data.updated || 0;
       (data.failed || []).forEach(id => failed.push(id));
     }
   } catch (err) {
-    text.textContent = '';
     prog.hidden = true;
     btn.disabled = false;
-    alert('Filing stopped: ' + err.message + (done ? `\n${done} entries were filed before it stopped.` : ''));
-    if (done) markStale();
+    if (done) { repointBlock(landed, goalId); markStale(); }
+    zAlert(err.message + (done ? `\n\n${done} ${done === 1 ? 'entry was' : 'entries were'} ${verb} before it stopped.` : ''),
+           {title: 'Filing stopped'});
     return done;
   }
   text.textContent = failed.length
-    ? `filed ${done}, ${failed.length} could not be filed`
-    : `filed ${done}`;
+    ? `${verb} ${done} · ${failed.length} could not be saved`
+    : `${done} ${done === 1 ? 'entry' : 'entries'} ${verb}`;
   btn.disabled = false;
-  setTimeout(() => { prog.hidden = true; }, 3000);
-  if (done) markStale();
+  // the result stays until the next selection changes it: a line that vanishes
+  // after three seconds is the only trace a long filing leaves
+  if (done) { repointBlock(landed, goalId); markStale(); }
   return done;
+}
+
+// The goals block was server-rendered before the filing, so after one it
+// states the wrong thing about the very action just taken. The period's total
+// doesn't move — only its distribution — so the rows can be recomputed exactly
+// here rather than left lying until a reload.
+function repointBlock(moved, toGoal) {
+  const rows = document.querySelectorAll('.goalrow');
+  if (!rows.length) return;
+  const delta = {};
+  moved.forEach(m => {
+    const from = m.goal || '{{ unassigned }}';
+    const to = toGoal || '{{ unassigned }}';
+    if (from === to) return;
+    delta[from] = (delta[from] || 0) - m.hours;
+    delta[to] = (delta[to] || 0) + m.hours;
+  });
+  let total = 0;
+  const cur = new Map();
+  rows.forEach(r => {
+    const id = r.dataset.goalRow;
+    const was = parseFloat(r.dataset.hours || '0');
+    const now = Math.round((was + (delta[id] || 0)) * 100) / 100;
+    cur.set(id, now);
+    total += now;
+  });
+  rows.forEach(r => {
+    const id = r.dataset.goalRow;
+    const now = cur.get(id);
+    r.dataset.hours = now;
+    const h = r.querySelector('.goalrow-h');
+    if (h) h.innerHTML = `${(+now.toFixed(2))}<span class="unit">h</span>`;
+    const share = total ? Math.round(now / total * 100) : 0;
+    const sh = r.querySelector('.goalrow-share');
+    if (sh) sh.textContent = share + '%';
+    const fill = r.querySelector('.goalrow-fill');
+    if (fill) fill.style.width = share + '%';
+    // a target counted per month follows the month on screen; one counted in
+    // total follows its whole life, which moved by the same delta either way
+    const m = r.querySelector('.goalrow-meter[data-target]');
+    if (m) {
+      const target = parseFloat(m.dataset.target);
+      const used = Math.round((parseFloat(m.dataset.used || '0') + (delta[id] || 0)) * 100) / 100;
+      m.dataset.used = used;
+      const per = m.querySelector('.per');
+      m.textContent = `${+used.toFixed(2)}/${+target.toFixed(2)} h`;
+      if (per) m.appendChild(per);
+      m.classList.toggle('is-over', target ? used > target : used > 0);
+    }
+  });
 }
 
 async function fileSelection() {
@@ -557,15 +647,22 @@ async function fileSelection() {
   if (!value) { pick.focus(); return; }
   const rows = picked();
   if (!rows.length) return;
+  // every other destructive act in this app asks first (clear week, clear day)
+  if (value === '__clear' &&
+      !await zConfirm(`Take the goal off ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}? The hours stay; only the goal is removed.`,
+                      {title: 'Remove goal', ok: 'Remove goal', danger: true})) return;
   const goalId = value === '__clear' ? '' : value;
   const goalName = value === '__clear' ? ''
     : pick.options[pick.selectedIndex].textContent.trim();
   // remembered before the write, so Undo puts every entry back where it was —
   // including the ones that had a different goal
-  const before = rows.map(tr => ({id: tr.dataset.entry, goal: tr.dataset.goal || ''}));
+  // hours ride along with the id and the previous goal: they are what lets
+  // the block above be recomputed without a reload, and what Undo moves back
+  const before = rows.map(tr => ({id: tr.dataset.entry, goal: tr.dataset.goal || '',
+                                  hours: parseFloat(tr.dataset.hours) || 0}));
   const done = await fileMany(before, goalId, goalName);
   if (done) {
-    lastFiling = before;
+    lastFiling = {goalId: goalId, items: before};
     document.getElementById('undoBtn').hidden = false;
     ticks().forEach(t => { t.checked = false; });
     refreshBar();
@@ -575,13 +672,19 @@ async function fileSelection() {
 
 async function undoFiling() {
   if (!lastFiling) return;
+  const from = lastFiling.goalId || '';
   const groups = {};
-  lastFiling.forEach(x => { (groups[x.goal] = groups[x.goal] || []).push(x); });
+  lastFiling.items.forEach(x => { (groups[x.goal] = groups[x.goal] || []).push(x); });
   const names = {};
   Array.from(document.getElementById('goalPick').options).forEach(o => { names[o.value] = o.textContent.trim(); });
+  let n = 0;
   for (const [goalId, items] of Object.entries(groups)) {
-    await fileMany(items, goalId, goalId ? (names[goalId] || '…') : '');
+    // they are in `from` now, whatever they were in before that
+    const moving = items.map(x => ({id: x.id, hours: x.hours, goal: from}));
+    n += await fileMany(moving, goalId, goalId ? (names[goalId] || '…') : '');
   }
+  document.getElementById('fileProgText').textContent =
+    `${n} ${n === 1 ? 'entry' : 'entries'} put back`;
   lastFiling = null;
   document.getElementById('undoBtn').hidden = true;
   refreshBar();
@@ -602,7 +705,11 @@ function newGoal() {
   // once there is a goal to close
   document.getElementById('goalStatusWrap').hidden = true;
   document.getElementById('goalDlgTitle').textContent = 'New goal';
-  document.getElementById('goalGo').textContent = 'Create goal';
+  // saveGoal() files whatever is ticked as soon as the goal exists, so the
+  // button has to admit to both halves of what it does
+  const n = picked().length;
+  document.getElementById('goalGo').textContent =
+    n ? `Create and file ${n} ${n === 1 ? 'entry' : 'entries'}` : 'Create goal';
   document.getElementById('goalElse').hidden = true;
   dlg.showModal();
   document.getElementById('goalName').focus();
@@ -627,11 +734,7 @@ function editGoal(btn) {
   document.getElementById('goalName').focus();
 }
 
-function closeGoalDlg() {
-  const pick = document.getElementById('goalPick');
-  if (pick.value === '__new') pick.value = '';
-  document.getElementById('goalDlg').close();
-}
+function closeGoalDlg() { document.getElementById('goalDlg').close(); }
 
 let elsewhereLoaded = false;
 async function loadElsewhere() {
@@ -721,6 +824,15 @@ async function saveGoal() {
 document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('goalPick').addEventListener('change', function () {
     if (this.value === '__new') newGoal();
+    refreshBar();
+  });
+  // Esc and the backdrop close a <dialog> without going through the buttons,
+  // and the picker was left on "＋ New goal…" — so the next press of File
+  // reopened the dialog instead of filing anything
+  document.getElementById('goalDlg').addEventListener('close', function () {
+    const pick = document.getElementById('goalPick');
+    if (pick.value === '__new') pick.value = '';
+    refreshBar();
   });
   refreshBar();
 });

@@ -82,7 +82,7 @@
   <h3>By goal</h3>
   {% for g in r.by_goal %}
   <div class="baritem{{ ' baritem-idle' if g.unassigned }}">
-    <div class="bar-name">{{ g.name }} <span class="subtle bar-where">{{ g.where }}</span></div>
+    <div class="bar-name">{{ g.name }} <span class="subtle bar-where">{% if g.projects > 1 %}across {% endif %}{{ g.where }}</span></div>
     <div class="bar-track"><div class="bar-fill" style="width: {{ g.pct }}%"></div></div>
     <div class="bar-val">{{ '%g'|format(g.hours) }}h</div>
   </div>

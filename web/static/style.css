@@ -1063,6 +1063,17 @@ td.desc .tlink { margin-left: 8px; }
 .bmeter.lvl-warn strong { color: var(--chart); }
 .bmeter.lvl-over strong { color: var(--over); }
 
+/* The unfiled row on /reports' By goal card. reports.html has always asked for
+   this class; without it the biggest, palest-by-intent row rendered as the
+   darkest, fullest bar on the card — the exact inverse of /project. */
+.baritem-idle .bar-name { color: var(--muted); }
+.baritem-idle .bar-fill {
+  background: repeating-linear-gradient(135deg,
+    var(--chart-soft) 0 5px, var(--chart-track) 5px 10px);
+  outline: 1px solid var(--chart-soft); outline-offset: -1px;
+}
+.bar-where { font-weight: 500; font-size: 12px; margin-left: 6px; }
+
 /* ---- goals ----
    What a project's period went into. The block is a list of links, not a
    table: each row filters the page to its goal, and the last row is always
@@ -1072,6 +1083,7 @@ td.desc .tlink { margin-left: 8px; }
 .goalcard-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .goalcard-head h3 { margin: 0; }
 .goalcard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.goalcard-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
 .goalrows { display: flex; flex-direction: column; }
 /* the row is a link that filters the page, so its edit control is a sibling —
    a <button> inside an <a> is invalid, and swallows the click where it renders
@@ -1102,11 +1114,20 @@ td.desc .tlink { margin-left: 8px; }
 .goalrow-h .unit { font-weight: 500; font-size: 12px; color: var(--muted); margin-left: 1px; }
 .goalrow-bar { height: 8px; background: var(--chart-track); border-radius: 6px; overflow: hidden; }
 .goalrow-fill { display: block; height: 100%; background: var(--chart); border-radius: 6px; }
-/* visible, but clearly not one of the real goals */
-.goalrow.is-none .goalrow-fill { background: var(--chart-soft); }
+/* Visible *and* clearly not one of the real goals. It was a pale fill on a pale
+   track — 1.4:1, well under the 3:1 a graphical object needs — on the row
+   carrying the biggest number on the page. Now it reads at full strength and is
+   told apart by its hatch and its muted name, not by being faint. */
+.goalrow.is-none .goalrow-fill {
+  background: repeating-linear-gradient(135deg,
+    var(--chart-soft) 0 5px, var(--chart-track) 5px 10px);
+  outline: 1px solid var(--chart-soft); outline-offset: -1px;
+}
 .goalrow-share { font-size: 13px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-.goalrow-meter { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.goalrow-meter .cap { width: 54px; }
+.goalrow-meter { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* a Total and a Per month goal looked identical on the row, and the difference
+   only lived in a tooltip no touch screen can reach */
+.goalrow-meter .per { opacity: .75; }
 .goalrow-meter.is-over { color: var(--over); font-weight: 600; }
 .gstat {
   font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
@@ -1127,13 +1148,29 @@ td.desc .tlink { margin-left: 8px; }
 /* the same chip, under the date instead of in its own column — see the mobile
    block below, where the Goal column is off-screen */
 .gchip-inline { display: none; margin-top: 3px; }
+/* filed while triaging the unfiled: it is no longer part of what this view is
+   about, so it fades rather than sitting there looking like work to do */
+.entrylist tr.is-filed > td { opacity: .45; }
 
 /* the tick column on the entry list */
-.entrylist .col-tick { width: 34px; padding: 4px 6px; text-align: center; }
+.entrylist .col-tick { width: 34px; padding: 0; text-align: center; }
+/* the label fills the cell, so the tap target is the whole cell rather than an
+   18px square — the row is tall, and a missed tick costs a scroll to find again */
+.entrylist .col-tick label { display: flex; align-items: center; justify-content: center;
+  padding: 10px 8px; margin: 0; cursor: pointer; }
 .entrylist .col-tick input { width: 18px; height: 18px; cursor: pointer; }
 
 /* The file bar: the same sticky treatment as the stale bar it sits above, so
    the two read as one place where the page talks back. */
+/* One sticky stack for both bottom bars. As independent sticky siblings they
+   docked to the same 16px and the file bar simply covered the stale bar — the
+   one control that reconciles the page, hidden exactly when a filing has just
+   made it necessary. */
+.bottombars {
+  position: sticky; bottom: 16px; z-index: 26; margin-top: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.bottombars > .stalebar, .bottombars > .filebar { position: static; margin-top: 0; }
 .filebar {
   position: sticky; bottom: 16px; z-index: 26; margin-top: 16px;
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
@@ -1142,6 +1179,10 @@ td.desc .tlink { margin-left: 8px; }
   box-shadow: 0 12px 30px rgba(0,0,0,.16);
 }
 .filebar[hidden] { display: none; }
+/* .btn sets display, which outranks the UA's [hidden] rule — so Undo rendered
+   from the first tick and did nothing when pressed, which is worse than absent */
+.filebar .btn[hidden] { display: none; }
+.filebar .btn[disabled] { opacity: .45; cursor: default; }
 .filebar-count { font-weight: 600; margin-right: 2px; }
 /* labels stack their children by default here (see `label` at the top), so
    the direction is restated — the caption belongs beside the select */
