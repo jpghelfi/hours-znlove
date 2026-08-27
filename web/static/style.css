@@ -1062,3 +1062,170 @@ td.desc .tlink { margin-left: 8px; }
 .bmeter strong { color: var(--ink); font-weight: 700; }
 .bmeter.lvl-warn strong { color: var(--chart); }
 .bmeter.lvl-over strong { color: var(--over); }
+
+/* The unfiled row on /reports' By goal card. reports.html has always asked for
+   this class; without it the biggest, palest-by-intent row rendered as the
+   darkest, fullest bar on the card — the exact inverse of /project. */
+.baritem-idle .bar-name { color: var(--muted); }
+.baritem-idle .bar-fill {
+  background: repeating-linear-gradient(135deg,
+    var(--chart-soft) 0 5px, var(--chart-track) 5px 10px);
+  outline: 1px solid var(--chart-soft); outline-offset: -1px;
+}
+.bar-where { font-weight: 500; font-size: 12px; margin-left: 6px; }
+
+/* ---- goals ----
+   What a project's period went into. The block is a list of links, not a
+   table: each row filters the page to its goal, and the last row is always
+   Unassigned — the pile still to file, and for the first months the biggest
+   number on the page. */
+.goalcard { padding-bottom: 14px; }
+.goalcard-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.goalcard-head h3 { margin: 0; }
+.goalcard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.goalcard-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
+.goalrows { display: flex; flex-direction: column; }
+/* the row is a link that filters the page, so its edit control is a sibling —
+   a <button> inside an <a> is invalid, and swallows the click where it renders
+   at all */
+.goalrow-wrap { display: flex; align-items: center; gap: 2px; }
+.goalrow-wrap > .goalrow { flex: 1; min-width: 0; }
+.goalrow-edit {
+  flex: none; background: none; border: 1px solid transparent; border-radius: 8px;
+  color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1;
+  padding: 8px 9px; opacity: 0;
+}
+.goalrow-wrap:hover .goalrow-edit, .goalrow-edit:focus-visible { opacity: 1; }
+.goalrow-edit:hover { color: var(--ink); border-color: var(--line); }
+.goalrow-edit:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.goalrow {
+  /* the name is a label, not a column to pad out: cap it and let the bar take
+     the slack, or a wide screen leaves a hand's width between a goal and its
+     hours (the .baritem rows on /reports are capped for the same reason) */
+  display: grid; grid-template-columns: minmax(120px, 260px) 58px minmax(60px, 1fr) 44px minmax(96px, auto);
+  align-items: center; gap: 12px; padding: 9px 10px; border-radius: 10px;
+  color: inherit; text-decoration: none; border: 1px solid transparent;
+}
+.goalrow:hover { background: var(--head); }
+.goalrow.is-on { border-color: var(--accent); background: var(--active-bg); }
+.goalrow-name { font-weight: 600; overflow-wrap: anywhere; }
+.goalrow.is-none .goalrow-name { color: var(--muted); font-weight: 500; }
+.goalrow-h { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.goalrow-h .unit { font-weight: 500; font-size: 12px; color: var(--muted); margin-left: 1px; }
+.goalrow-bar { height: 8px; background: var(--chart-track); border-radius: 6px; overflow: hidden; }
+.goalrow-fill { display: block; height: 100%; background: var(--chart); border-radius: 6px; }
+/* Visible *and* clearly not one of the real goals. It was a pale fill on a pale
+   track — 1.4:1, well under the 3:1 a graphical object needs — on the row
+   carrying the biggest number on the page. Now it reads at full strength and is
+   told apart by its hatch and its muted name, not by being faint. */
+.goalrow.is-none .goalrow-fill {
+  background: repeating-linear-gradient(135deg,
+    var(--chart-soft) 0 5px, var(--chart-track) 5px 10px);
+  outline: 1px solid var(--chart-soft); outline-offset: -1px;
+}
+.goalrow-share { font-size: 13px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.goalrow-meter { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* a Total and a Per month goal looked identical on the row, and the difference
+   only lived in a tooltip no touch screen can reach */
+.goalrow-meter .per { opacity: .75; }
+.goalrow-meter.is-over { color: var(--over); font-weight: 600; }
+.gstat {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--muted); background: var(--head); border-radius: 999px; padding: 1px 7px; margin-left: 4px;
+}
+
+/* the goal on an entry, wherever that entry is shown */
+.gchip {
+  display: inline-block; font-size: 12px; font-weight: 600; color: var(--accent);
+  background: var(--active-bg); border-radius: 999px; padding: 1px 9px; overflow-wrap: anywhere;
+}
+.gchip.is-none { display: none; }          /* no goal is silence, not a badge */
+.gchip-btn { border: 1px solid var(--line); cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }
+.gchip-btn:hover { border-color: var(--accent); }
+.goal-else { margin-top: 4px; }
+.goal-else-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+/* the same chip, under the date instead of in its own column — see the mobile
+   block below, where the Goal column is off-screen */
+.gchip-inline { display: none; margin-top: 3px; }
+/* filed while triaging the unfiled: it is no longer part of what this view is
+   about, so it fades rather than sitting there looking like work to do */
+.entrylist tr.is-filed > td { opacity: .45; }
+
+/* the tick column on the entry list */
+.entrylist .col-tick { width: 34px; padding: 0; text-align: center; }
+/* the label fills the cell, so the tap target is the whole cell rather than an
+   18px square — the row is tall, and a missed tick costs a scroll to find again */
+.entrylist .col-tick label { display: flex; align-items: center; justify-content: center;
+  padding: 10px 8px; margin: 0; cursor: pointer; }
+.entrylist .col-tick input { width: 18px; height: 18px; cursor: pointer; }
+
+/* The file bar: the same sticky treatment as the stale bar it sits above, so
+   the two read as one place where the page talks back. */
+/* One sticky stack for both bottom bars. As independent sticky siblings they
+   docked to the same 16px and the file bar simply covered the stale bar — the
+   one control that reconciles the page, hidden exactly when a filing has just
+   made it necessary. */
+.bottombars {
+  position: sticky; bottom: 16px; z-index: 26; margin-top: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.bottombars > .stalebar, .bottombars > .filebar { position: static; margin-top: 0; }
+.filebar {
+  position: sticky; bottom: 16px; z-index: 26; margin-top: 16px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 12px 14px; font-size: 14px;
+  background: var(--card); border: 1px solid var(--accent); border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.16);
+}
+.filebar[hidden] { display: none; }
+/* .btn sets display, which outranks the UA's [hidden] rule — so Undo rendered
+   from the first tick and did nothing when pressed, which is worse than absent */
+.filebar .btn[hidden] { display: none; }
+.filebar .btn[disabled] { opacity: .45; cursor: default; }
+.filebar-count { font-weight: 600; margin-right: 2px; }
+/* labels stack their children by default here (see `label` at the top), so
+   the direction is restated — the caption belongs beside the select */
+.filebar-pick { display: flex; flex-direction: row; align-items: center; gap: 8px; font-weight: 600; }
+.filebar-pick select { min-width: 190px; }
+.filebar .linkish { border-color: transparent; background: none; color: var(--muted); }
+.filebar-prog { font-size: 13px; color: var(--muted); flex-basis: 100%; }
+
+@media (max-width: 560px) {
+  /* The goal row's five columns need ~426px before they even start; on a phone
+     it becomes two lines — name and hours, then the bar with its share — and
+     the target meter takes a line of its own. */
+  .goalrow { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 8px; }
+  /* no hover on a touch screen, so the edit control is simply always there,
+     at a size a thumb can hit */
+  .goalrow-edit { opacity: 1; padding: 10px 12px; border-color: var(--line); }
+  .goalrow-name { min-width: 0; }
+  .goalrow-meter { grid-column: 1 / -1; justify-content: flex-start; }
+  .goalrow-meter .cap { width: 72px; }
+  .goalcard-head { flex-wrap: wrap; }
+
+  /* the file bar is the one control that has to work one-handed: a full-width
+     select, then the actions sharing a line */
+  .filebar { padding: 12px; gap: 8px; }
+  .filebar-count { flex-basis: 100%; }
+  .filebar-pick { flex-basis: 100%; }
+  .filebar-pick select { flex: 1; min-width: 0; }
+  .filebar .btn { flex: 1; }
+  /* a comfortable tap target, in a roomier row to hit it in */
+  .entrylist .col-tick { width: 40px; padding: 6px; }
+  .entrylist .col-tick input { width: 22px; height: 22px; }
+
+  /* The Goal column lives past the right edge of a 390px screen, and the list
+     scrolls sideways — so while filing, the one thing you need to see (is this
+     row already filed?) was the one thing you had to scroll for. The chip moves
+     under the date; the column itself goes, rather than showing it twice. */
+  .entrylist th.goal-col, .entrylist td.goal-col { display: none; }
+  /* block, not inline: the date cell is nowrap, so an inline chip would widen
+     the column instead of sitting under the date. `.gchip.is-none` is the more
+     specific rule, so an unfiled entry still shows nothing at all. */
+  .gchip-inline { display: block; }
+
+  /* the file bar is sticky over the end of the list: leave it somewhere to sit
+     so the last entries can still be scrolled clear of it */
+  body.is-filing .entrylist { padding-bottom: 120px; }
+}

@@ -27,6 +27,11 @@ services:
       # a "not set up yet" note — /absences still renders.
       - key: ABSENCES_DS_ID
         sync: false
+      # Goals (src/setup_goals_db.py). Unset simply hides the feature: no goals
+      # block on /project, no By goal on /reports, and the two write endpoints
+      # refuse. Nothing else changes.
+      - key: GOALS_DS_ID
+        sync: false
       - key: ADMIN_EMAILS
         sync: false
       - key: WEEK_TARGET_HOURS

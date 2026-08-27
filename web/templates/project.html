@@ -4,18 +4,22 @@
 {% block content %}
 {# project picks ride along on every period link / export so a filter survives navigation #}
 {% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
+{# a goal pick rides along too: changing month while looking at one goal should
+   keep looking at it. An id that stops existing is dropped server-side. #}
+{% set qsg %}{% if goal_sel %}&goal={{ goal_sel }}{% endif %}{% endset %}
 {% set sel_names = projects|selectattr('id', 'in', sel_ids)|map(attribute='name')|list %}
 <div class="week-head">
   <div>
     <h1>{{ sel.name if sel else (sel_names|length ~ ' projects' if sel_ids else 'All projects') }}</h1>
     <div class="subtle">
       {%- if is_all %}Hours per project · expand one to see its people{% else %}Hours per person{% endif %} · {{ rng.label }}
+      {%- if goal_sel %} · <strong>{% if goal_sel == unassigned %}not filed under a goal{% else %}{{ (goal_rows|selectattr('id', 'equalto', goal_sel)|first).name }}{% endif %}</strong> only{% endif %}
       {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|length ~ ' projects' }}{% endif %}</div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}">←</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{{ qsp }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}">→</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}{{ qsg }}">←</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{{ qsp }}{{ qsg }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}{{ qsg }}">→</a>
   </div>
 </div>
 
@@ -39,11 +43,11 @@
   </label>
   <span class="seg-label filters-label">Projects</span>
   {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
-  <a class="btn" href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}">⬇ CSV</a>
-  <a class="btn" href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}">⬇ Excel</a>
+  <a class="btn" href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsg }}">⬇ CSV</a>
+  <a class="btn" href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsg }}">⬇ Excel</a>
   {# one project + a whole month is exactly what an invoice is, so the same
      screen is offered under its real name; anything else is still an export #}
-  <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}"
+  <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsg }}"
      title="{% if can_invoice %}Set the hours to bill, then save the invoice{% else %}Adjust the numbers, then download, copy to Sheets or email{% endif %}">{% if can_invoice %}🧾 Invoice{% else %}⧉ Export{% endif %}</a>
 </form>
 
@@ -65,6 +69,9 @@
     <span class="entry-desc">{{ e.description }}{% if e.task_url %}
       <a class="tlink" href="{{ e.task_url }}" target="_blank" rel="noopener noreferrer">🔗 {{ e.task or 'Notion ticket' }}</a>
       {% elif not e.description %}—{% endif %}</span>
+    {# the goal is repeated on every copy of the entry (here and in the list
+       below), so filing one updates both — see fileSelection() #}
+    <span class="gchip goal-of{{ ' is-none' if not e.goal }}" data-goal-of="{{ e.id }}">{{ e.goal }}</span>
   </td>
   <td class="col-hours cell">
     <input type="number" step="0.25" min="0" max="24" inputmode="decimal"
@@ -155,6 +162,63 @@
 
 {% else %}
 
+{% if goals_on %}
+{# What the project's period went into. Unassigned is always the last row and
+   never hidden: for the first months it is the biggest number here, and it is
+   the thing to act on — clicking it filters the page to exactly the entries
+   that still need a decision. #}
+<div class="card wide goalcard">
+  <div class="goalcard-head">
+    <h3>Goals</h3>
+    <div class="goalcard-actions">
+      {% if goal_sel %}<a class="btn btn-sm" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">✕ Clear filter</a>{% endif %}
+      <button type="button" class="btn btn-sm" onclick="newGoal()">＋ New goal</button>
+    </div>
+  </div>
+  {% if goal_rows %}
+  <div class="goalrows">
+    {% for g in goal_rows %}
+    <div class="goalrow-wrap">
+    <a class="goalrow{{ ' is-on' if goal_sel == g.id }}{{ ' is-none' if g.unassigned }}"
+       data-goal-row="{{ g.id }}" data-hours="{{ '%g'|format(g.hours) }}"
+       href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{% if goal_sel != g.id %}&goal={{ g.id }}{% endif %}"
+       {% if goal_sel == g.id %}aria-current="true"{% endif %}>
+      <span class="goalrow-name">{{ g.name }}
+        {%- if g.status and g.status != 'Open' and not g.unassigned %} <span class="gstat">{{ g.status }}</span>{% endif %}</span>
+      <span class="goalrow-h">{{ '%g'|format(g.hours) }}<span class="unit">h</span></span>
+      <span class="goalrow-bar"><span class="goalrow-fill" style="width: {{ g.share }}%"></span></span>
+      <span class="goalrow-share">{{ g.share }}%</span>
+      {# the target reads as text, not a second bar: two bars of different
+         scales in one row read as one broken bar, and /budgets already
+         established one-bar-plus-a-number as the idiom here #}
+      {% if g.meter %}
+      <span class="goalrow-meter{{ ' is-over' if g.meter.over }}"
+            data-used="{{ '%g'|format(g.meter.used) }}" data-target="{{ '%g'|format(g.meter.target) }}"
+            title="{{ '%g'|format(g.meter.used) }} of {{ '%g'|format(g.meter.target) }} h, {{ g.meter.scope }}">
+        {{ '%g'|format(g.meter.used) }}/{{ '%g'|format(g.meter.target) }} h{% if g.basis == 'Per month' %}<span class="per">/mo</span>{% endif %}
+      </span>
+      {% elif not g.unassigned %}<span class="goalrow-meter subtle">{{ g.entries }} {{ 'entry' if g.entries == 1 else 'entries' }}</span>
+      {% else %}<span class="goalrow-meter subtle">{{ g.entries }} to file</span>{% endif %}
+    </a>
+    {% if not g.unassigned %}
+    <button type="button" class="goalrow-edit" title="Edit {{ g.name }}"
+            aria-label="Edit {{ g.name }}"
+            data-goal="{{ g.id }}" data-name="{{ g.name }}"
+            data-target="{{ '' if g.target is none else '%g'|format(g.target) }}"
+            data-basis="{{ g.basis }}" data-status="{{ g.status }}" data-due="{{ g.due or '' }}"
+            onclick="editGoal(this)">✎</button>
+    {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="goalcard-empty">No goals on this project yet.
+    <button type="button" class="btn btn-primary btn-sm" onclick="newGoal()">＋ New goal</button>
+    <span class="subtle">then tick entries in the list below to file them under it.</span></div>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="statrow">
   <div class="stat card"><div class="stat-n">{{ '%g'|format(d.total) }}</div><div class="stat-l">hours</div></div>
   <div class="stat card"><div class="stat-n">{{ d.people_count }}</div><div class="stat-l">people logging</div></div>
@@ -215,15 +279,25 @@
 </div>
 {% endif %}
 
-<details class="card wide entrylist" id="entrylist">
-  <summary><span id="entry-count">{{ d.entries|length }}</span> entries in this period · <span class="subtle">edit any Hours cell to correct it</span></summary>
+{# open when a goal filter is on: that view exists to be triaged, and landing
+   on it with the rows collapsed hides the only action it is for #}
+<details class="card wide entrylist" id="entrylist"{{ ' open' if goal_sel }}>
+  <summary><span id="entry-count">{{ d.entries|length }}</span> entries in this period · <span class="subtle">{% if goals_on %}tick rows to file them under a goal, or edit{% else %}edit{% endif %} any Hours cell to correct it</span></summary>
   <div class="entrylist-scroll">
   <table class="grid flat">
-    <thead><tr><th class="left">Date</th>{% if is_all %}<th class="left">Project</th>{% endif %}<th class="left">Person</th><th>Hours</th><th class="left">Description</th></tr></thead>
+    <thead><tr>
+      {% if goals_on %}<th class="col-tick"><label><input type="checkbox" id="pickAll" onclick="toggleAllTicks(this)"
+             aria-label="Select every entry listed"></label></th>{% endif %}
+      <th class="left">Date</th>{% if is_all %}<th class="left">Project</th>{% endif %}<th class="left">Person</th><th>Hours</th>
+      {% if goals_on %}<th class="left goal-col">Goal</th>{% endif %}<th class="left">Description</th></tr></thead>
     <tbody>
       {% for e in d.entries|sort(attribute='date', reverse=true) %}
-      <tr data-entry="{{ e.id }}">
-        <td class="left nowrap">{{ e.date }}</td>
+      <tr data-entry="{{ e.id }}" data-hours="{{ e.hours }}" data-goal="{{ e.goal_id or '' }}">
+        {% if goals_on %}<td class="col-tick"><label><input type="checkbox" class="tick" onclick="onTick(event)"
+               aria-label="Select the entry of {{ e.date }} by {{ e.person }}"></label></td>{% endif %}
+        <td class="left nowrap">{{ e.date }}
+          {%- if goals_on %}<span class="gchip gchip-inline goal-of{{ ' is-none' if not e.goal }}"
+                data-goal-of="{{ e.id }}">{{ e.goal }}</span>{% endif %}</td>
         {% if is_all %}<td class="left">{{ e.project }}</td>{% endif %}
         <td class="left">{{ e.person }}</td>
         {# the whole page is admin-only, so every reader here may correct an entry #}
@@ -233,6 +307,8 @@
                  value="{{ '%g'|format(e.hours) }}"
                  onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
         </td>
+        {% if goals_on %}<td class="left goal-col"><span class="gchip goal-of{{ ' is-none' if not e.goal }}"
+              data-goal-of="{{ e.id }}">{{ e.goal }}</span></td>{% endif %}
         {# the ticket rides in the description cell rather than its own column:
            the table's colspans already flex on is_all, and an extra column
            would be empty for every entry logged before this existed #}
@@ -241,18 +317,43 @@
         {% endif %}</td>
       </tr>
       {% else %}
-      <tr class="empty"><td colspan="{{ 5 if is_all else 4 }}">No entries logged in this period.</td></tr>
+      <tr class="empty"><td colspan="{{ (5 if is_all else 4) + (2 if goals_on else 0) }}">No entries logged in this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
   </div>
 </details>
 
+{# Both bars are sticky to the bottom, so as siblings they landed on top of
+   each other — the file bar (z-index 26) completely covering the stale bar
+   that tells you the totals above are out of date, at exactly the moment a
+   filing has just made them out of date. One sticky container instead, with
+   the bars stacked inside it. #}
+<div class="bottombars">
+{% if goals_on %}
+<div class="filebar" id="filebar" hidden role="region" aria-label="File the selected entries">
+  <div class="filebar-count" aria-live="polite"><strong id="pickN">0</strong> selected · <span id="pickH">0</span> h</div>
+  <label class="filebar-pick">File under
+    <select id="goalPick" aria-label="Goal to file the selected entries under">
+      <option value="">— pick a goal —</option>
+      {% for g in goals %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
+      <option value="__new">＋ New goal…</option>
+      <option value="__clear">Remove goal</option>
+    </select>
+  </label>
+  <button type="button" class="btn btn-primary" id="fileBtn" onclick="fileSelection()">File</button>
+  <button type="button" class="btn" id="undoBtn" onclick="undoFiling()" hidden>↩ Undo</button>
+  <button type="button" class="btn linkish" onclick="clearTicks()">Clear</button>
+  <div class="filebar-prog" id="fileProg" hidden role="status"><span id="fileProgText"></span></div>
+</div>
+{% endif %}
+
 {# The tables above are server-rendered aggregates: once an entry changes they
    are one edit out of date, so say so rather than quietly showing stale sums. #}
 <div class="stalebar" id="stalebar" hidden role="status">
   <span>Hours changed — the totals above still show the old numbers.</span>
   <button type="button" class="btn btn-primary" onclick="location.reload()">↻ Refresh totals</button>
+</div>
 </div>
 
 <script>
@@ -342,4 +443,465 @@ function toggleAll(btn) {
   document.querySelectorAll('.pgroup .disclosure').forEach(b => setGroup(b, open));
 }
 </script>
+
+{% if goals_on %}
+<script>
+// ---- filing entries under a goal ---------------------------------------
+//
+// Notion has no bulk update, so filing N entries is N round trips at ~3/s.
+// The selection is therefore sent in batches and the bar reports real
+// progress, rather than one request that looks hung for a minute and times
+// out on a free instance. Each batch is validated server-side against the
+// entries actually logged for this project and period.
+const GOAL_BATCH = {{ batch_size }};
+const PROJECT_ID = "{{ sel.id }}";
+const PERIOD = "{{ period }}", START = "{{ start_iso }}";
+const GOAL_FILTER = "{{ goal_sel or '' }}";
+// {goalId, items:[{id, goal, hours}]} — where the last filing sent them, and
+// where each entry was before it. Undo needs both: the ids to move, the goals
+// to move them back to, and the goal they are sitting in right now so the
+// block above can be recomputed.
+let lastFiling = null;
+
+const ticks = () => Array.from(document.querySelectorAll('#entrylist tr[data-entry] .tick'));
+const picked = () => ticks().filter(t => t.checked).map(t => t.closest('tr'));
+
+function refreshBar() {
+  const rows = picked();
+  const hours = rows.reduce((n, tr) => n + (parseFloat(tr.dataset.hours) || 0), 0);
+  document.getElementById('pickN').textContent = rows.length;
+  // hours, not just a count: hours are what moves in the report
+  document.getElementById('pickH').textContent = Math.round(hours * 100) / 100;
+  const bar = document.getElementById('filebar');
+  bar.hidden = !rows.length && !lastFiling;
+  // the bar floats over the end of the list, so make room to scroll past it
+  document.body.classList.toggle('is-filing', !bar.hidden);
+  // a File button that does nothing when pressed is worse than a disabled one
+  const pick = document.getElementById('goalPick');
+  document.getElementById('fileBtn').disabled =
+    !rows.length || !pick.value || pick.value === '__new';
+  const all = ticks();
+  const box = document.getElementById('pickAll');
+  box.checked = all.length > 0 && rows.length === all.length;
+  box.indeterminate = rows.length > 0 && rows.length < all.length;
+}
+
+let lastTick = null;
+function onTick(ev) {
+  const all = ticks();
+  const i = all.indexOf(ev.target);
+  // shift-click takes the range: entries are date-ordered and a goal's work
+  // usually is too
+  if (ev.shiftKey && lastTick !== null && i >= 0) {
+    const [a, b] = [Math.min(lastTick, i), Math.max(lastTick, i)];
+    for (let k = a; k <= b; k++) all[k].checked = ev.target.checked;
+  }
+  lastTick = i;
+  refreshBar();
+}
+
+function toggleAllTicks(box) {
+  // takes everything *listed*, which is the whole filtered set — not just what
+  // happens to be scrolled into view
+  ticks().forEach(t => { t.checked = box.checked; });
+  lastTick = null;
+  refreshBar();
+}
+
+function clearTicks() {
+  ticks().forEach(t => { t.checked = false; });
+  lastFiling = null;
+  document.getElementById('undoBtn').hidden = true;
+  refreshBar();
+}
+
+function setGoalCell(entryId, name, goalId) {
+  // an entry shows up twice — under its person and in the list below — so both
+  // copies follow the filing, the way saveEntry() already keeps hours in step
+  document.querySelectorAll(`[data-goal-of="${CSS.escape(entryId)}"]`).forEach(el => {
+    el.textContent = name || '';
+    el.classList.toggle('is-none', !name);
+  });
+  const tr = document.querySelector(`#entrylist tr[data-entry="${CSS.escape(entryId)}"]`);
+  // the row now *is* filed under this goal, and the next filing's Undo reads
+  // this to know where to put it back — writing '' here would quietly turn
+  // every later undo into "clear the goal"
+  if (tr) {
+    tr.dataset.goal = goalId || '';
+    // in the triage view the row no longer belongs to what is on screen: fade
+    // it rather than leave it looking like work still to do
+    tr.classList.toggle('is-filed', !!goalId && GOAL_FILTER === '{{ unassigned }}');
+  }
+}
+
+async function postBatch(ids, goalId) {
+  const res = await fetch('/api/entry/goal', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({entry_ids: ids, goal_id: goalId || null,
+                          project_id: PROJECT_ID, period: PERIOD, start: START}),
+  });
+  const data = await res.json().catch(() => ({ok: false, error: 'bad response'}));
+  if (!data.ok && !data.updated) throw new Error(data.error || 'could not file those entries');
+  return data;
+}
+
+async function fileMany(pairs, goalId, goalName) {
+  const btn = document.getElementById('fileBtn');
+  const prog = document.getElementById('fileProg');
+  const text = document.getElementById('fileProgText');
+  btn.disabled = true;
+  prog.hidden = false;
+  let done = 0;
+  const failed = [];
+  const landed = [];
+  const verb = goalId ? 'filed' : 'unfiled';
+  try {
+    for (let i = 0; i < pairs.length; i += GOAL_BATCH) {
+      const slice = pairs.slice(i, i + GOAL_BATCH);
+      // rows *finished*, not the end of the batch in flight — saying
+      // "filing 25 of 46" before a single one has landed is the one thing
+      // batching exists to avoid
+      text.textContent = `filing… ${done} of ${pairs.length} done`;
+      const data = await postBatch(slice.map(x => x.id), goalId);
+      const bad = new Set(data.failed || []);
+      slice.forEach(x => {
+        if (bad.has(x.id)) return;
+        setGoalCell(x.id, goalName, goalId);
+        landed.push(x);
+      });
+      done += data.updated || 0;
+      (data.failed || []).forEach(id => failed.push(id));
+    }
+  } catch (err) {
+    prog.hidden = true;
+    btn.disabled = false;
+    if (done) { repointBlock(landed, goalId); markStale(); }
+    zAlert(err.message + (done ? `\n\n${done} ${done === 1 ? 'entry was' : 'entries were'} ${verb} before it stopped.` : ''),
+           {title: 'Filing stopped'});
+    return done;
+  }
+  text.textContent = failed.length
+    ? `${verb} ${done} · ${failed.length} could not be saved`
+    : `${done} ${done === 1 ? 'entry' : 'entries'} ${verb}`;
+  btn.disabled = false;
+  // the result stays until the next selection changes it: a line that vanishes
+  // after three seconds is the only trace a long filing leaves
+  if (done) { repointBlock(landed, goalId); markStale(); }
+  return done;
+}
+
+// The goals block was server-rendered before the filing, so after one it
+// states the wrong thing about the very action just taken. The period's total
+// doesn't move — only its distribution — so the rows can be recomputed exactly
+// here rather than left lying until a reload.
+function repointBlock(moved, toGoal) {
+  const rows = document.querySelectorAll('.goalrow');
+  if (!rows.length) return;
+  const delta = {};
+  moved.forEach(m => {
+    const from = m.goal || '{{ unassigned }}';
+    const to = toGoal || '{{ unassigned }}';
+    if (from === to) return;
+    delta[from] = (delta[from] || 0) - m.hours;
+    delta[to] = (delta[to] || 0) + m.hours;
+  });
+  let total = 0;
+  const cur = new Map();
+  rows.forEach(r => {
+    const id = r.dataset.goalRow;
+    const was = parseFloat(r.dataset.hours || '0');
+    const now = Math.round((was + (delta[id] || 0)) * 100) / 100;
+    cur.set(id, now);
+    total += now;
+  });
+  rows.forEach(r => {
+    const id = r.dataset.goalRow;
+    const now = cur.get(id);
+    r.dataset.hours = now;
+    const h = r.querySelector('.goalrow-h');
+    if (h) h.innerHTML = `${(+now.toFixed(2))}<span class="unit">h</span>`;
+    const share = total ? Math.round(now / total * 100) : 0;
+    const sh = r.querySelector('.goalrow-share');
+    if (sh) sh.textContent = share + '%';
+    const fill = r.querySelector('.goalrow-fill');
+    if (fill) fill.style.width = share + '%';
+    // a target counted per month follows the month on screen; one counted in
+    // total follows its whole life, which moved by the same delta either way
+    const m = r.querySelector('.goalrow-meter[data-target]');
+    if (m) {
+      const target = parseFloat(m.dataset.target);
+      const used = Math.round((parseFloat(m.dataset.used || '0') + (delta[id] || 0)) * 100) / 100;
+      m.dataset.used = used;
+      const per = m.querySelector('.per');
+      m.textContent = `${+used.toFixed(2)}/${+target.toFixed(2)} h`;
+      if (per) m.appendChild(per);
+      m.classList.toggle('is-over', target ? used > target : used > 0);
+    }
+  });
+}
+
+async function fileSelection() {
+  const pick = document.getElementById('goalPick');
+  const value = pick.value;
+  if (value === '__new') { newGoal(); return; }
+  if (!value) { pick.focus(); return; }
+  const rows = picked();
+  if (!rows.length) return;
+  // every other destructive act in this app asks first (clear week, clear day)
+  if (value === '__clear' &&
+      !await zConfirm(`Take the goal off ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}? The hours stay; only the goal is removed.`,
+                      {title: 'Remove goal', ok: 'Remove goal', danger: true})) return;
+  const goalId = value === '__clear' ? '' : value;
+  const goalName = value === '__clear' ? ''
+    : pick.options[pick.selectedIndex].textContent.trim();
+  // remembered before the write, so Undo puts every entry back where it was —
+  // including the ones that had a different goal
+  // hours ride along with the id and the previous goal: they are what lets
+  // the block above be recomputed without a reload, and what Undo moves back
+  const before = rows.map(tr => ({id: tr.dataset.entry, goal: tr.dataset.goal || '',
+                                  hours: parseFloat(tr.dataset.hours) || 0}));
+  const done = await fileMany(before, goalId, goalName);
+  if (done) {
+    lastFiling = {goalId: goalId, items: before};
+    document.getElementById('undoBtn').hidden = false;
+    ticks().forEach(t => { t.checked = false; });
+    refreshBar();
+    document.getElementById('filebar').hidden = false;
+  }
+}
+
+async function undoFiling() {
+  if (!lastFiling) return;
+  const from = lastFiling.goalId || '';
+  const groups = {};
+  lastFiling.items.forEach(x => { (groups[x.goal] = groups[x.goal] || []).push(x); });
+  const names = {};
+  Array.from(document.getElementById('goalPick').options).forEach(o => { names[o.value] = o.textContent.trim(); });
+  let n = 0;
+  for (const [goalId, items] of Object.entries(groups)) {
+    // they are in `from` now, whatever they were in before that
+    const moving = items.map(x => ({id: x.id, hours: x.hours, goal: from}));
+    n += await fileMany(moving, goalId, goalId ? (names[goalId] || '…') : '');
+  }
+  document.getElementById('fileProgText').textContent =
+    `${n} ${n === 1 ? 'entry' : 'entries'} put back`;
+  lastFiling = null;
+  document.getElementById('undoBtn').hidden = true;
+  refreshBar();
+}
+
+// ---- creating and editing a goal ---------------------------------------
+let editing = null;    // the goal id being edited, or null when creating
+
+function newGoal() {
+  editing = null;
+  const dlg = document.getElementById('goalDlg');
+  document.getElementById('goalErr').hidden = true;
+  document.getElementById('goalName').value = '';
+  document.getElementById('goalTarget').value = '';
+  document.getElementById('goalBasis').value = 'Total';
+  document.getElementById('goalDue').value = '';
+  // a goal being made is Open by definition; the control only earns its place
+  // once there is a goal to close
+  document.getElementById('goalStatusWrap').hidden = true;
+  document.getElementById('goalDlgTitle').textContent = 'New goal';
+  // saveGoal() files whatever is ticked as soon as the goal exists, so the
+  // button has to admit to both halves of what it does
+  const n = picked().length;
+  document.getElementById('goalGo').textContent =
+    n ? `Create and file ${n} ${n === 1 ? 'entry' : 'entries'}` : 'Create goal';
+  document.getElementById('goalElse').hidden = true;
+  dlg.showModal();
+  document.getElementById('goalName').focus();
+  loadElsewhere();
+}
+
+// the row's ✎ — target, due date and status, on a goal that already exists
+function editGoal(btn) {
+  editing = btn.dataset.goal;
+  document.getElementById('goalErr').hidden = true;
+  document.getElementById('goalName').value = btn.dataset.name || '';
+  document.getElementById('goalTarget').value = btn.dataset.target || '';
+  document.getElementById('goalBasis').value = btn.dataset.basis || 'Total';
+  document.getElementById('goalDue').value = btn.dataset.due || '';
+  document.getElementById('goalStatus').value = btn.dataset.status || 'Open';
+  document.getElementById('goalStatusWrap').hidden = false;
+  document.getElementById('goalDlgTitle').textContent = 'Edit goal';
+  document.getElementById('goalGo').textContent = 'Save goal';
+  // suggestions are for naming a new goal, not for renaming a used one
+  document.getElementById('goalElse').hidden = true;
+  document.getElementById('goalDlg').showModal();
+  document.getElementById('goalName').focus();
+}
+
+function closeGoalDlg() { document.getElementById('goalDlg').close(); }
+
+let elsewhereLoaded = false;
+async function loadElsewhere() {
+  if (elsewhereLoaded) return;
+  elsewhereLoaded = true;
+  try {
+    const res = await fetch(`/api/goals?project_id=${encodeURIComponent(PROJECT_ID)}`);
+    const data = await res.json();
+    const names = (data.elsewhere || []).slice(0, 8);
+    if (!names.length) return;
+    const box = document.getElementById('goalElseList');
+    names.forEach(n => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'gchip gchip-btn';
+      b.textContent = `${n.name} · ${n.count}`;
+      // one click adopts the existing spelling — the cross-project report
+      // groups by name, so a second spelling is a second row
+      b.onclick = () => { document.getElementById('goalName').value = n.name; };
+      box.appendChild(b);
+    });
+    document.getElementById('goalElse').hidden = false;
+  } catch (e) { /* the dialog works fine without the suggestions */ }
+}
+
+async function saveGoal() {
+  const name = document.getElementById('goalName').value.trim();
+  const err = document.getElementById('goalErr');
+  const go = document.getElementById('goalGo');
+  if (!name) {
+    err.textContent = 'A goal needs a name.';
+    err.hidden = false;
+    document.getElementById('goalName').focus();
+    return;
+  }
+  const raw = document.getElementById('goalTarget').value.trim();
+  const target = parseFloat(raw);
+  const due = document.getElementById('goalDue').value;
+  const body = {
+    name: name,
+    // a blanked field clears the value; 0 is a real target, so "no target" has
+    // to be said explicitly rather than inferred from a falsy number
+    target: raw === '' ? null : (isNaN(target) ? null : target),
+    clear_target: raw === '',
+    basis: document.getElementById('goalBasis').value,
+    due: due || null,
+    clear_due: !due,
+  };
+  if (editing) {
+    body.goal_id = editing;
+    body.status = document.getElementById('goalStatus').value;
+  } else {
+    body.project_id = PROJECT_ID;
+  }
+  go.disabled = true;
+  try {
+    const res = await fetch('/api/goal', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'could not save that goal');
+    document.getElementById('goalDlg').close();
+    if (editing) {
+      // the block's hours, meters and picker were all rendered from the old
+      // goal, so say so rather than patching four places by hand
+      editing = null;
+      markStale();
+      return;
+    }
+    // a new goal goes straight into the picker and is selected, so creating
+    // and filing is one uninterrupted move
+    const pick = document.getElementById('goalPick');
+    const opt = new Option(data.goal.name, data.goal.id, true, true);
+    pick.add(opt, pick.options[pick.options.length - 2]);
+    pick.value = data.goal.id;
+    markStale();
+    if (picked().length) fileSelection();
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  } finally {
+    go.disabled = false;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  document.getElementById('goalPick').addEventListener('change', function () {
+    if (this.value === '__new') newGoal();
+    refreshBar();
+  });
+  // Esc and the backdrop close a <dialog> without going through the buttons,
+  // and the picker was left on "＋ New goal…" — so the next press of File
+  // reopened the dialog instead of filing anything
+  document.getElementById('goalDlg').addEventListener('close', function () {
+    const pick = document.getElementById('goalPick');
+    if (pick.value === '__new') pick.value = '';
+    refreshBar();
+  });
+  refreshBar();
+});
+</script>
+{% endif %}
+
+{% endblock %}
+
+{% block modals %}
+{% if goals_on %}
+{# Rendered OUTSIDE the period form, from base.html's `modals` block. A control
+   inside a form is validated on submit even while its dialog is closed, and a
+   closed dialog is display:none — so the browser refuses the submit with
+   nothing to focus to explain why. That is exactly how "Save entry" silently
+   stopped working the day the ticket dialog first shipped; see
+   _task_dialog.html. This one carries no <form> either — saveGoal() POSTs. #}
+<dialog id="goalDlg" class="pop">
+  <div class="pop-head">
+    <strong id="goalDlgTitle">New goal</strong>
+    <button type="button" class="pop-x" onclick="closeGoalDlg()" aria-label="Close">×</button>
+  </div>
+
+  <label>Name
+    <input id="goalName" type="text" maxlength="120" autocomplete="off"
+           placeholder="New homepage, Maintenance…">
+  </label>
+
+  <div class="row2">
+    <label><span>Target hours <span class="subtle">— optional</span></span>
+      <input id="goalTarget" type="number" step="0.5" min="0" inputmode="decimal" placeholder="—">
+    </label>
+    <label><span>Counted</span>
+      <select id="goalBasis">
+        <option value="Total">In total</option>
+        <option value="Per month">Every month</option>
+      </select>
+    </label>
+  </div>
+  <div class="subtle tpick-hint">“Every month” is a standing goal — one Maintenance goal that keeps collecting hours, month after month, instead of a new one each time.</div>
+
+  <div class="row2">
+    <label><span>Due <span class="subtle">— optional</span></span>
+      <input id="goalDue" type="date">
+    </label>
+    <label id="goalStatusWrap" hidden><span>Status</span>
+      <select id="goalStatus">
+        <option value="Open">Open</option>
+        <option value="Done">Done</option>
+        <option value="Dropped">Dropped</option>
+      </select>
+    </label>
+  </div>
+  {# a standing goal is the one that must be allowed to have no end #}
+  <div class="subtle tpick-hint">Leave Due empty for a goal that runs indefinitely. Closing a goal keeps its hours and takes it out of the picker.</div>
+
+  {# names other projects already use: the cross-project report groups by name,
+     so a second spelling of "Maintenance" is a second row in the one table
+     that exists to put them together #}
+  <div id="goalElse" class="goal-else" hidden>
+    <div class="subtle">Used on other projects:</div>
+    <div id="goalElseList" class="goal-else-list"></div>
+  </div>
+
+  <div class="pop-err" id="goalErr" hidden></div>
+
+  <div class="pop-actions">
+    <button type="button" class="btn" onclick="closeGoalDlg()">Cancel</button>
+    <button type="button" class="primary" id="goalGo" onclick="saveGoal()">Create goal</button>
+  </div>
+</dialog>
+{% endif %}
 {% endblock %}

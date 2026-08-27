@@ -74,6 +74,22 @@
   {% else %}<div class="subtle">No entries in this range.</div>{% endfor %}
 </div>
 
+{# Grouped by goal *name* across every project: "Maintenance" exists once per
+   project, and what this card answers is what maintenance costs company-wide.
+   Unassigned is a row like any other, at its real size — it is the backlog. #}
+{% if r.by_goal|length > 1 or (r.by_goal and not r.by_goal[0].unassigned) %}
+<div class="card wide">
+  <h3>By goal</h3>
+  {% for g in r.by_goal %}
+  <div class="baritem{{ ' baritem-idle' if g.unassigned }}">
+    <div class="bar-name">{{ g.name }} <span class="subtle bar-where">{% if g.projects > 1 %}across {% endif %}{{ g.where }}</span></div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{ g.pct }}%"></div></div>
+    <div class="bar-val">{{ '%g'|format(g.hours) }}h</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if r.team and r.person_projects %}
 <div class="card wide">
   <h3>By person ▸ projects</h3>
