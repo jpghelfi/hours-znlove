@@ -177,6 +177,7 @@
   {% if goal_rows %}
   <div class="goalrows">
     {% for g in goal_rows %}
+    <div class="goalrow-wrap">
     <a class="goalrow{{ ' is-on' if goal_sel == g.id }}{{ ' is-none' if g.unassigned }}"
        href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{% if goal_sel != g.id %}&goal={{ g.id }}{% endif %}"
        {% if goal_sel == g.id %}aria-current="true"{% endif %}>
@@ -194,6 +195,15 @@
       {% elif not g.unassigned %}<span class="goalrow-meter subtle">{{ g.entries }} {{ 'entry' if g.entries == 1 else 'entries' }}</span>
       {% else %}<span class="goalrow-meter subtle">{{ g.entries }} to file</span>{% endif %}
     </a>
+    {% if not g.unassigned %}
+    <button type="button" class="goalrow-edit" title="Edit {{ g.name }}"
+            aria-label="Edit {{ g.name }}"
+            data-goal="{{ g.id }}" data-name="{{ g.name }}"
+            data-target="{{ '' if g.target is none else '%g'|format(g.target) }}"
+            data-basis="{{ g.basis }}" data-status="{{ g.status }}" data-due="{{ g.due or '' }}"
+            onclick="editGoal(this)">✎</button>
+    {% endif %}
+    </div>
     {% endfor %}
   </div>
   {% else %}
@@ -270,13 +280,15 @@
       {% if goals_on %}<th class="col-tick"><input type="checkbox" id="pickAll" onclick="toggleAllTicks(this)"
              aria-label="Select every entry listed"></th>{% endif %}
       <th class="left">Date</th>{% if is_all %}<th class="left">Project</th>{% endif %}<th class="left">Person</th><th>Hours</th>
-      {% if goals_on %}<th class="left">Goal</th>{% endif %}<th class="left">Description</th></tr></thead>
+      {% if goals_on %}<th class="left goal-col">Goal</th>{% endif %}<th class="left">Description</th></tr></thead>
     <tbody>
       {% for e in d.entries|sort(attribute='date', reverse=true) %}
       <tr data-entry="{{ e.id }}" data-hours="{{ e.hours }}" data-goal="{{ e.goal_id or '' }}">
         {% if goals_on %}<td class="col-tick"><input type="checkbox" class="tick" onclick="onTick(event)"
                aria-label="Select the entry of {{ e.date }} by {{ e.person }}"></td>{% endif %}
-        <td class="left nowrap">{{ e.date }}</td>
+        <td class="left nowrap">{{ e.date }}
+          {%- if goals_on %}<span class="gchip gchip-inline goal-of{{ ' is-none' if not e.goal }}"
+                data-goal-of="{{ e.id }}">{{ e.goal }}</span>{% endif %}</td>
         {% if is_all %}<td class="left">{{ e.project }}</td>{% endif %}
         <td class="left">{{ e.person }}</td>
         {# the whole page is admin-only, so every reader here may correct an entry #}
@@ -286,7 +298,7 @@
                  value="{{ '%g'|format(e.hours) }}"
                  onfocus="this.dataset.prev = this.value" onchange="saveEntry(this)">
         </td>
-        {% if goals_on %}<td class="left"><span class="gchip goal-of{{ ' is-none' if not e.goal }}"
+        {% if goals_on %}<td class="left goal-col"><span class="gchip goal-of{{ ' is-none' if not e.goal }}"
               data-goal-of="{{ e.id }}">{{ e.goal }}</span></td>{% endif %}
         {# the ticket rides in the description cell rather than its own column:
            the table's colspans already flex on is_all, and an extra column
@@ -441,6 +453,8 @@ function refreshBar() {
   document.getElementById('pickH').textContent = Math.round(hours * 100) / 100;
   const bar = document.getElementById('filebar');
   bar.hidden = !rows.length && !lastFiling;
+  // the bar floats over the end of the list, so make room to scroll past it
+  document.body.classList.toggle('is-filing', !bar.hidden);
   const all = ticks();
   const box = document.getElementById('pickAll');
   box.checked = all.length > 0 && rows.length === all.length;
@@ -573,16 +587,44 @@ async function undoFiling() {
   refreshBar();
 }
 
-// ---- creating a goal mid-triage ----------------------------------------
+// ---- creating and editing a goal ---------------------------------------
+let editing = null;    // the goal id being edited, or null when creating
+
 function newGoal() {
+  editing = null;
   const dlg = document.getElementById('goalDlg');
   document.getElementById('goalErr').hidden = true;
   document.getElementById('goalName').value = '';
   document.getElementById('goalTarget').value = '';
   document.getElementById('goalBasis').value = 'Total';
+  document.getElementById('goalDue').value = '';
+  // a goal being made is Open by definition; the control only earns its place
+  // once there is a goal to close
+  document.getElementById('goalStatusWrap').hidden = true;
+  document.getElementById('goalDlgTitle').textContent = 'New goal';
+  document.getElementById('goalGo').textContent = 'Create goal';
+  document.getElementById('goalElse').hidden = true;
   dlg.showModal();
   document.getElementById('goalName').focus();
   loadElsewhere();
+}
+
+// the row's ✎ — target, due date and status, on a goal that already exists
+function editGoal(btn) {
+  editing = btn.dataset.goal;
+  document.getElementById('goalErr').hidden = true;
+  document.getElementById('goalName').value = btn.dataset.name || '';
+  document.getElementById('goalTarget').value = btn.dataset.target || '';
+  document.getElementById('goalBasis').value = btn.dataset.basis || 'Total';
+  document.getElementById('goalDue').value = btn.dataset.due || '';
+  document.getElementById('goalStatus').value = btn.dataset.status || 'Open';
+  document.getElementById('goalStatusWrap').hidden = false;
+  document.getElementById('goalDlgTitle').textContent = 'Edit goal';
+  document.getElementById('goalGo').textContent = 'Save goal';
+  // suggestions are for naming a new goal, not for renaming a used one
+  document.getElementById('goalElse').hidden = true;
+  document.getElementById('goalDlg').showModal();
+  document.getElementById('goalName').focus();
 }
 
 function closeGoalDlg() {
@@ -625,26 +667,47 @@ async function saveGoal() {
     document.getElementById('goalName').focus();
     return;
   }
-  const target = parseFloat(document.getElementById('goalTarget').value);
+  const raw = document.getElementById('goalTarget').value.trim();
+  const target = parseFloat(raw);
+  const due = document.getElementById('goalDue').value;
+  const body = {
+    name: name,
+    // a blanked field clears the value; 0 is a real target, so "no target" has
+    // to be said explicitly rather than inferred from a falsy number
+    target: raw === '' ? null : (isNaN(target) ? null : target),
+    clear_target: raw === '',
+    basis: document.getElementById('goalBasis').value,
+    due: due || null,
+    clear_due: !due,
+  };
+  if (editing) {
+    body.goal_id = editing;
+    body.status = document.getElementById('goalStatus').value;
+  } else {
+    body.project_id = PROJECT_ID;
+  }
   go.disabled = true;
   try {
     const res = await fetch('/api/goal', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        project_id: PROJECT_ID, name: name,
-        target: isNaN(target) ? null : target,
-        basis: document.getElementById('goalBasis').value,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'could not create that goal');
-    // straight into the picker and selected, so creating and filing is one
-    // uninterrupted move
+    if (!data.ok) throw new Error(data.error || 'could not save that goal');
+    document.getElementById('goalDlg').close();
+    if (editing) {
+      // the block's hours, meters and picker were all rendered from the old
+      // goal, so say so rather than patching four places by hand
+      editing = null;
+      markStale();
+      return;
+    }
+    // a new goal goes straight into the picker and is selected, so creating
+    // and filing is one uninterrupted move
     const pick = document.getElementById('goalPick');
     const opt = new Option(data.goal.name, data.goal.id, true, true);
     pick.add(opt, pick.options[pick.options.length - 2]);
     pick.value = data.goal.id;
-    document.getElementById('goalDlg').close();
     markStale();
     if (picked().length) fileSelection();
   } catch (e) {
@@ -697,6 +760,21 @@ document.addEventListener('DOMContentLoaded', function () {
     </label>
   </div>
   <div class="subtle tpick-hint">“Every month” is a standing goal — one Maintenance goal that keeps collecting hours, month after month, instead of a new one each time.</div>
+
+  <div class="row2">
+    <label><span>Due <span class="subtle">— optional</span></span>
+      <input id="goalDue" type="date">
+    </label>
+    <label id="goalStatusWrap" hidden><span>Status</span>
+      <select id="goalStatus">
+        <option value="Open">Open</option>
+        <option value="Done">Done</option>
+        <option value="Dropped">Dropped</option>
+      </select>
+    </label>
+  </div>
+  {# a standing goal is the one that must be allowed to have no end #}
+  <div class="subtle tpick-hint">Leave Due empty for a goal that runs indefinitely. Closing a goal keeps its hours and takes it out of the picker.</div>
 
   {# names other projects already use: the cross-project report groups by name,
      so a second spelling of "Maintenance" is a second row in the one table

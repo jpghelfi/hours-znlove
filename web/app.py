@@ -2712,7 +2712,7 @@ def api_goal(request: Request, g: GoalSave):
             if not g.project_id:
                 return JSONResponse({"ok": False, "error": "pick a project"}, status_code=400)
             goal = ops.create_goal(g.name or "", g.project_id, target=g.target,
-                                   basis=g.basis or "Total")
+                                   basis=g.basis or "Total", due=g.due or None)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except Exception:

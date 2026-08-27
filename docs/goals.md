@@ -119,6 +119,17 @@ the page, it is the backlog, and dropping it would leave the block disagreeing
 with the project total directly above it. Clicking a row filters the page (and
 its exports) to that goal; `?goal=none` is the triage view.
 
+**Goals are edited from the row they're on.** The ✎ beside a goal opens the
+same dialog with its name, target, basis, **due date** and status — the four
+things that change after a goal exists. Setting `Status: Done` takes it out of
+the picker while keeping its hours and its row (badged `Done`) for any period it
+has hours in; `Dropped` is the same for work that was abandoned. A blank Due is
+what a standing goal looks like, so clearing it is a first-class action rather
+than an omission — hence `clear_target` / `clear_due` on the request, and
+`_UNSET` versus `None` inside `update_goal`, the distinction `set_budget` makes
+for exactly the same reason: editing a status must never silently wipe the
+target beside it.
+
 **The picker creates as well as picks.** `＋ New goal` opens a dialog that also
 lists **names other projects already use**, because the cross-project report
 groups by name — a second spelling of "Maintenance" is a second row in the one

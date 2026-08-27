@@ -1073,6 +1073,19 @@ td.desc .tlink { margin-left: 8px; }
 .goalcard-head h3 { margin: 0; }
 .goalcard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .goalrows { display: flex; flex-direction: column; }
+/* the row is a link that filters the page, so its edit control is a sibling —
+   a <button> inside an <a> is invalid, and swallows the click where it renders
+   at all */
+.goalrow-wrap { display: flex; align-items: center; gap: 2px; }
+.goalrow-wrap > .goalrow { flex: 1; min-width: 0; }
+.goalrow-edit {
+  flex: none; background: none; border: 1px solid transparent; border-radius: 8px;
+  color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1;
+  padding: 8px 9px; opacity: 0;
+}
+.goalrow-wrap:hover .goalrow-edit, .goalrow-edit:focus-visible { opacity: 1; }
+.goalrow-edit:hover { color: var(--ink); border-color: var(--line); }
+.goalrow-edit:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .goalrow {
   /* the name is a label, not a column to pad out: cap it and let the bar take
      the slack, or a wide screen leaves a hand's width between a goal and its
@@ -1111,6 +1124,10 @@ td.desc .tlink { margin-left: 8px; }
 .goal-else { margin-top: 4px; }
 .goal-else-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
+/* the same chip, under the date instead of in its own column — see the mobile
+   block below, where the Goal column is off-screen */
+.gchip-inline { display: none; margin-top: 3px; }
+
 /* the tick column on the entry list */
 .entrylist .col-tick { width: 34px; padding: 4px 6px; text-align: center; }
 .entrylist .col-tick input { width: 18px; height: 18px; cursor: pointer; }
@@ -1138,6 +1155,9 @@ td.desc .tlink { margin-left: 8px; }
      it becomes two lines — name and hours, then the bar with its share — and
      the target meter takes a line of its own. */
   .goalrow { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 8px; }
+  /* no hover on a touch screen, so the edit control is simply always there,
+     at a size a thumb can hit */
+  .goalrow-edit { opacity: 1; padding: 10px 12px; border-color: var(--line); }
   .goalrow-name { min-width: 0; }
   .goalrow-meter { grid-column: 1 / -1; justify-content: flex-start; }
   .goalrow-meter .cap { width: 72px; }
@@ -1153,4 +1173,18 @@ td.desc .tlink { margin-left: 8px; }
   /* a comfortable tap target, in a roomier row to hit it in */
   .entrylist .col-tick { width: 40px; padding: 6px; }
   .entrylist .col-tick input { width: 22px; height: 22px; }
+
+  /* The Goal column lives past the right edge of a 390px screen, and the list
+     scrolls sideways — so while filing, the one thing you need to see (is this
+     row already filed?) was the one thing you had to scroll for. The chip moves
+     under the date; the column itself goes, rather than showing it twice. */
+  .entrylist th.goal-col, .entrylist td.goal-col { display: none; }
+  /* block, not inline: the date cell is nowrap, so an inline chip would widen
+     the column instead of sitting under the date. `.gchip.is-none` is the more
+     specific rule, so an unfiled entry still shows nothing at all. */
+  .gchip-inline { display: block; }
+
+  /* the file bar is sticky over the end of the list: leave it somewhere to sit
+     so the last entries can still be scrolled clear of it */
+  body.is-filing .entrylist { padding-bottom: 120px; }
 }

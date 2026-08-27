@@ -2278,7 +2278,8 @@ def entry_goal(props: dict) -> dict:
 
 
 def create_goal(name: str, project_id: str, target: float | None = None,
-                basis: str = "Total", status: str = "Open") -> dict:
+                basis: str = "Total", status: str = "Open",
+                due: str | None = None) -> dict:
     """Create one goal against a project. Returns it in list_goals' shape."""
     if not GOALS_DS:
         raise ValueError("goals are not set up")
@@ -2300,6 +2301,10 @@ def create_goal(name: str, project_id: str, target: float | None = None,
     }
     if target is not None:
         props["Target hours"] = {"number": float(target)}
+    if due:
+        # a standing goal leaves this empty — that is what "it never ends"
+        # looks like in the data
+        props["Due"] = {"date": {"start": due}}
     page = _notion.pages.create(
         parent={"type": "data_source_id", "data_source_id": GOALS_DS}, properties=props)
     all_goals(refresh=True)
