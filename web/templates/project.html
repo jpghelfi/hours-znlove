@@ -96,7 +96,10 @@
       <th class="col-hours">Hours</th>
       <th class="col-share">Share</th>
       <th class="col-num">Days</th>
-      <th class="col-num">Entries</th>
+      {# "Ent" below 560px: the column is 40px wide there and "Entries" clips.
+         Both spans are always in the DOM — one is display:none — so the
+         header reads the same to a screen reader at either width. #}
+      <th class="col-num"><span class="lbl-wide">Entries</span><span class="lbl-narrow" aria-hidden="true">Ent</span></th>
     </tr>
   </thead>
   {% for g in d.groups %}
@@ -168,7 +171,10 @@
       <th class="col-hours">Hours</th>
       <th class="col-share">Share</th>
       <th class="col-num">Days</th>
-      <th class="col-num">Entries</th>
+      {# "Ent" below 560px: the column is 40px wide there and "Entries" clips.
+         Both spans are always in the DOM — one is display:none — so the
+         header reads the same to a screen reader at either width. #}
+      <th class="col-num"><span class="lbl-wide">Entries</span><span class="lbl-narrow" aria-hidden="true">Ent</span></th>
     </tr>
   </thead>
   {% for r in d.rows %}

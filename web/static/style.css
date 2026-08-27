@@ -872,6 +872,9 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
    so it indents past the person name it hangs off. */
 .projgrid .person-row .disclosure { font-weight: 500; color: var(--muted); }
 .projgrid .entry-row[data-parent] .col-project.sub { padding-left: 64px; }
+/* a column header with a narrow-screen short form: the wide one is what shows
+   until the mobile block below swaps them */
+.lbl-narrow { display: none; }
 .expand-all {
   float: right; background: none; border: 1px solid var(--line); color: var(--muted);
   font: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -899,14 +902,20 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   .projgrid td.col-project, .projgrid th.col-project {
     min-width: 0; max-width: none; width: auto; padding-right: 6px;
   }
-  .projgrid .col-hours { width: 56px; }
-  .projgrid .col-share { width: 44px; }
-  .projgrid .col-num { width: 46px; font-size: 12px; }
-  /* Entries is the one column a phone can lose without losing anything: every
-     name already carries its entry count in the pill beside it, and the list
-     below the table opens with the period's total. Days has no such twin. */
-  .projgrid .col-num + .col-num { display: none; }
-  .projgrid thead th { font-size: 10px; letter-spacing: 0; }
+  .projgrid .col-hours { width: 52px; }
+  .projgrid .col-share { width: 40px; }
+  .projgrid .col-num { width: 40px; font-size: 12px; }
+  /* every column stays: in the rollup a project row's count pill is its number
+     of *people*, so its entry count is nowhere else on the page. Only the
+     header shrinks — "Entries" doesn't fit 40px, "Ent" does. */
+  /* .col-num's 12px is the more specific selector, so the header restates it */
+  .projgrid thead th, .projgrid thead th.col-num { font-size: 10px; letter-spacing: 0; }
+  .projgrid thead .lbl-narrow { display: inline; }
+  /* still read in full by a screen reader, which is why this isn't display:none */
+  .projgrid thead .lbl-wide {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
   /* the bar needs room the phone doesn't have; the number carries the meaning */
   .projgrid .share-track { display: none; }
   .projgrid .share { justify-content: flex-end; gap: 0; }
