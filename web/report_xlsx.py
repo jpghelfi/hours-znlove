@@ -60,7 +60,8 @@ def group(entries: list[dict]) -> list[dict]:
     groups: dict = {}
     for e in entries:
         g = groups.setdefault(e.get("project_id") or e.get("project") or "(none)", {
-            "name": e.get("project") or "(none)", "hours": 0.0, "people": {}, "log": [],
+            "name": e.get("project") or "(none)", "hours": 0.0, "people": {},
+            "goals": {}, "log": [],
         })
         g["hours"] += e["hours"]
         g["log"].append(e)
@@ -70,6 +71,13 @@ def group(entries: list[dict]) -> list[dict]:
         p["hours"] += e["hours"]
         p["entries"] += 1
         p["days"].add(e["date"])
+        # goals are grouped by name here: within one project a name is one
+        # goal, and the sheet is read by people who know the names, not the ids
+        gl = g["goals"].setdefault(e.get("goal") or "",
+                                   {"name": e.get("goal") or "Unassigned",
+                                    "hours": 0.0, "entries": 0})
+        gl["hours"] += e["hours"]
+        gl["entries"] += 1
     out = []
     for g in sorted(groups.values(), key=lambda g: (-g["hours"], g["name"].lower())):
         out.append({
@@ -77,6 +85,15 @@ def group(entries: list[dict]) -> list[dict]:
             "hours": round(g["hours"], 2),
             "entries": len(g["log"]),
             "days": len({e["date"] for e in g["log"]}),
+            # only worth a table when the project actually uses goals: an
+            # all-Unassigned block would be a row saying "no goals" twice
+            "goals": sorted(
+                ({"name": gl["name"], "hours": round(gl["hours"], 2),
+                  "entries": gl["entries"],
+                  "unassigned": gl["name"] == "Unassigned"}
+                 for gl in g["goals"].values()),
+                key=lambda gl: (gl["unassigned"], -gl["hours"], gl["name"].lower()))
+            if any(k for k in g["goals"]) else [],
             "people": sorted(
                 ({"name": p["name"], "hours": round(p["hours"], 2),
                   "entries": p["entries"], "days": len(p["days"])}
@@ -139,28 +156,55 @@ def _project_sheet(wb: Workbook, g: dict, period_label: str, used: set) -> None:
     tot = ws.cell(row=row, column=2, value=g["hours"])
     tot.font, tot.number_format = _TOTAL_FONT, _HOURS_FMT
 
+    if g["goals"]:
+        # what the month went into — usually the line a client reads first, so
+        # it sits above the log; only on a sheet whose project uses goals
+        row += 2
+        ws.cell(row=row, column=1, value="By goal").font = _SECTION_FONT
+        row += 1
+        for i, h in enumerate(["Goal", "Hours", "Entries"], start=1):
+            c = ws.cell(row=row, column=i, value=h)
+            c.font, c.fill, c.border = _TH_FONT, _HEAD_FILL, _RULE
+        row += 1
+        for gl in g["goals"]:
+            ws.cell(row=row, column=1, value=gl["name"])
+            ws.cell(row=row, column=2, value=gl["hours"]).number_format = _HOURS_FMT
+            ws.cell(row=row, column=3, value=gl["entries"])
+            row += 1
+        ws.cell(row=row, column=1, value="Total").font = _TOTAL_FONT
+        gt = ws.cell(row=row, column=2, value=g["hours"])
+        gt.font, gt.number_format = _TOTAL_FONT, _HOURS_FMT
+
     log_head = row + 3
     ws.cell(row=log_head - 1, column=1, value="Log").font = _SECTION_FONT
-    for i, h in enumerate(["Date", "Person", "Hours", "Comment", "Ticket"], start=1):
+    # the Goal column exists only when the project uses goals, so an export
+    # from a project that doesn't is exactly the file it was before
+    heads = ["Date", "Person", "Hours"] + (["Goal"] if g["goals"] else []) + ["Comment", "Ticket"]
+    for i, h in enumerate(heads, start=1):
         c = ws.cell(row=log_head, column=i, value=h)
         c.font, c.fill, c.border = _TH_FONT, _HEAD_FILL, _RULE
+    desc_col = 5 if g["goals"] else 4
     row = log_head + 1
     for e in g["log"]:
         ws.cell(row=row, column=1, value=e["date"])
         ws.cell(row=row, column=2, value=e["person"])
         ws.cell(row=row, column=3, value=e["hours"]).number_format = _HOURS_FMT
-        c = ws.cell(row=row, column=4, value=e["description"])
+        if g["goals"]:
+            ws.cell(row=row, column=4, value=e.get("goal") or "")
+        c = ws.cell(row=row, column=desc_col, value=e["description"])
         # comments are free text and often long: wrap rather than run off the page
         c.alignment = Alignment(wrap_text=True, vertical="top")
         if e.get("task_url"):
             # the linked Notion ticket, clickable — the column stays empty for
             # every entry logged without one
-            t = ws.cell(row=row, column=5, value=e.get("task") or "Notion ticket")
+            t = ws.cell(row=row, column=desc_col + 1, value=e.get("task") or "Notion ticket")
             t.hyperlink, t.style = e["task_url"], "Hyperlink"
         row += 1
+    last = chr(ord("A") + desc_col)      # the Ticket column: E, or F with goals
     if g["log"]:
-        ws.auto_filter.ref = f"A{log_head}:E{row - 1}"
-    _widths(ws, {"A": 12, "B": 24, "C": 9, "D": 90, "E": 34})
+        ws.auto_filter.ref = f"A{log_head}:{last}{row - 1}"
+    _widths(ws, {"A": 12, "B": 24, "C": 9, "D": 26, "E": 90, "F": 34} if g["goals"]
+                else {"A": 12, "B": 24, "C": 9, "D": 90, "E": 34})
     # keep the log's header visible while scrolling a long month
     ws.freeze_panes = f"A{log_head + 1}"
 

@@ -310,6 +310,7 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
                 "hours": props["Hours"]["number"] or 0,
                 "description": desc[0]["plain_text"] if desc else "",
                 **entry_task(props),
+                **entry_goal(props),
             })
         if not res.get("has_more"):
             break
@@ -345,6 +346,7 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
                 "hours": props["Hours"]["number"] or 0,
                 "description": desc[0]["plain_text"] if desc else "",
                 **entry_task(props),
+                **entry_goal(props),
             })
         if not res.get("has_more"):
             break
@@ -2080,3 +2082,366 @@ def budget_alert(project_id: str, date: str) -> dict | None:
         "remaining": b["hours"] - tracked,
         "policy": b["policy"], "limit": b["limit"],
     }
+
+
+# ---- goals -------------------------------------------------------------
+#
+# A goal is a named bucket of work inside a project ("New homepage",
+# "Maintenance") that logged hours are filed under. Its own database, related
+# from Time Entries — see src/setup_goals_db.py for why not a select column.
+#
+# Two shapes, told apart by `Target basis`:
+#
+#   * Total     — 80 h for the homepage. Spent once, then Done. Its meter reads
+#                 the goal's *lifetime* hours.
+#   * Per month — 10 h of maintenance a month. One row that January's and
+#                 December's entries both point at, never Done. Its meter reads
+#                 the *month's* hours.
+#
+# Nothing here enforces a target. A cap on a goal would only teach people to
+# log against no goal, which destroys the data the feature exists to collect.
+GOALS_DS = _ids.get("goals_ds_id")   # optional: unset until set up
+
+GOAL_STATUSES = ("Open", "Done", "Dropped")
+GOAL_BASES = ("Total", "Per month")
+MAX_GOAL_NAME = 120
+
+# One assign request touches at most this many entries. The browser sends a
+# long selection in batches of this size so it can show real progress — Notion
+# has no bulk update, so filing 200 entries is 200 round trips at ~3/s.
+MAX_GOAL_ASSIGN = 25
+
+_GOAL_TTL = 60.0
+_GOAL_PROP_TTL = 300.0        # a schema lookup, so it ages like _task_schema
+_GOAL_PROP_DEFAULT = "Goal"   # the name we create; never the one we rely on
+_goal_cache: dict = {"at": 0.0, "rows": None}
+_goal_prop_cache: dict = {"at": 0.0, "name": None}
+_goal_totals_cache: dict = {}    # project id -> (fetched_at, {goal id: hours})
+
+
+def goals_enabled() -> bool:
+    return bool(GOALS_DS)
+
+
+def ensure_goal_property() -> None:
+    """Make sure Time Entries has the Goal relation; add it if missing.
+
+    Runs at startup like ensure_person_property. Does nothing at all until the
+    Goals db exists, so the app boots fine before src/setup_goals_db.py is run.
+    """
+    if not GOALS_DS:
+        return
+    if goal_prop(refresh=True):
+        return
+    _notion.data_sources.update(TIME_DS, properties={
+        _GOAL_PROP_DEFAULT: {"relation": {"data_source_id": GOALS_DS,
+                                          "single_property": {}}},
+    })
+    goal_prop(refresh=True)
+
+
+def goal_prop(refresh: bool = False) -> str | None:
+    """The name of the Time Entries relation that points at Goals.
+
+    Resolved from the schema by *target data source*, not by name: renaming a
+    column in the Notion UI has taken this app down before (alloc_person_prop —
+    the Allocations people column was renamed to `val`, and it 500'd two pages),
+    and the Time Entries "Logged by" column is called `melisa` today. A relation
+    knows what it points at, so the name is never load-bearing.
+
+    None means "not set up" everywhere it's read, which degrades to a page with
+    no goals rather than an error.
+    """
+    if not GOALS_DS:
+        return None
+    now = time.time()
+    if not refresh and _goal_prop_cache["name"] and now - _goal_prop_cache["at"] < _GOAL_PROP_TTL:
+        return _goal_prop_cache["name"]
+    try:
+        props = _notion.data_sources.retrieve(TIME_DS)["properties"]
+    except Exception:
+        logging.warning("Could not read the Time Entries schema to find the Goal relation")
+        return _goal_prop_cache["name"]
+    found = None
+    for name, spec in props.items():
+        if spec.get("type") != "relation":
+            continue
+        if _bare(spec.get("relation", {}).get("data_source_id")) == _bare(GOALS_DS):
+            found = name
+            if name == _GOAL_PROP_DEFAULT:
+                break     # prefer the name we create, if several ever point here
+    if found and found != _GOAL_PROP_DEFAULT:
+        logging.warning("Time Entries' Goal relation is named %r — reading it anyway", found)
+    _goal_prop_cache.update({"at": now, "name": found})
+    return found
+
+
+def _goal_row(page: dict, pname: dict) -> dict:
+    props = page["properties"]
+    title = props.get("Goal", {}).get("title") or []
+    rel = props.get("Project", {}).get("relation") or []
+    pid = rel[0]["id"] if rel else None
+    basis = (props.get("Target basis", {}).get("select") or {}).get("name") or "Total"
+    status = (props.get("Status", {}).get("select") or {}).get("name") or "Open"
+    note = props.get("Note", {}).get("rich_text") or []
+    return {
+        "id": page["id"],
+        "name": "".join(t.get("plain_text", "") for t in title).strip() or "(untitled)",
+        "project_id": pid,
+        "project": pname.get(pid, "(none)") if pid else "(none)",
+        "target": props.get("Target hours", {}).get("number"),
+        "basis": basis if basis in GOAL_BASES else "Total",
+        "status": status if status in GOAL_STATUSES else "Open",
+        "started": (props.get("Started", {}).get("date") or {}).get("start"),
+        "due": (props.get("Due", {}).get("date") or {}).get("start"),
+        "note": "".join(t.get("plain_text", "") for t in note).strip(),
+    }
+
+
+def all_goals(refresh: bool = False) -> list[dict]:
+    """Every goal, cached ~60 s.
+
+    One read for the lot: there are a handful per project, the picker and the
+    name resolution both want them on every page load, and the alternative is a
+    query per project. Every read goes through .get() — a renamed or missing
+    column reads as a default, never a KeyError.
+    """
+    if not GOALS_DS:
+        return []
+    now = time.time()
+    if not refresh and _goal_cache["rows"] is not None and now - _goal_cache["at"] < _GOAL_TTL:
+        return _goal_cache["rows"]
+    pname = _project_name_map()
+    try:
+        pages = _query_all({"data_source_id": GOALS_DS, "page_size": 100})
+    except Exception:
+        logging.warning("Goals query failed — the app carries on without goals")
+        return _goal_cache["rows"] or []
+    rows = [_goal_row(p, pname) for p in pages]
+    rows.sort(key=lambda g: (g["status"] != "Open", g["name"].lower()))
+    _goal_cache.update({"at": now, "rows": rows})
+    return rows
+
+
+def list_goals(project_id: str | None = None, open_only: bool = False) -> list[dict]:
+    """Goals, optionally for one project and optionally only the open ones."""
+    rows = all_goals()
+    if project_id:
+        rows = [g for g in rows if g["project_id"] == project_id]
+    if open_only:
+        rows = [g for g in rows if g["status"] == "Open"]
+    return rows
+
+
+def goal_map() -> dict:
+    return {g["id"]: g for g in all_goals()}
+
+
+def other_project_goal_names(project_id: str | None) -> list[dict]:
+    """Goal names in use on *other* projects, most-used first.
+
+    Offered when creating a goal because the cross-project report groups by
+    name: "Maintenance" spelled two ways is two rows in a report that exists to
+    put them in one. Names this project already has are left out — it has them.
+    """
+    mine = {_norm(g["name"]) for g in all_goals() if g["project_id"] == project_id}
+    counts: dict = {}
+    for g in all_goals():
+        if g["project_id"] == project_id or g["status"] != "Open":
+            continue
+        key = _norm(g["name"])
+        if not key or key in mine:
+            continue
+        row = counts.setdefault(key, {"name": g["name"], "projects": set()})
+        row["projects"].add(g["project_id"])
+    out = [{"name": r["name"], "count": len(r["projects"])} for r in counts.values()]
+    out.sort(key=lambda r: (-r["count"], r["name"].lower()))
+    return out
+
+
+def entry_goal(props: dict) -> dict:
+    """The goal on a Time Entries row, read tolerantly.
+
+    Every entry logged before this feature has none, the column may not exist
+    at all, and the name is resolved against the goal list rather than trusted
+    from the relation (a relation payload carries an id, never a title).
+    """
+    prop = goal_prop()
+    if not prop:
+        return {"goal_id": None, "goal": ""}
+    rel = props.get(prop, {}).get("relation") or []
+    gid = rel[0]["id"] if rel else None
+    if not gid:
+        return {"goal_id": None, "goal": ""}
+    g = goal_map().get(gid)
+    return {"goal_id": gid, "goal": g["name"] if g else "(deleted goal)"}
+
+
+def create_goal(name: str, project_id: str, target: float | None = None,
+                basis: str = "Total", status: str = "Open") -> dict:
+    """Create one goal against a project. Returns it in list_goals' shape."""
+    if not GOALS_DS:
+        raise ValueError("goals are not set up")
+    name = (name or "").strip()[:MAX_GOAL_NAME]
+    if not name:
+        raise ValueError("a goal needs a name")
+    if project_id not in _project_name_map():
+        raise ValueError("unknown project")
+    if basis not in GOAL_BASES:
+        basis = "Total"
+    if status not in GOAL_STATUSES:
+        status = "Open"
+    props = {
+        "Goal": {"title": [{"text": {"content": name}}]},
+        "Project": {"relation": [{"id": project_id}]},
+        "Status": {"select": {"name": status}},
+        "Target basis": {"select": {"name": basis}},
+        "Started": {"date": {"start": dt.date.today().isoformat()}},
+    }
+    if target is not None:
+        props["Target hours"] = {"number": float(target)}
+    page = _notion.pages.create(
+        parent={"type": "data_source_id", "data_source_id": GOALS_DS}, properties=props)
+    all_goals(refresh=True)
+    return _goal_row(page, _project_name_map())
+
+
+def _own_goal(goal_id: str) -> dict:
+    """A goal by id, refusing anything that isn't one of ours.
+
+    Goal ids arrive from the browser, so the parent is checked before any
+    write — the same rule get_invoice and delete_absence follow.
+    """
+    page = _notion.pages.retrieve(goal_id)
+    parent = page.get("parent") or {}
+    if _bare(parent.get("data_source_id")) != _bare(GOALS_DS):
+        raise ValueError("not a goal")
+    return page
+
+
+def update_goal(goal_id: str, name: str | None = None, target: float | None = _UNSET,
+                basis: str | None = None, status: str | None = None,
+                due: str | None = _UNSET) -> dict:
+    """Edit one goal. Only the named fields are written.
+
+    `target` and `due` distinguish "leave it alone" (_UNSET) from "clear it"
+    (None) — set_budget makes the same distinction, and for the same reason:
+    editing a status must not silently wipe the target beside it.
+    """
+    if not GOALS_DS:
+        raise ValueError("goals are not set up")
+    _own_goal(goal_id)
+    props: dict = {}
+    if name is not None:
+        name = name.strip()[:MAX_GOAL_NAME]
+        if not name:
+            raise ValueError("a goal needs a name")
+        props["Goal"] = {"title": [{"text": {"content": name}}]}
+    if target is not _UNSET:
+        props["Target hours"] = {"number": float(target) if target is not None else None}
+    if basis is not None:
+        if basis not in GOAL_BASES:
+            raise ValueError("unknown target basis")
+        props["Target basis"] = {"select": {"name": basis}}
+    if status is not None:
+        if status not in GOAL_STATUSES:
+            raise ValueError("unknown status")
+        props["Status"] = {"select": {"name": status}}
+    if due is not _UNSET:
+        props["Due"] = {"date": {"start": due} if due else None}
+    if props:
+        _notion.pages.update(goal_id, properties=props)
+    all_goals(refresh=True)
+    _goal_totals_cache.clear()
+    return goal_map().get(goal_id) or {}
+
+
+def set_entry_goals(entry_ids: list[str], goal_id: str | None,
+                    allowed_ids: set | None = None) -> dict:
+    """File a batch of existing entries under a goal (None clears it).
+
+    Addressed by page id, like set_entry_hours — but `allowed_ids` is what makes
+    that safe here without a retrieve per entry. The caller passes the ids it
+    just read for the project and period on screen, and anything outside that
+    set is refused: one query validates the whole batch, instead of doubling the
+    round trips to check each page's parent, and it also pins an entry to the
+    project whose goal it's being filed under.
+
+    **No `_write_lock`.** It's global and non-reentrant, and a batch of 25
+    updates would stall every other save in the app behind it. Goal assignment
+    races with nothing — it touches one property that no other write reads.
+
+    Writing only the Goal property matters as much: rewriting a page's whole
+    property bag would clobber whatever else is on the entry.
+    """
+    prop = goal_prop()
+    if not prop:
+        raise ValueError("goals are not set up")
+    ids = [i for i in dict.fromkeys(entry_ids or []) if i]
+    if not ids:
+        return {"ok": True, "updated": 0, "failed": []}
+    if len(ids) > MAX_GOAL_ASSIGN:
+        # Refused whole rather than half-applied, the rule clear_week follows.
+        raise ValueError(f"too many entries in one batch (max {MAX_GOAL_ASSIGN})")
+    if allowed_ids is not None:
+        bare = {_bare(i) for i in allowed_ids}
+        if any(_bare(i) not in bare for i in ids):
+            raise ValueError("an entry is not in this project and period")
+    if goal_id:
+        g = goal_map().get(goal_id)
+        if not g:
+            all_goals(refresh=True)
+            g = goal_map().get(goal_id)
+        if not g:
+            raise ValueError("unknown goal")
+    value = {"relation": [{"id": goal_id}] if goal_id else []}
+    updated, failed = 0, []
+    for eid in ids:
+        try:
+            _notion.pages.update(eid, properties={prop: value})
+            updated += 1
+        except Exception as exc:      # one bad row must not lose the other 24
+            logging.warning("Could not file entry %s under a goal: %s", eid, exc)
+            failed.append(eid)
+    _goal_totals_cache.clear()
+    return {"ok": not failed, "updated": updated, "failed": failed}
+
+
+def goal_totals(project_id: str) -> dict:
+    """Lifetime hours per goal for one project — {goal id: hours}.
+
+    A `Total` goal ("80 h for the homepage") is measured over its whole life,
+    not the month on screen, so this reads the project's entries with no date
+    bound. One query per project rather than one per goal, cached ~60 s, and
+    only ever called on a page that shows a target.
+    """
+    if not GOALS_DS:
+        return {}
+    prop = goal_prop()
+    if not prop:
+        return {}
+    now = time.time()
+    hit = _goal_totals_cache.get(project_id)
+    if hit and now - hit[0] < _GOAL_TTL:
+        return hit[1]
+    try:
+        pages = _query_all({
+            "data_source_id": TIME_DS, "page_size": 100,
+            "filter": {"and": [
+                {"property": "Project", "relation": {"contains": project_id}},
+                {"property": prop, "relation": {"is_not_empty": True}},
+            ]},
+        })
+    except Exception:
+        logging.warning("Could not read lifetime goal hours for project %s", project_id)
+        return hit[1] if hit else {}
+    totals: dict = {}
+    for page in pages:
+        props = page["properties"]
+        rel = props.get(prop, {}).get("relation") or []
+        if not rel:
+            continue
+        totals[rel[0]["id"]] = totals.get(rel[0]["id"], 0) + (props["Hours"]["number"] or 0)
+    totals = {k: round(v, 2) for k, v in totals.items()}
+    _goal_totals_cache[project_id] = (now, totals)
+    return totals

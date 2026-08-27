@@ -100,6 +100,7 @@ def _startup() -> None:
     ops.ensure_task_properties()
     ops.ensure_invoice_properties()
     ops.ensure_budget_properties()
+    ops.ensure_goal_property()
 
 
 @app.get("/healthz")
@@ -551,12 +552,55 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None):
         "from": f, "to": t, "range": rk, "team": team, "is_admin": is_admin,
         "entries": entries, "total": total,
         "by_project": agg("project"), "by_person": agg("person") if team else [],
+        "by_goal": _by_goal(entries),
         "days": days, "people_count": len({e["person"] for e in entries}),
         "pva": pva("project"), "pva_person": pva("person"),
         "selected": selected,
         "person_projects": _person_projects(entries),
         "matrix": _person_project_matrix(entries),
     }
+
+
+def _by_goal(entries):
+    """Hours per goal across every project in the range.
+
+    Grouped by goal *name*, not by goal id, which is the whole reason a
+    standing goal is worth having: "Maintenance" exists once per project, and
+    "what does maintenance cost us company-wide" is unanswerable if each
+    project's copy is its own row. Names are matched with _norm, so a stray
+    capital doesn't split the row in two — the same compare the create picker
+    uses to offer an existing spelling in the first place.
+
+    Unassigned is a row like any other, at its real size. In the first months
+    it is the biggest one on the page: it is the backlog, and rounding it out
+    of the table would make every other percentage a lie.
+    """
+    by: dict = {}
+    for e in entries:
+        name = (e.get("goal") or "").strip()
+        key = ops._norm(name) or "\x00unassigned"
+        row = by.setdefault(key, {"name": name or "Unassigned", "hours": 0.0,
+                                  "projects": set(), "unassigned": not name})
+        row["hours"] += e["hours"]
+        row["projects"].add(e.get("project") or "(none)")
+    if not by:
+        return []
+    mx = max(r["hours"] for r in by.values())
+    total = sum(r["hours"] for r in by.values())
+    out = []
+    for r in by.values():
+        names = sorted(r["projects"])
+        out.append({
+            "name": r["name"], "hours": round(r["hours"], 2),
+            "unassigned": r["unassigned"],
+            "projects": len(names),
+            # one project is worth naming; several are only worth counting
+            "where": names[0] if len(names) == 1 else f"{len(names)} projects",
+            "pct": round(r["hours"] / mx * 100) if mx else 0,
+            "share": round(r["hours"] / total * 100) if total else 0,
+        })
+    out.sort(key=lambda r: (r["unassigned"], -r["hours"], r["name"].lower()))
+    return out
 
 
 def _person_projects(entries):
@@ -701,14 +745,16 @@ def _period_range(period: str, anchor: Optional[dt.date]) -> dict:
     }
 
 
-def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict) -> dict:
+def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict,
+                   entries: Optional[list] = None) -> dict:
     """One row per person: their hours on this project in the chosen period.
 
     People assigned to the project but with nothing logged still get a row, so
     the table answers "who is on this and what have they done" rather than only
     "who logged something".
     """
-    entries = ops.project_entries(project_id, rng["from"], rng["to"])
+    entries = (ops.project_entries(project_id, rng["from"], rng["to"])
+               if entries is None else entries)
     rows: dict = {}
 
     def row_for(pid, name):
@@ -843,7 +889,8 @@ def _project_picks(projects: list, picked: list) -> tuple:
 
 @app.get("/project", response_class=HTMLResponse)
 def project_page(request: Request, project: list[str] = Query(default=[]),
-                 period: str = "monthly", start: Optional[str] = None):
+                 period: str = "monthly", start: Optional[str] = None,
+                 goal: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -858,29 +905,70 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     rng = _period_range(period, _project_anchor(period, start))
     people = ops.list_people()
     name_map = {p["id"]: p["name"] for p in people}
-    data = (_all_projects_hours(rng, projects, name_map, set(sel_ids) or None) if is_all
-            else _project_hours(sel["id"], rng, sel.get("member_ids", []), name_map))
+    # Goals belong to a project, so the block and the picker only appear once
+    # one is selected — which is also what keeps assignment validatable with a
+    # single read (see /api/entry/goal).
+    goals, goal_rows, goal_sel = [], [], None
+    if sel and ops.goals_enabled():
+        goals = ops.list_goals(sel["id"])
+        goal_sel = _goal_pick(goal, goals)
+    if sel:
+        entries = ops.project_entries(sel["id"], rng["from"], rng["to"])
+        goal_rows = _goal_rows(sel["id"], entries, goals, period) if goals or goal_sel else []
+        if goal_sel:
+            entries = [e for e in entries
+                       if (e.get("goal_id") or _UNASSIGNED) == goal_sel]
+        data = _project_hours(sel["id"], rng, sel.get("member_ids", []), name_map,
+                              entries=entries)
+    else:
+        data = _all_projects_hours(rng, projects, name_map, set(sel_ids) or None)
     return templates.TemplateResponse(request, "project.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids, "is_all": is_all,
         "period": period, "rng": rng,
         "can_invoice": bool(ops.invoices_enabled() and sel and period == "monthly"),
+        "goals_on": bool(sel and ops.goals_enabled()),
+        "goals": [g for g in goals if g["status"] == "Open"],
+        "goal_rows": goal_rows, "goal_sel": goal_sel, "unassigned": _UNASSIGNED,
+        # the browser batches a long selection at exactly the size the endpoint
+        # accepts, so the two can't drift apart
+        "batch_size": ops.MAX_GOAL_ASSIGN,
         "d": data, "start_iso": rng["from"],
     })
 
 
-def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict) -> list[dict]:
+def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict,
+                    goal_sel: Optional[str] = None) -> list[dict]:
     """The entries behind the current period + project picks, shared by every
     export. One project reads through the Notion-side relation filter; a pick of
-    several (or none) narrows the single period read in memory."""
+    several (or none) narrows the single period read in memory.
+
+    A goal pick narrows it further, in memory over that same read, so exporting
+    "just the homepage hours" costs no extra round trip. It only applies to one
+    project, because that is the only view a goal pick exists on."""
     if sel:
-        return [dict(e, project=sel["name"], project_id=sel["id"])
+        rows = [dict(e, project=sel["name"], project_id=sel["id"])
                 for e in ops.project_entries(sel["id"], rng["from"], rng["to"])]
+        if goal_sel:
+            rows = [e for e in rows if (e.get("goal_id") or _UNASSIGNED) == goal_sel]
+        return rows
     entries = ops.entries_between(rng["from"], rng["to"])
     if sel_ids:
         keep = set(sel_ids)
         entries = [e for e in entries if e["project_id"] in keep]
     return entries
+
+
+def _export_goal(sel: Optional[dict], goal: Optional[str]) -> Optional[str]:
+    """A ?goal= on an export, resolved the same way the page resolves it.
+
+    Only meaningful with one project selected — the exports share the page's
+    rule rather than inventing a second one, so a link copied off /project
+    exports exactly what /project was showing.
+    """
+    if not sel or not goal or not ops.goals_enabled():
+        return None
+    return _goal_pick(goal, ops.list_goals(sel["id"]))
 
 
 def _export_label(sel: Optional[dict], sel_ids: list) -> str:
@@ -893,7 +981,8 @@ def _export_slug(label: str) -> str:
 
 @app.get("/project.csv")
 def project_csv(request: Request, project: list[str] = Query(default=[]),
-                period: str = "monthly", start: Optional[str] = None):
+                period: str = "monthly", start: Optional[str] = None,
+                goal: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -903,15 +992,15 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     projects = ops.list_projects(include_members=True)
     sel_ids, sel = _project_picks(projects, project)
     rng = _period_range(period, _project_anchor(period, start))
-    entries = _period_entries(sel, sel_ids, rng)
+    entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal))
     import csv
     import io
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["date", "person", "project", "hours", "description", "task", "task_url"])
+    w.writerow(["date", "person", "project", "goal", "hours", "description", "task", "task_url"])
     for e in sorted(entries, key=lambda e: (e["date"], e["project"], e["person"])):
-        w.writerow([e["date"], e["person"], e["project"], e["hours"], e["description"],
-                    e.get("task", ""), e.get("task_url", "")])
+        w.writerow([e["date"], e["person"], e["project"], e.get("goal", ""), e["hours"],
+                    e["description"], e.get("task", ""), e.get("task_url", "")])
     from fastapi.responses import Response
     fname = f"{_export_slug(_export_label(sel, sel_ids))}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
@@ -945,6 +1034,7 @@ def _export_rows(entries: list[dict], name_map: dict) -> list[dict]:
         "description": e.get("description") or "",
         "task": e.get("task") or "",
         "task_url": e.get("task_url") or "",
+        "goal": e.get("goal") or "",
     } for e in entries]
 
 
@@ -978,13 +1068,17 @@ def _rows_from_payload(rows: list) -> list[dict]:
             # browser, so the URL is re-parsed rather than trusted into a file
             "task": str(r.get("task") or "")[:200],
             "task_url": (ops.parse_task_url(str(r.get("task_url") or "")[:600]) or {}).get("url", ""),
+            # read-only on the export screen, but it still arrives from the
+            # browser, so it is length-capped like every other string here
+            "goal": str(r.get("goal") or "")[:200],
         })
     return out
 
 
 @app.get("/project.xlsx")
 def project_xlsx(request: Request, project: list[str] = Query(default=[]),
-                 period: str = "monthly", start: Optional[str] = None):
+                 period: str = "monthly", start: Optional[str] = None,
+                 goal: Optional[str] = None):
     """The report as a workbook — a sheet per project, people then their log."""
     user = _require_login(request)
     if not user:
@@ -996,7 +1090,7 @@ def project_xlsx(request: Request, project: list[str] = Query(default=[]),
     sel_ids, sel = _project_picks(projects, project)
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in ops.list_people()}
-    rows = _export_rows(_period_entries(sel, sel_ids, rng), name_map)
+    rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal)), name_map)
     label = _export_label(sel, sel_ids)
     return _xlsx_response(report_xlsx.build(rows, rng["label"], label), label, rng)
 
@@ -1004,6 +1098,7 @@ def project_xlsx(request: Request, project: list[str] = Query(default=[]),
 @app.get("/project/export", response_class=HTMLResponse)
 def project_export_page(request: Request, project: list[str] = Query(default=[]),
                         period: str = "monthly", start: Optional[str] = None,
+                        goal: Optional[str] = None,
                         sent: Optional[str] = None, err: Optional[str] = None):
     """Adjust the numbers for the copy that leaves the building, then download
     or email it. Edits here never touch the logged hours — that is the whole
@@ -1019,7 +1114,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
     sel_ids, sel = _project_picks(projects, project)
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in ops.list_people()}
-    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng), name_map),
+    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal)), name_map),
                   key=lambda r: (r["project"].lower(), r["date"], r["person"].lower()))
     groups = []
     for r in rows:  # rows arrive project-sorted, so a running group is enough
@@ -2484,4 +2579,196 @@ def api_budget_status(request: Request, project: str = "", date: str = ""):
         "can_log": round(max(0.0, b["limit"] - tracked), 2) if capped else None,
         "level": ("over" if left < 0 else
                   ("warn" if tracked >= b["hours"] * b["warn_pct"] / 100 else "ok")),
+    })
+
+
+# ---- goals -------------------------------------------------------------
+#
+# A goal groups a project's logged hours into what they went into — "New
+# homepage", "Maintenance". Assignment is retroactive and admin-only: people
+# log hours exactly as before, and whoever knows what the work was for files
+# them afterwards from /project.
+#
+# Everything here is scoped to *one* project on purpose. A goal belongs to a
+# project, so the picker, the block and the assign endpoint all need one
+# selected — which also keeps the assign validation to a single cheap read.
+
+_UNASSIGNED = "none"
+
+
+def _goal_pick(goal: Optional[str], goals: list[dict]) -> Optional[str]:
+    """Resolve ?goal= into a goal id, the unassigned sentinel, or None (all).
+
+    An id that no longer exists degrades to "all", the way _project_picks
+    drops a stale project — a bookmark shouldn't render an empty page.
+    """
+    if not goal:
+        return None
+    if goal == _UNASSIGNED:
+        return _UNASSIGNED
+    return goal if any(g["id"] == goal for g in goals) else None
+
+
+def _goal_rows(project_id: str, entries: list[dict], goals: list[dict],
+               period: str) -> list[dict]:
+    """The goals block: one row per goal with hours in the period, every open
+    goal (so an empty one is still visible and pickable), and Unassigned.
+
+    Unassigned is never hidden and never sorted below the fold. For the first
+    months it is the biggest row on the page, and that's the point: it is the
+    backlog meter, and dropping it would leave the block's total disagreeing
+    with the project total directly above it.
+
+    Targets only get a meter on a monthly period — a `Per month` goal measured
+    over a Tuesday means nothing, and the lifetime read behind a `Total` goal
+    isn't worth a round trip on a view that can't show it honestly.
+    """
+    hours: dict = {}
+    counts: dict = {}
+    for e in entries:
+        key = e.get("goal_id") or _UNASSIGNED
+        hours[key] = hours.get(key, 0) + e["hours"]
+        counts[key] = counts.get(key, 0) + 1
+    total = round(sum(hours.values()), 2)
+    monthly = period == "monthly"
+    lifetime = ops.goal_totals(project_id) if (
+        monthly and any(g["target"] is not None and g["basis"] == "Total" for g in goals)
+    ) else {}
+
+    rows = []
+    for g in goals:
+        h = round(hours.get(g["id"], 0), 2)
+        if not h and g["status"] != "Open":
+            continue          # a closed goal with nothing this period is history
+        row = {**g, "hours": h, "entries": counts.get(g["id"], 0),
+               "share": round(h / total * 100) if total else 0, "meter": None}
+        if monthly and g["target"]:
+            # a standing goal is measured this month; a one-off over its life
+            used = h if g["basis"] == "Per month" else lifetime.get(g["id"], h)
+            row["meter"] = {
+                "used": round(used, 2), "target": g["target"],
+                "pct": round(used / g["target"] * 100) if g["target"] else 0,
+                "over": used > g["target"],
+                "scope": "this month" if g["basis"] == "Per month" else "all time",
+            }
+        rows.append(row)
+    rows.sort(key=lambda r: (-r["hours"], r["name"].lower()))
+
+    un = round(hours.get(_UNASSIGNED, 0), 2)
+    rows.append({
+        "id": _UNASSIGNED, "name": "Unassigned", "status": "Open",
+        "target": None, "basis": "Total", "unassigned": True,
+        "hours": un, "entries": counts.get(_UNASSIGNED, 0),
+        "share": round(un / total * 100) if total else 0, "meter": None,
+    })
+    return rows
+
+
+class GoalSave(BaseModel):
+    goal_id: Optional[str] = None
+    project_id: Optional[str] = None
+    name: Optional[str] = None
+    target: Optional[float] = None
+    clear_target: bool = False
+    basis: Optional[str] = None
+    status: Optional[str] = None
+    due: Optional[str] = None
+    clear_due: bool = False
+
+
+@app.post("/api/goal")
+def api_goal(request: Request, g: GoalSave):
+    """Create a goal, or edit one. Admins only, like everything on /project.
+
+    Creating takes a project and a name and nothing else: goals are made mid-
+    triage, from the picker, and nobody sets a target while filing entries.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not ops.goals_enabled():
+        return JSONResponse({"ok": False, "error": "goals are not set up yet"}, status_code=403)
+    try:
+        if g.goal_id:
+            goal = ops.update_goal(
+                g.goal_id, name=g.name,
+                target=(None if g.clear_target else (g.target if g.target is not None else ops._UNSET)),
+                basis=g.basis, status=g.status,
+                due=(None if g.clear_due else (g.due if g.due else ops._UNSET)))
+        else:
+            if not g.project_id:
+                return JSONResponse({"ok": False, "error": "pick a project"}, status_code=400)
+            goal = ops.create_goal(g.name or "", g.project_id, target=g.target,
+                                   basis=g.basis or "Total")
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Saving a goal failed")
+        return JSONResponse({"ok": False, "error": "could not save that goal"}, status_code=400)
+    return JSONResponse({"ok": True, "goal": goal})
+
+
+class GoalAssign(BaseModel):
+    entry_ids: list[str]
+    goal_id: Optional[str] = None      # None / "" clears the goal
+    project_id: str
+    period: str = "monthly"
+    start: Optional[str] = None
+
+
+@app.post("/api/entry/goal")
+def api_entry_goal(request: Request, a: GoalAssign):
+    """File a batch of logged entries under a goal (admins).
+
+    The browser sends a long selection in batches — Notion has no bulk update,
+    so 200 entries is 200 round trips at ~3/s — and shows progress as they
+    land. Each batch is validated against the entries actually logged for this
+    project and period: one query settles the whole batch, instead of a
+    retrieve per entry to check its parent, and it also stops an entry being
+    filed under another project's goal.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not ops.goals_enabled():
+        return JSONResponse({"ok": False, "error": "goals are not set up yet"}, status_code=403)
+    period = a.period if a.period in _PERIODS else "monthly"
+    rng = _period_range(period, _project_anchor(period, a.start))
+    try:
+        allowed = {e["id"] for e in ops.project_entries(a.project_id, rng["from"], rng["to"])}
+        res = ops.set_entry_goals(a.entry_ids, a.goal_id or None, allowed_ids=allowed)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Filing entries under a goal failed")
+        return JSONResponse({"ok": False, "error": "could not file those entries"},
+                            status_code=400)
+    return JSONResponse(res)
+
+
+@app.get("/api/goals")
+def api_goals(request: Request, project_id: str = ""):
+    """The picker's list: this project's open goals, plus the names other
+    projects already use (so "Maintenance" gets spelled the one way that keeps
+    the cross-project report in one row)."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not ops.goals_enabled():
+        return JSONResponse({"ok": True, "goals": [], "elsewhere": [], "enabled": False})
+    return JSONResponse({
+        "ok": True, "enabled": True,
+        "goals": [{"id": g["id"], "name": g["name"], "status": g["status"]}
+                  for g in ops.list_goals(project_id, open_only=True)],
+        "elsewhere": ops.other_project_goal_names(project_id),
     })
