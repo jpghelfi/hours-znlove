@@ -704,6 +704,7 @@ function newGoal() {
   // a goal being made is Open by definition; the control only earns its place
   // once there is a goal to close
   document.getElementById('goalStatusWrap').hidden = true;
+  document.getElementById('goalDel').hidden = true;
   document.getElementById('goalDlgTitle').textContent = 'New goal';
   // saveGoal() files whatever is ticked as soon as the goal exists, so the
   // button has to admit to both halves of what it does
@@ -726,6 +727,7 @@ function editGoal(btn) {
   document.getElementById('goalDue').value = btn.dataset.due || '';
   document.getElementById('goalStatus').value = btn.dataset.status || 'Open';
   document.getElementById('goalStatusWrap').hidden = false;
+  document.getElementById('goalDel').hidden = false;
   document.getElementById('goalDlgTitle').textContent = 'Edit goal';
   document.getElementById('goalGo').textContent = 'Save goal';
   // suggestions are for naming a new goal, not for renaming a used one
@@ -758,6 +760,46 @@ async function loadElsewhere() {
     });
     document.getElementById('goalElse').hidden = false;
   } catch (e) { /* the dialog works fine without the suggestions */ }
+}
+
+// Deleting is for a goal made by mistake. The server refuses while anything is
+// filed under it — this asks first anyway, and when the refusal comes back it
+// says how many and offers to show them rather than leaving a dead end.
+async function deleteGoal() {
+  if (!editing) return;
+  const name = document.getElementById('goalName').value.trim() || 'this goal';
+  if (!await zConfirm(`Delete “${name}”? Closing it instead keeps its hours and its history — deleting is for a goal made by mistake.`,
+                      {title: 'Delete goal', ok: 'Delete goal', danger: true})) return;
+  const err = document.getElementById('goalErr');
+  const del = document.getElementById('goalDel');
+  del.disabled = true;
+  try {
+    const res = await fetch('/api/goal/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({goal_id: editing}),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      if (data.in_use) {
+        const id = editing;
+        document.getElementById('goalDlg').close();
+        const n = data.more ? `${data.in_use}+` : data.in_use;
+        if (await zConfirm(
+              `${n} ${data.in_use === 1 && !data.more ? 'entry is' : 'entries are'} still filed under “${name}”, and its hours would be stranded.\n\nFile them somewhere else first — or close the goal instead, which keeps them.`,
+              {title: 'Still in use', ok: 'Show those entries', cancel: 'Not now'})) {
+          location.href = `/project?period={{ period }}&start={{ start_iso }}{{ qsp }}&goal=${encodeURIComponent(id)}`;
+        }
+        return;
+      }
+      throw new Error(data.error || 'could not delete that goal');
+    }
+    location.href = `/project?period={{ period }}&start={{ start_iso }}{{ qsp }}`;
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  } finally {
+    del.disabled = false;
+  }
 }
 
 async function saveGoal() {
@@ -899,6 +941,8 @@ document.addEventListener('DOMContentLoaded', function () {
   <div class="pop-err" id="goalErr" hidden></div>
 
   <div class="pop-actions">
+    <button type="button" class="btn danger" id="goalDel" hidden onclick="deleteGoal()">Delete</button>
+    <span class="pop-spacer"></span>
     <button type="button" class="btn" onclick="closeGoalDlg()">Cancel</button>
     <button type="button" class="primary" id="goalGo" onclick="saveGoal()">Create goal</button>
   </div>

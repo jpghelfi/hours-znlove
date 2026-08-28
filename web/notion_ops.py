@@ -2361,6 +2361,72 @@ def update_goal(goal_id: str, name: str | None = None, target: float | None = _U
     return goal_map().get(goal_id) or {}
 
 
+class GoalInUse(Exception):
+    """A goal still has hours filed under it, so it can't be deleted.
+
+    Carries the count so the refusal can say how many rather than just no —
+    the difference between "unfile these 12 first" and a dead end.
+    """
+
+    def __init__(self, count: int, more: bool = False):
+        self.count, self.more = count, more
+        n = f"{count}+" if more else str(count)
+        super().__init__(f"{n} {'entry is' if count == 1 and not more else 'entries are'} "
+                         f"still filed under this goal")
+
+
+def goal_entry_count(goal_id: str, cap: int = 500) -> tuple[int, bool]:
+    """How many time entries are filed under a goal, over all time.
+
+    Deliberately unbounded by date: a goal deleted while a January entry still
+    points at it would leave that entry pointing at nothing, which reads as
+    "(deleted goal)" in every report from then on.
+
+    Counted rather than merely detected, so a refusal can name the number, and
+    capped so a goal with thousands of entries doesn't page through them all to
+    tell you what the first page already proves.
+    """
+    prop = goal_prop()
+    if not prop or not goal_id:
+        return 0, False
+    seen = 0
+    kwargs = {"data_source_id": TIME_DS, "page_size": 100,
+              "filter": {"property": prop, "relation": {"contains": goal_id}}}
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        seen += len(res["results"])
+        if seen >= cap:
+            return cap, res.get("has_more", False) or seen > cap
+        if not res.get("has_more"):
+            return seen, False
+        kwargs["start_cursor"] = res["next_cursor"]
+
+
+def delete_goal(goal_id: str) -> dict:
+    """Delete a goal — but only once nothing is filed under it.
+
+    The check is here rather than in the route, and it is not optional: a goal
+    is only ever addressed by an id that came from a browser, and the cost of
+    getting this wrong is silent — the hours survive, but they point at a page
+    that no longer exists, so they vanish from every named row of the block and
+    from Unassigned at the same time.
+
+    Closing a goal (`Status: Done`) is the non-destructive alternative and the
+    one to reach for when the work really happened: it keeps the hours and the
+    history, and only takes the goal out of the picker.
+    """
+    if not GOALS_DS:
+        raise ValueError("goals are not set up")
+    _own_goal(goal_id)          # refuses any page that isn't one of our goals
+    count, more = goal_entry_count(goal_id)
+    if count:
+        raise GoalInUse(count, more)
+    _notion.pages.update(goal_id, archived=True)
+    all_goals(refresh=True)
+    _goal_totals_cache.clear()
+    return {"ok": True, "deleted": True}
+
+
 def set_entry_goals(entry_ids: list[str], goal_id: str | None,
                     allowed_ids: set | None = None,
                     project_id: str | None = None) -> dict:

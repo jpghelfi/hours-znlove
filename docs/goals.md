@@ -144,6 +144,23 @@ than an omission — hence `clear_target` / `clear_due` on the request, and
 for exactly the same reason: editing a status must never silently wipe the
 target beside it.
 
+**Deleting a goal is refused while anything is filed under it.** The check is in
+`delete_goal`, not in the route and never in the browser: a goal is only ever
+addressed by an id that came from a page, and the cost of getting it wrong is
+silent — the hours survive, but they point at a page that no longer exists, so
+they disappear from every named row of the block *and* from Unassigned at the
+same time, while still counting toward the project total. `goal_entry_count`
+counts over **all time**, not the period on screen, since a January entry is
+exactly what a August deletion would strand; it counts rather than merely
+detects so the refusal can say "12 entries are still filed under this goal" and
+offer to show them, and it stops at a cap rather than paging through thousands
+to prove what the first page already showed. The refusal is a **409** — the
+request was fine, the goal simply still has hours.
+
+**Closing is the non-destructive alternative**, and the one the refusal points
+at: `Status: Done` keeps the hours and the history and only takes the goal out
+of the picker. Deleting is for a goal made by mistake.
+
 **The picker creates as well as picks.** `＋ New goal` opens a dialog that also
 lists **names other projects already use**, because the cross-project report
 groups by name — a second spelling of "Maintenance" is a second row in the one
