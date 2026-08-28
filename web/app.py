@@ -451,10 +451,13 @@ def _recent_notes(person_id: Optional[str], days: int = 21) -> list[dict]:
 
     The grid's prompt offers them as one-tap chips: most cells are yesterday's
     work continuing, and retyping the same sentence every morning is exactly
-    the friction that would make people resent this rule. Read over the same
-    three weeks the grid already spans either side, and quietly empty if the
-    read fails — a suggestion list is a convenience, never a reason to fail a
-    page load.
+    the friction that would make people resent this rule.
+
+    Fetched by `/api/recent-notes` when the prompt first opens, **not** with the
+    page: /week is loaded every morning by everyone and creating a cell is the
+    rarer act, so a third Notion read on every visit would be paid mostly by
+    people who never see the chips. Quietly empty if the read fails — a
+    suggestion list is a convenience, never a reason to fail anything.
     """
     if not person_id:
         return []
@@ -480,6 +483,20 @@ def _recent_notes(person_id: Optional[str], days: int = 21) -> list[dict]:
     return out
 
 
+@app.get("/api/recent-notes")
+def api_recent_notes(request: Request):
+    """The descriptions the grid's prompt offers as one-tap chips.
+
+    Always the caller's own — the person is taken from the session and never
+    from the request, the same rule /api/cell follows for writes, so this can't
+    be used to read what someone else has been writing.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "notes": []}, status_code=401)
+    return JSONResponse({"ok": True, "notes": _recent_notes(user.get("id"))})
+
+
 @app.get("/week", response_class=HTMLResponse)
 def week_page(request: Request, monday: Optional[str] = None):
     user = _require_login(request)
@@ -498,7 +515,6 @@ def week_page(request: Request, monday: Optional[str] = None):
         # the rule the cell prompt enforces, read from the one place that
         # defines it so the dialog and the server can't disagree
         "min_note": ops.MIN_DESCRIPTION,
-        "recent_notes": _recent_notes(user.get("id")),
         "is_admin": auth.is_admin(user),
         "grid": grid,
         "projects": ops.list_projects(member_of=user.get("id")),

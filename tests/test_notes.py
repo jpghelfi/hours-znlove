@@ -218,6 +218,41 @@ def _():
     assert props["Task"]["rich_text"][0]["text"]["content"] == "ZN-999"
 
 
+@check("the description is asked for before the budget, on the grid too")
+def _():
+    # create_entry checks the note first on purpose — when a new cell is both
+    # undescribed and over budget, the description is the one the person can
+    # act on, and two refusals for one save is one too many
+    seen = []
+    real = ops.check_budget
+    with fake_writes(existing=[]) as w:
+        ops.check_budget = lambda pid, date, delta: seen.append("budget")
+        try:
+            ops.set_cell("u", "p", "2026-08-10", 3, enforce=True, note=True)
+            raise AssertionError("should have refused")
+        except ops.NoteRequired:
+            pass
+        finally:
+            ops.check_budget = real
+    assert seen == [], "the budget was consulted before the description"
+    assert w.created == []
+
+
+@check("a described cell still gets its budget checked")
+def _():
+    seen = []
+    real = ops.check_budget
+    with fake_writes(existing=[]) as w:
+        ops.check_budget = lambda pid, date, delta: seen.append(delta)
+        try:
+            ops.set_cell("u", "p", "2026-08-10", 3, enforce=True, note=True,
+                         description="rebuilt the checkout page")
+        finally:
+            ops.check_budget = real
+    assert seen == [3], seen
+    assert len(w.created) == 1
+
+
 @check("the grid is unaffected until it is asked to enforce")
 def _():
     with fake_writes(existing=[]) as w:

@@ -62,9 +62,16 @@ keystroke, exactly as before.
 The prompt offers **the last few descriptions that person used on that project**
 as one-tap chips (`_recent_notes`, three weeks back, deduped). Most cells are
 yesterday's work continuing, and retyping the same sentence every morning is
-precisely the friction that would make people resent the rule. The suggestion
-list fails quietly to empty — a convenience is never a reason to fail a page
-load.
+precisely the friction that would make people resent the rule.
+
+They arrive from `GET /api/recent-notes` **when the prompt first opens**, not
+with the page: `/week` is loaded every morning by everyone and creating a cell
+is the rarer act, so a third Notion read on every visit would be paid mostly by
+people who never see the chips. The dialog opens immediately and fills in when
+they land; asked once per page, and quietly empty if the read fails — a
+convenience is never a reason to fail anything. The person comes from the
+session and never from the request, so it can't be used to read what someone
+else has been writing.
 
 That dialog renders from `base.html`'s `modals` block, outside every form, for
 the reason `_task_dialog.html` records: a `required` control inside a closed

@@ -280,7 +280,15 @@ def _row_person(props) -> tuple[str | None, str]:
 
 
 def entries_between(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
-    """All entries in [date_from, date_to] (ISO dates), optionally for one person."""
+    """All entries in [date_from, date_to] (ISO dates), optionally for one person.
+
+    `person_id` filters in **Python, on purpose** — pushing it into the Notion
+    query as `{"property": "Person", "people": {"contains": …}}` (the way
+    set_cell does) would look strictly cheaper and would quietly drop every
+    entry submitted through Notion's own form, which carries `Logged by` and no
+    `Person` at all. _row_person reads both; a server-side filter can only see
+    one.
+    """
     pname = _project_name_map()
     out = []
     kwargs = {"data_source_id": TIME_DS, "page_size": 100, "filter": {"and": [
@@ -1015,12 +1023,19 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
                 {"property": "Person", "people": {"contains": person_id}},
             ]},
         })
+        keep = matches[0] if matches else None
+        # "Say what you worked on" comes first, as it does in create_entry: when
+        # a new cell is both undescribed and over budget, the description is the
+        # answer the person can act on, and being told about the budget instead
+        # only to be told about the description afterwards is two refusals for
+        # one save. Only a *new* entry is asked (see the docstring).
+        if note and hours and not keep:
+            require_note(description, task_url)
         if enforce:
             # Duplicates get folded into one below, so what this cell currently
             # contributes to the month is their sum, not just the first row's.
             was = sum(m["properties"]["Hours"]["number"] or 0 for m in matches)
             check_budget(project_id, date, (hours or 0) - was)
-        keep = matches[0] if matches else None
         for extra in matches[1:]:  # duplicates from old races/forms: fold into one
             _notion.pages.update(extra["id"], archived=True)
 
@@ -1037,11 +1052,8 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
                 "Person": {"people": [{"id": person_id}]},
             })
         else:
-            # a brand-new entry — this is the one that has to say what it is.
-            # Checked before the write, and inside the lock we already hold, so
-            # a refusal leaves nothing behind.
-            if note:
-                require_note(description, task_url)
+            # a brand-new entry — already checked above, before the budget and
+            # before anything was written, so a refusal leaves nothing behind
             create_entry(person_id, project_id, date, hours,
                          description=description, task_url=task_url,
                          task_label=task_label)

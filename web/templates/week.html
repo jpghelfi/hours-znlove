@@ -144,21 +144,26 @@ function askNote(projectName, date, hours) {
     err.hidden = true;
 
     // the last few things this person wrote on this project: most cells are
-    // yesterday's work continuing, and one tap beats retyping it
+    // yesterday's work continuing, and one tap beats retyping it. Fetched on
+    // first use, so the dialog opens now and the chips appear when they land.
     const recent = document.getElementById('noteRecent');
     recent.innerHTML = '';
-    const seen = new Set();
-    RECENT_NOTES.filter(n => n.project === projectName).slice(0, 4).forEach(n => {
-      if (seen.has(n.text)) return;
-      seen.add(n.text);
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'gchip gchip-btn';
-      b.textContent = n.text.length > 44 ? n.text.slice(0, 43) + '…' : n.text;
-      b.onclick = () => { desc.value = n.text; err.hidden = true; };
-      recent.appendChild(b);
+    recent.hidden = true;
+    loadRecentNotes().then(notes => {
+      if (!dlg.open) return;              // they backed out while it loaded
+      const seen = new Set();
+      notes.filter(n => n.project === projectName).slice(0, 4).forEach(n => {
+        if (seen.has(n.text)) return;
+        seen.add(n.text);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'gchip gchip-btn';
+        b.textContent = n.text.length > 44 ? n.text.slice(0, 43) + '…' : n.text;
+        b.onclick = () => { desc.value = n.text; err.hidden = true; };
+        recent.appendChild(b);
+      });
+      recent.hidden = !recent.children.length;
     });
-    recent.hidden = !recent.children.length;
 
     function done(value) {
       dlg.removeEventListener('close', onClose);
@@ -186,7 +191,20 @@ function askNote(projectName, date, hours) {
 }
 
 const MIN_NOTE = {{ min_note }};
-const RECENT_NOTES = {{ recent_notes|tojson }};
+// filled the first time the prompt opens — see /api/recent-notes for why it
+// isn't loaded with the page
+let RECENT_NOTES = null;
+
+async function loadRecentNotes() {
+  if (RECENT_NOTES !== null) return RECENT_NOTES;
+  RECENT_NOTES = [];      // never ask twice, even if this fails
+  try {
+    const res = await fetch('/api/recent-notes');
+    const data = await res.json();
+    RECENT_NOTES = data.notes || [];
+  } catch (e) { /* the prompt works fine without suggestions */ }
+  return RECENT_NOTES;
+}
 
 function recalc() {
   let grand = 0;
