@@ -1,7 +1,7 @@
 # Say what you worked on
 
 Every entry logged **from here on** has to carry either a description of at
-least **10 characters** or a **linked Notion ticket**. Either arm satisfies it;
+least **5 characters** or a **linked Notion ticket**. Either arm satisfies it;
 neither is optional on its own.
 
 `docs/entry-validation-plan.md` is the analysis this was built from — what the
@@ -92,15 +92,18 @@ anything to explain.
   budget cap already follows, and a **409** for the same reason: the request was
   well-formed, the rule refused it.
 
-The message always names both ways out. "Say what you worked on — at least 10
+The message always names both ways out. "Say what you worked on — at least 5
 characters — or link the Notion ticket."
 
 ## What this does and doesn't buy
 
-A length floor stops **blank**, not **lazy**: `..........` passes. It is the
-number that was asked for, and the ticket is the honest way past it for work
-whose best description really is `ZN-999` — linking that ticket says more than
-ten characters of prose would.
+A length floor stops **blank**, not **lazy**: five characters and ten both let
+`aaaaaaaaaa` through, and neither can tell the difference. So it sits where it
+costs the least in *false* refusals. Measured over July and August, ten would
+have rejected `ZN-999`, `TB-54`, `PR Review`, `banners` and `Text PDP` —
+descriptions that name the work better than most sentences do — while five
+rejects `pm` and lets the rest stand. Anything with a ticket is better recorded
+by linking it, which satisfies the rule on its own.
 
 Past entries are untouched, by design. Nothing retroactively demands a
 description of an entry logged before this shipped, and editing such an entry's
@@ -117,6 +120,6 @@ asking nothing.
 
 ## Config
 
-None. The rule is on, at 10 characters (`ops.MIN_DESCRIPTION`), which the log
+None. The rule is on, at 5 characters (`ops.MIN_DESCRIPTION`), which the log
 form and the grid prompt both read from that one constant so they can't drift
 from the server.

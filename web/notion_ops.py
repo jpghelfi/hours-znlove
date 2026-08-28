@@ -373,11 +373,15 @@ class NoteRequired(Exception):
             "or link the Notion ticket."))
 
 
-# How much description counts as one. A floor stops *blank*, not *lazy*: this
-# is the number that was asked for, and the ticket is the way past it for the
-# work whose best description really is "ZN-999" — linking it says more than
-# ten characters of prose ever would.
-MIN_DESCRIPTION = 10
+# How much description counts as one. A floor stops *blank*, not *lazy* — five
+# characters and ten both let "aaaaaaaaaa" through, and neither can tell.
+#
+# So it is set where it costs the least in false refusals: measured over July
+# and August, ten would have rejected "ZN-999", "TB-54", "PR Review", "banners"
+# and "Text PDP" — descriptions that name the work better than most sentences —
+# while five rejects "pm" and lets the rest stand. The ticket link remains the
+# better record for anything with a ticket, and satisfies this on its own.
+MIN_DESCRIPTION = 5
 
 
 def note_ok(description: str = "", task_url: str = "") -> bool:

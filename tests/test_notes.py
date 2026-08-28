@@ -82,7 +82,7 @@ print("\nsay what you worked on\n")
 
 # ---- the rule itself ------------------------------------------------------
 
-@check("ten characters of description satisfies it; nine doesn't")
+@check("the floor is exactly MIN_DESCRIPTION characters, and one short fails")
 def _():
     assert ops.note_ok("a" * ops.MIN_DESCRIPTION) is True
     assert ops.note_ok("a" * (ops.MIN_DESCRIPTION - 1)) is False
@@ -98,9 +98,21 @@ def _():
 def _():
     assert ops.note_ok(" " * 40) is False
     assert ops.note_ok("\n\t  \n") is False
-    # and it isn't counted twice inside a real sentence either
-    assert ops.note_ok("hi     there") is False       # 11 raw, 8 real
+    # and it isn't counted twice inside a real sentence either: five spaces
+    # between two letters is two characters of description, not seven
+    assert ops.note_ok("a     b") is False            # 7 raw, 3 real
     assert ops.note_ok("fixed the cart") is True
+
+
+@check("the short descriptions that name the work are kept")
+def _():
+    # the reason the floor is five and not ten: these were measured in the
+    # real data, and every one of them says more than a padded sentence would
+    for text in ("ZN-999", "TB-54", "PR Review", "banners", "Deploy", "Rebuy"):
+        assert ops.note_ok(text) is True, text
+    # while the ones that say nothing still don't
+    for text in ("pm", "x", "", "  "):
+        assert ops.note_ok(text) is False, text
 
 
 @check("nothing at all is refused")
