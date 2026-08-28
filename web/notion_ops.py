@@ -2400,7 +2400,7 @@ def goal_entry_count(goal_id: str, cap: int = 500) -> tuple[int, bool]:
     if not goal_id:
         return 0, False
     seen = 0
-    kwargs = {"data_source_id": TIME_DS, "page_size": 100,
+    kwargs = {"data_source_id": TIME_DS, "page_size": min(100, max(1, cap)),
               "filter": {"property": prop, "relation": {"contains": goal_id}}}
     while True:
         res = _notion.data_sources.query(**kwargs)
@@ -2424,20 +2424,31 @@ def delete_goal(goal_id: str) -> dict:
     Closing a goal (`Status: Done`) is the non-destructive alternative and the
     one to reach for when the work really happened: it keeps the hours and the
     history, and only takes the goal out of the picker.
+
+    This *archives* the page rather than destroying it, so a delete that turns
+    out to have been a mistake is recoverable from Notion's trash — which is
+    also what keeps the narrow race with `set_entry_goals` (see there) from
+    being worth a global lock across a whole batch.
     """
     if not GOALS_DS:
         raise ValueError("goals are not set up")
     _own_goal(goal_id)          # refuses any page that isn't one of our goals
-    # Check and archive under the lock together, the way delete_absence does:
-    # otherwise an entry filed between the count and the write is stranded by a
-    # delete that had already decided the goal was empty. Bounded to a single
-    # page so a global, non-reentrant lock isn't held for a long scan — a goal
-    # with more than a page of entries is refused either way, and "100+" is as
-    # useful a refusal as an exact number. Nothing in here takes the lock again.
+    # The informative count runs *outside* the lock. Being told "no, 312 entries
+    # are filed under this" is the common answer here — that path never writes,
+    # so it has no business taking a global lock, and out here it can afford to
+    # count past a single page and name a real number.
+    count, more = goal_entry_count(goal_id)
+    if count:
+        raise GoalInUse(count, more)
+    # Then re-check and archive under the lock together, the way delete_absence
+    # does: without it an entry filed between the count and the write is
+    # stranded by a delete that had already decided the goal was empty. One row
+    # is all it takes to refuse, so this is a single one-row query — nothing in
+    # here takes the lock again.
     with _write_lock:
-        count, more = goal_entry_count(goal_id, cap=100)
-        if count:
-            raise GoalInUse(count, more)
+        again, _ = goal_entry_count(goal_id, cap=1)
+        if again:
+            raise GoalInUse(again, True)
         _notion.pages.update(goal_id, archived=True)
     all_goals(refresh=True)     # a Notion read; not worth holding the lock for
     _goal_totals_cache.clear()
@@ -2457,15 +2468,17 @@ def set_entry_goals(entry_ids: list[str], goal_id: str | None,
     project whose goal it's being filed under.
 
     **No `_write_lock`.** It's global and non-reentrant, and a batch of 25
-    updates would stall every other save in the app behind it. Goal assignment
-    races with nothing that reads the property it writes.
+    updates would stall every other save in the app behind it for seconds.
 
-    The one window that leaves open is deliberate: an admin deleting the goal
-    between two batches of a long filing would leave the rest pointing at an
-    archived page. Both actors are admins working on the same goal in the same
-    moment, delete_goal refuses the instant anything is filed under it, and
-    Notion keeps an archived page restorable — none of which is worth stalling
-    every save in the app behind a batch to prevent.
+    Exactly one other write reads the property this one writes: `delete_goal`
+    counts entries filed under a goal before archiving it. So there is a real
+    window here, left open deliberately — an admin deleting a goal between two
+    batches of a long filing would leave the rest of the batch pointing at an
+    archived page. It needs both admins acting on the same goal in the same
+    moment; `delete_goal` refuses the instant anything is filed under it, and
+    it *archives* rather than destroys, so Notion's trash can restore the page
+    and the entries with it. Locking the whole batch to prevent that would cost
+    every save in the app seconds of waiting, every time anyone files anything.
 
     Writing only the Goal property matters as much: rewriting a page's whole
     property bag would clobber whatever else is on the entry.

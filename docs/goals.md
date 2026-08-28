@@ -178,6 +178,14 @@ shipped (`_task_dialog.html`).
 dialog — never a native `confirm`/`alert`, per the rule `base.html` documents).
 Every other destructive action here does the same, and Undo is only one deep.
 
+**The row's bar means the number printed beside it.** Without a target it is
+the goal's share of the period. With one it fills toward *the target* — 35.5 of
+40 h is 89% full, whatever share of the month those hours happen to be. Showing
+the share there instead read as a bug, and fairly: the row says "35.5/40 h" and
+the bar next to it was 36% long. The other reading lives in the bar's tooltip.
+Past its target the bar caps at full and turns over-coloured, while the number
+still says what it really is (250%).
+
 **`/reports` → By goal** — the cross-project view, grouped by goal name for the
 same period and people filter as the rest of the page. One project is named
 outright; several are counted ("6 projects"). Unassigned is a row here too.

@@ -1130,6 +1130,9 @@ td.desc .tlink { margin-left: 8px; }
   outline: 1px solid var(--chart-soft); outline-offset: -1px;
 }
 .goalrow-share { font-size: 13px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+/* past its target: the bar and its number say so together */
+.goalrow-fill.is-over { background: var(--over); }
+.goalrow-share.is-over { color: var(--over); font-weight: 700; }
 .goalrow-meter { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* a Total and a Per month goal looked identical on the row, and the difference
    only lived in a tooltip no touch screen can reach */
