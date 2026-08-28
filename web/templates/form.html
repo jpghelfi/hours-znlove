@@ -37,8 +37,9 @@
       </label>
     </div>
 
-    <label>Description
-      <textarea name="description" rows="3" placeholder="What did you work on?"></textarea>
+    <label><span>Description <span class="subtle" id="descHint">— {{ min_note }} characters, or link a ticket below</span></span>
+      <textarea name="description" id="descBox" rows="3"
+                placeholder="What did you work on?" oninput="noteHint()"></textarea>
     </label>
 
     {% include "_task_picker.html" %}
@@ -48,6 +49,47 @@
 </div>
 
 <script>
+// The rule: a description of at least MIN_NOTE characters, or a linked ticket.
+// Deliberately not an HTML `required` on the textarea — the ticket picker can
+// satisfy this instead, and a `required` field the user is legitimately leaving
+// empty blocks the submit with nothing useful to say.
+const MIN_NOTE = {{ min_note }};
+
+function noteText() {
+  return (document.getElementById('descBox').value || '').trim().replace(/\s+/g, ' ');
+}
+function noteHasTicket() {
+  return !!(document.getElementById('turl') || {}).value;
+}
+function noteHint() {
+  const hint = document.getElementById('descHint');
+  if (!hint) return;
+  const n = noteText().length;
+  if (noteHasTicket()) {
+    hint.textContent = '— covered by the linked ticket';
+    hint.classList.add('is-ok');
+  } else if (n >= MIN_NOTE) {
+    hint.textContent = '';
+    hint.classList.add('is-ok');
+  } else {
+    hint.textContent = `— ${MIN_NOTE - n} more character${MIN_NOTE - n === 1 ? '' : 's'}, or link a ticket below`;
+    hint.classList.remove('is-ok');
+  }
+}
+document.addEventListener('DOMContentLoaded', function () {
+  noteHint();
+  const form = document.getElementById('descBox').closest('form');
+  form.addEventListener('submit', function (ev) {
+    if (noteHasTicket() || noteText().length >= MIN_NOTE) return;
+    ev.preventDefault();
+    noteHint();
+    const box = document.getElementById('descBox');
+    box.focus();
+    zAlert(`Say what you worked on — at least ${MIN_NOTE} characters — or link the Notion ticket.`,
+           {title: 'Almost'});
+  });
+});
+
 const TKEY = 'hours_timer';
 function tState() { try { return JSON.parse(localStorage.getItem(TKEY)) || null; } catch (e) { return null; } }
 function tFmt(ms) {

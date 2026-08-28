@@ -211,13 +211,15 @@ def form_page(request: Request, ok: Optional[str] = None, err: Optional[str] = N
     # logged, 2 left"), which no fixed string can do — so that one error
     # carries its own message. It round-trips through the URL, so it's capped
     # and, like everything else in a template, escaped on the way out.
-    message = detail[:300] if err == "budget" and detail else _ENTRY_ERRORS.get(err or "")
+    message = (detail[:300] if err in ("budget", "note") and detail
+               else _ENTRY_ERRORS.get(err or ""))
     return templates.TemplateResponse(request, "form.html", {
         "user": user,
         "is_admin": auth.is_admin(user),
         "projects": ops.list_projects(member_of=user.get("id")),
         "today": dt.date.today().isoformat(),
         "ticket_create": ops.ticket_create_enabled(),
+        "min_note": ops.MIN_DESCRIPTION,
         "ok": ok, "err": message,
     })
 
@@ -229,6 +231,7 @@ _ENTRY_ERRORS = {
     "save": "Couldn't save the entry — try again.",
     "task": "That doesn't look like a link to a Notion page.",
     "budget": "That would take the project past its monthly budget.",
+    "note": "Say what you worked on, or link the Notion ticket.",
 }
 
 
@@ -305,9 +308,17 @@ def submit_entry(
         # Admins are never blocked by a budget cap — they're the people who can
         # change the budget, so friction here would only teach them to route
         # around it. Everyone else is held to the project's policy.
+        #
+        # "Say what you worked on" has no such exemption: it exists so a
+        # client-facing export reads as work rather than a column of numbers,
+        # and an admin's undescribed hour is exactly as unreadable as anyone
+        # else's.
         ops.create_entry(user.get("id"), project_id, date, hours, description,
                          task_url=task["url"] if task else "", task_label=label,
-                         enforce=not auth.is_admin(user))
+                         enforce=not auth.is_admin(user), note=True)
+    except ops.NoteRequired as exc:
+        return RedirectResponse(
+            url=f"/?err=note&detail={quote(str(exc)[:200])}", status_code=303)
     except ops.BudgetExceeded as exc:
         return RedirectResponse(
             url=f"/?err=budget&detail={quote(str(exc)[:300])}", status_code=303)
@@ -435,6 +446,57 @@ def _ticket_error(exc: Exception) -> str:
     return "Couldn't create the ticket — try again, or add it in Notion."
 
 
+def _recent_notes(person_id: Optional[str], days: int = 21) -> list[dict]:
+    """The last few things this person described, per project.
+
+    The grid's prompt offers them as one-tap chips: most cells are yesterday's
+    work continuing, and retyping the same sentence every morning is exactly
+    the friction that would make people resent this rule.
+
+    Fetched by `/api/recent-notes` when the prompt first opens, **not** with the
+    page: /week is loaded every morning by everyone and creating a cell is the
+    rarer act, so a third Notion read on every visit would be paid mostly by
+    people who never see the chips. Quietly empty if the read fails — a
+    suggestion list is a convenience, never a reason to fail anything.
+    """
+    if not person_id:
+        return []
+    today = dt.date.today()
+    try:
+        rows = ops.entries_between((today - dt.timedelta(days=days)).isoformat(),
+                                   today.isoformat(), person_id)
+    except Exception:
+        logging.warning("Could not read recent descriptions for the grid prompt")
+        return []
+    out, seen = [], set()
+    for e in sorted(rows, key=lambda e: e["date"], reverse=True):
+        text = " ".join((e.get("description") or "").split())
+        if len(text) < ops.MIN_DESCRIPTION:
+            continue
+        key = (e.get("project"), text.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"project": e.get("project") or "", "text": text[:200]})
+        if len(out) >= 40:
+            break
+    return out
+
+
+@app.get("/api/recent-notes")
+def api_recent_notes(request: Request):
+    """The descriptions the grid's prompt offers as one-tap chips.
+
+    Always the caller's own — the person is taken from the session and never
+    from the request, the same rule /api/cell follows for writes, so this can't
+    be used to read what someone else has been writing.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "notes": []}, status_code=401)
+    return JSONResponse({"ok": True, "notes": _recent_notes(user.get("id"))})
+
+
 @app.get("/week", response_class=HTMLResponse)
 def week_page(request: Request, monday: Optional[str] = None):
     user = _require_login(request)
@@ -450,6 +512,9 @@ def week_page(request: Request, monday: Optional[str] = None):
     target = float(os.environ.get("WEEK_TARGET_HOURS", "40"))
     return templates.TemplateResponse(request, "week.html", {
         "user": user,
+        # the rule the cell prompt enforces, read from the one place that
+        # defines it so the dialog and the server can't disagree
+        "min_note": ops.MIN_DESCRIPTION,
         "is_admin": auth.is_admin(user),
         "grid": grid,
         "projects": ops.list_projects(member_of=user.get("id")),
@@ -2290,6 +2355,12 @@ class Cell(BaseModel):
     date: str
     hours: float = Field(ge=0, le=24, allow_inf_nan=False)
     person_id: Optional[str] = None  # ignored server-side; kept for client compat
+    # A cell that creates a new entry has to say what it was for, so the grid
+    # now carries the same two fields the log form does. Both are ignored when
+    # the cell already holds an entry — that write only moves the number.
+    description: str = ""
+    task_url: str = ""
+    task_label: str = ""
 
 
 @app.post("/api/cell")
@@ -2309,12 +2380,37 @@ def api_cell(request: Request, cell: Cell):
     # membership is enforced on write, not just in the picker
     if cell.hours and cell.project_id not in _member_project_ids(person_id):
         return JSONResponse({"ok": False, "error": "not a member of that project"}, status_code=403)
+    # The ticket is re-parsed rather than trusted: the browser sends it, so a
+    # junk or non-Notion URL must never reach an entry — the same rule /entry
+    # follows. A link that doesn't resolve is dropped, not accepted, so it
+    # can't be used to slip past "say what you worked on".
+    task = ops.parse_task_url(cell.task_url) if cell.task_url else None
+    if cell.task_url and not task:
+        return JSONResponse({"ok": False, "error": "that doesn't look like a Notion link",
+                             "note": True}, status_code=400)
+    if task and (ops.resolve_task(task["id"]) or {}).get("ours"):
+        return JSONResponse({"ok": False, "error": "that's a page from this tracker, not a ticket",
+                             "note": True}, status_code=400)
     try:
         # Admins are never held to a cap (they set the budgets). For everyone
         # else set_cell compares the *delta*, since this is an upsert: lowering
         # a cell on an over-budget project must always be allowed.
+        #
+        # `note` applies to everyone, admins included, and only bites where a
+        # new entry is created — correcting a number in a cell that already
+        # holds one asks for nothing.
         result = ops.set_cell(person_id, cell.project_id, cell.date, cell.hours,
-                              enforce=not auth.is_admin(user))
+                              enforce=not auth.is_admin(user), note=True,
+                              description=cell.description,
+                              task_url=task["url"] if task else "",
+                              task_label=(cell.task_label.strip() or task["label"]
+                                          or "Notion ticket") if task else "")
+    except ops.NoteRequired as exc:
+        # 409 like the budget refusal, and for the same reason: the request was
+        # well-formed, the rule refused it. `note` tells the grid to ask for one
+        # rather than to snap the cell back and give up.
+        return JSONResponse({"ok": False, "error": str(exc), "note": True},
+                            status_code=409)
     except ops.BudgetExceeded as exc:
         # 409, not 400: the request was well-formed, the state refused it. The
         # grid uses this to snap the cell back and show the numbers.

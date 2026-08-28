@@ -1238,3 +1238,6 @@ td.desc .tlink { margin-left: 8px; }
      so the last entries can still be scrolled clear of it */
   body.is-filing .entrylist { padding-bottom: 120px; }
 }
+
+/* the log form's live hint on "say what you worked on" */
+#descHint.is-ok { color: var(--ok); }

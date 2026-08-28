@@ -280,7 +280,15 @@ def _row_person(props) -> tuple[str | None, str]:
 
 
 def entries_between(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
-    """All entries in [date_from, date_to] (ISO dates), optionally for one person."""
+    """All entries in [date_from, date_to] (ISO dates), optionally for one person.
+
+    `person_id` filters in **Python, on purpose** — pushing it into the Notion
+    query as `{"property": "Person", "people": {"contains": …}}` (the way
+    set_cell does) would look strictly cheaper and would quietly drop every
+    entry submitted through Notion's own form, which carries `Logged by` and no
+    `Person` at all. _row_person reads both; a server-side filter can only see
+    one.
+    """
     pname = _project_name_map()
     out = []
     kwargs = {"data_source_id": TIME_DS, "page_size": 100, "filter": {"and": [
@@ -356,9 +364,46 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
 
 # ---- writes ------------------------------------------------------------
 
+class NoteRequired(Exception):
+    """A new entry arrived with neither a description nor a ticket."""
+
+    def __init__(self, message: str = ""):
+        super().__init__(message or (
+            f"Say what you worked on — at least {MIN_DESCRIPTION} characters — "
+            "or link the Notion ticket."))
+
+
+# How much description counts as one. A floor stops *blank*, not *lazy* — five
+# characters and ten both let "aaaaaaaaaa" through, and neither can tell.
+#
+# So it is set where it costs the least in false refusals: measured over July
+# and August, ten would have rejected "ZN-999", "TB-54", "PR Review", "banners"
+# and "Text PDP" — descriptions that name the work better than most sentences —
+# while five rejects "pm" and lets the rest stand. The ticket link remains the
+# better record for anything with a ticket, and satisfies this on its own.
+MIN_DESCRIPTION = 5
+
+
+def note_ok(description: str = "", task_url: str = "") -> bool:
+    """Does this entry say what it was for?
+
+    Either arm satisfies it. Whitespace doesn't count toward the length — an
+    entry described as eleven spaces is a blank one.
+    """
+    if (task_url or "").strip():
+        return True
+    return len(" ".join((description or "").split())) >= MIN_DESCRIPTION
+
+
+def require_note(description: str = "", task_url: str = "") -> None:
+    """Raise unless the entry says what it was for."""
+    if not note_ok(description, task_url):
+        raise NoteRequired()
+
+
 def create_entry(person_id: str | None, project_id: str, date: str, hours: float,
                  description: str = "", task_url: str = "", task_label: str = "",
-                 enforce: bool = False) -> None:
+                 enforce: bool = False, note: bool = False) -> None:
     """Write one new time entry.
 
     `enforce` opts this write into the project's monthly budget cap (see
@@ -366,6 +411,18 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     CLIs, the Harvest importer — keeps working exactly as before, and only the
     routes that serve a non-admin turn it on. A new row adds all of its hours,
     so the delta is simply `hours`.
+
+    `note` opts it into "say what this was for" (see require_note), and defaults
+    to off for the same reason and with more force: `src/sync_harvest.py` writes
+    `"Harvest"` as the description whenever a Harvest entry has no notes, so
+    enforcing here would make the importer refuse hours somebody genuinely
+    worked. docs/budgets.md settled that trade once already — a checker that
+    corrupts the record to protect a rule is the wrong checker. Only the two
+    routes that serve a person typing into a browser turn it on.
+
+    Checked before the budget: it costs no Notion call, and being told "add a
+    description" is a better first answer than "this project is over budget"
+    when both are true.
 
     When enforcing, the check and the write happen under `_write_lock`
     together. Checking outside it is a time-of-check/time-of-use race: two
@@ -379,6 +436,8 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     with `enforce=False` (it has already run the check itself, against the
     delta rather than the raw hours). Keep it that way or this deadlocks.
     """
+    if note:
+        require_note(description, task_url)
     pname_map = _project_name_map()   # a Notion read: do it before any lock
     props = {
         "Entry": {"title": [{"text": {"content": f"{pname_map.get(project_id, 'Entry')} — {date}"}}]},
@@ -932,7 +991,8 @@ def _norm(name: str) -> str:
 
 
 def set_cell(person_id: str, project_id: str, date: str, hours: float,
-             enforce: bool = False) -> dict:
+             enforce: bool = False, note: bool = False,
+             description: str = "", task_url: str = "", task_label: str = "") -> dict:
     """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry.
 
     Filters on Person in the query (not a Python scan), paginates, and
@@ -944,6 +1004,14 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
     by 2, so the budget check compares against the **delta**, not the submitted
     hours. Getting that wrong would refuse every ordinary grid correction on a
     busy project.
+
+    `note` opts it into "say what this was for" — but **only where this call
+    actually creates an entry**. Correcting a number in a cell that already
+    holds one is not a new piece of work to describe, and an entry logged
+    before the rule existed must stay editable; demanding a description to fix
+    a typo would make old rows unfixable, which is the same trap the budget cap
+    avoids by never refusing a write that lowers a total. Deleting (`0`) asks
+    for nothing either.
     """
     if enforce:
         # Warm the budget cache *before* taking the lock. On a cache miss this
@@ -959,12 +1027,19 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
                 {"property": "Person", "people": {"contains": person_id}},
             ]},
         })
+        keep = matches[0] if matches else None
+        # "Say what you worked on" comes first, as it does in create_entry: when
+        # a new cell is both undescribed and over budget, the description is the
+        # answer the person can act on, and being told about the budget instead
+        # only to be told about the description afterwards is two refusals for
+        # one save. Only a *new* entry is asked (see the docstring).
+        if note and hours and not keep:
+            require_note(description, task_url)
         if enforce:
             # Duplicates get folded into one below, so what this cell currently
             # contributes to the month is their sum, not just the first row's.
             was = sum(m["properties"]["Hours"]["number"] or 0 for m in matches)
             check_budget(project_id, date, (hours or 0) - was)
-        keep = matches[0] if matches else None
         for extra in matches[1:]:  # duplicates from old races/forms: fold into one
             _notion.pages.update(extra["id"], archived=True)
 
@@ -974,12 +1049,18 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
             return {"ok": True, "hours": 0}
 
         if keep:
+            # an existing cell: only the number moves, so nothing new is being
+            # described and the row keeps whatever description it already has
             _notion.pages.update(keep["id"], properties={
                 "Hours": {"number": hours},
                 "Person": {"people": [{"id": person_id}]},
             })
         else:
-            create_entry(person_id, project_id, date, hours)
+            # a brand-new entry — already checked above, before the budget and
+            # before anything was written, so a refusal leaves nothing behind
+            create_entry(person_id, project_id, date, hours,
+                         description=description, task_url=task_url,
+                         task_label=task_label)
         return {"ok": True, "hours": hours}
 
 
