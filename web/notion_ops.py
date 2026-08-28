@@ -2458,7 +2458,14 @@ def set_entry_goals(entry_ids: list[str], goal_id: str | None,
 
     **No `_write_lock`.** It's global and non-reentrant, and a batch of 25
     updates would stall every other save in the app behind it. Goal assignment
-    races with nothing — it touches one property that no other write reads.
+    races with nothing that reads the property it writes.
+
+    The one window that leaves open is deliberate: an admin deleting the goal
+    between two batches of a long filing would leave the rest pointing at an
+    archived page. Both actors are admins working on the same goal in the same
+    moment, delete_goal refuses the instant anything is filed under it, and
+    Notion keeps an archived page restorable — none of which is worth stalling
+    every save in the app behind a batch to prevent.
 
     Writing only the Goal property matters as much: rewriting a page's whole
     property bag would clobber whatever else is on the entry.
