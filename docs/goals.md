@@ -151,7 +151,7 @@ silent — the hours survive, but they point at a page that no longer exists, so
 they disappear from every named row of the block *and* from Unassigned at the
 same time, while still counting toward the project total. `goal_entry_count`
 counts over **all time**, not the period on screen, since a January entry is
-exactly what a August deletion would strand; it counts rather than merely
+exactly what an August deletion would strand; it counts rather than merely
 detects so the refusal can say "12 entries are still filed under this goal" and
 offer to show them, and it stops at a cap rather than paging through thousands
 to prove what the first page already showed. The refusal is a **409** — the

@@ -772,7 +772,7 @@ async function deleteGoal() {
                       {title: 'Delete goal', ok: 'Delete goal', danger: true})) return;
   const err = document.getElementById('goalErr');
   const del = document.getElementById('goalDel');
-  del.disabled = true;
+  dlgBusy(true);
   try {
     const res = await fetch('/api/goal/delete', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -798,8 +798,15 @@ async function deleteGoal() {
     err.textContent = e.message;
     err.hidden = false;
   } finally {
-    del.disabled = false;
+    dlgBusy(false);
   }
+}
+
+// one in-flight request locks the whole action row, not just its own button
+function dlgBusy(on) {
+  document.querySelectorAll('#goalDlg .pop-actions button')
+    .forEach(b => { b.disabled = on; });
+  document.getElementById('goalDlg').classList.toggle('is-busy', on);
 }
 
 async function saveGoal() {
@@ -831,7 +838,7 @@ async function saveGoal() {
   } else {
     body.project_id = PROJECT_ID;
   }
-  go.disabled = true;
+  dlgBusy(true);
   try {
     const res = await fetch('/api/goal', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -859,7 +866,7 @@ async function saveGoal() {
     err.textContent = e.message;
     err.hidden = false;
   } finally {
-    go.disabled = false;
+    dlgBusy(false);
   }
 }
 

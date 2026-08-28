@@ -2750,6 +2750,8 @@ def api_goal_delete(request: Request, g: GoalDelete):
         return JSONResponse({"ok": False, "error": str(exc), "in_use": exc.count,
                              "more": exc.more}, status_code=409)
     except ValueError as exc:
+        # includes the fail-closed case where the Goal column can't be read:
+        # refusing to delete is the only safe answer when the guard can't run
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except Exception:
         logging.exception("Deleting goal %s failed", g.goal_id)

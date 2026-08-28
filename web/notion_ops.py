@@ -2385,9 +2385,19 @@ def goal_entry_count(goal_id: str, cap: int = 500) -> tuple[int, bool]:
     Counted rather than merely detected, so a refusal can name the number, and
     capped so a goal with thousands of entries doesn't page through them all to
     tell you what the first page already proves.
+
+    **Fails closed.** Everywhere else an unresolvable Goal column degrades to
+    "no goals" and a page renders without them; here the same silence would
+    read as "nothing is filed under this goal, go ahead and delete it" — and
+    the column has been unresolvable before (this relation is named `val` in
+    Notion today; see goal_prop). A count that cannot be taken is not zero.
     """
     prop = goal_prop()
-    if not prop or not goal_id:
+    if not prop:
+        raise ValueError(
+            "the Goal column on Time Entries can't be read right now, so there "
+            "is no way to tell whether hours are filed under this goal")
+    if not goal_id:
         return 0, False
     seen = 0
     kwargs = {"data_source_id": TIME_DS, "page_size": 100,
@@ -2418,11 +2428,18 @@ def delete_goal(goal_id: str) -> dict:
     if not GOALS_DS:
         raise ValueError("goals are not set up")
     _own_goal(goal_id)          # refuses any page that isn't one of our goals
-    count, more = goal_entry_count(goal_id)
-    if count:
-        raise GoalInUse(count, more)
-    _notion.pages.update(goal_id, archived=True)
-    all_goals(refresh=True)
+    # Check and archive under the lock together, the way delete_absence does:
+    # otherwise an entry filed between the count and the write is stranded by a
+    # delete that had already decided the goal was empty. Bounded to a single
+    # page so a global, non-reentrant lock isn't held for a long scan — a goal
+    # with more than a page of entries is refused either way, and "100+" is as
+    # useful a refusal as an exact number. Nothing in here takes the lock again.
+    with _write_lock:
+        count, more = goal_entry_count(goal_id, cap=100)
+        if count:
+            raise GoalInUse(count, more)
+        _notion.pages.update(goal_id, archived=True)
+    all_goals(refresh=True)     # a Notion read; not worth holding the lock for
     _goal_totals_cache.clear()
     return {"ok": True, "deleted": True}
 

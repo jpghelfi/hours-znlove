@@ -462,6 +462,51 @@ def _():
             ops._notion = old
 
 
+@check("deleting is refused outright when the Goal column can't be read")
+def _():
+    # Everywhere else an unresolvable column degrades to "no goals" and a page
+    # renders without them. Here that same silence would read as "nothing is
+    # filed under this goal" — and this relation is named `val` in Notion
+    # today, so the column being unreadable is not hypothetical.
+    with fake_goals([goal("g1")], prop=None), fake_query(500) as q:
+        try:
+            ops.delete_goal("g1")
+            raise AssertionError("should have refused")
+        except ops.GoalInUse:
+            raise AssertionError("should not have reported a count at all")
+        except ValueError as exc:
+            assert "can't be read" in str(exc), exc
+    assert q.archived is None
+
+
+@check("counting is refused too, rather than answering zero")
+def _():
+    with fake_goals([goal("g1")], prop=None):
+        try:
+            ops.goal_entry_count("g1")
+            raise AssertionError("should have refused")
+        except ValueError:
+            pass
+
+
+@check("the count and the archive happen under the write lock together")
+def _():
+    # otherwise an entry filed between the two is stranded by a delete that had
+    # already decided the goal was empty
+    import threading
+    held = []
+    with fake_goals([goal("g1")]), fake_query(0) as q:
+        real = ops._notion.pages.update
+
+        def watching(pid, **kw):
+            held.append(ops._write_lock.locked())
+            return real(pid, **kw)
+        ops._notion.pages.update = watching
+        ops.delete_goal("g1")
+    assert held == [True], held
+    assert not ops._write_lock.locked()   # and it is given back
+
+
 @check("deleting when goals aren't set up is refused")
 def _():
     with fake_goals([], prop=None, ds=None):
