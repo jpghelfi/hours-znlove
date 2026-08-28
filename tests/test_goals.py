@@ -14,6 +14,7 @@ that Unassigned is always a row.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import traceback
@@ -340,6 +341,177 @@ def _():
     with fake_goals([], prop=None):
         try:
             ops.set_entry_goals(["e1"], "g1")
+            raise AssertionError("should have refused")
+        except ValueError as exc:
+            assert "not set up" in str(exc)
+
+
+# ---- deleting a goal ------------------------------------------------------
+
+class fake_query:
+    """Answer the Time Entries query with a fixed number of rows, paged."""
+
+    def __init__(self, total, page=100):
+        self.total, self.page = total, page
+        self.asked = []
+
+    def __enter__(self):
+        outer = self
+
+        class FakeNotion:
+            class data_sources:
+                @staticmethod
+                def query(**kw):
+                    outer.asked.append(kw)
+                    start = int(kw.get("start_cursor") or 0)
+                    n = min(outer.page, max(0, outer.total - start))
+                    more = start + n < outer.total
+                    return {"results": [{"id": f"e{start + i}"} for i in range(n)],
+                            "has_more": more, "next_cursor": str(start + n)}
+
+            class pages:
+                @staticmethod
+                def retrieve(pid):
+                    return {"id": pid, "parent": {"data_source_id": "goals-ds"}}
+
+                @staticmethod
+                def update(pid, **kw):
+                    outer.archived = (pid, kw)
+        self._n = ops._notion
+        ops._notion = FakeNotion
+        self.archived = None
+        return self
+
+    def __exit__(self, *exc):
+        ops._notion = self._n
+
+
+@check("a goal with nothing filed under it is deleted")
+def _():
+    with fake_goals([goal("g1")]), fake_query(0) as q:
+        res = ops.delete_goal("g1")
+    assert res["deleted"] is True
+    assert q.archived[0] == "g1" and q.archived[1]["archived"] is True
+
+
+@check("a goal with hours filed under it is refused, and says how many")
+def _():
+    with fake_goals([goal("g1")]), fake_query(12) as q:
+        try:
+            ops.delete_goal("g1")
+            raise AssertionError("should have refused")
+        except ops.GoalInUse as exc:
+            assert exc.count == 12
+            assert "12 entries are still filed" in str(exc)
+    # nothing archived: the refusal happens before the write
+    assert q.archived is None
+
+
+@check("one entry still filed reads as singular, and still refuses")
+def _():
+    with fake_goals([goal("g1")]), fake_query(1) as q:
+        try:
+            ops.delete_goal("g1")
+            raise AssertionError("should have refused")
+        except ops.GoalInUse as exc:
+            assert exc.count == 1 and "1 entry is still filed" in str(exc)
+    assert q.archived is None
+
+
+@check("the count is over all time, not just a period")
+def _():
+    # an old entry pointing at a deleted goal is exactly the damage this
+    # prevents, so the query carries no date bound at all
+    with fake_goals([goal("g1")]), fake_query(3) as q:
+        try:
+            ops.delete_goal("g1")
+        except ops.GoalInUse:
+            pass
+    f = q.asked[0]["filter"]
+    assert "relation" in f and f["property"] == "Goal", f
+    assert "date" not in json.dumps(f).lower()
+
+
+@check("counting pages, and stops at the cap instead of walking thousands")
+def _():
+    with fake_goals([goal("g1")]), fake_query(250):
+        assert ops.goal_entry_count("g1") == (250, False)
+    with fake_goals([goal("g1")]), fake_query(5000):
+        n, more = ops.goal_entry_count("g1", cap=500)
+        assert n == 500 and more is True
+
+
+@check("deleting checks the page is one of ours before counting anything")
+def _():
+    with fake_goals([goal("g1")]):
+        old = ops._notion
+
+        class FakeNotion:
+            class pages:
+                @staticmethod
+                def retrieve(pid):
+                    return {"id": pid, "parent": {"data_source_id": "some-other-db"}}
+        try:
+            ops._notion = FakeNotion
+            try:
+                ops.delete_goal("not-ours")
+                raise AssertionError("should have refused")
+            except ValueError as exc:
+                assert "not a goal" in str(exc)
+        finally:
+            ops._notion = old
+
+
+@check("deleting is refused outright when the Goal column can't be read")
+def _():
+    # Everywhere else an unresolvable column degrades to "no goals" and a page
+    # renders without them. Here that same silence would read as "nothing is
+    # filed under this goal" — and this relation is named `val` in Notion
+    # today, so the column being unreadable is not hypothetical.
+    with fake_goals([goal("g1")], prop=None), fake_query(500) as q:
+        try:
+            ops.delete_goal("g1")
+            raise AssertionError("should have refused")
+        except ops.GoalInUse:
+            raise AssertionError("should not have reported a count at all")
+        except ValueError as exc:
+            assert "can't be read" in str(exc), exc
+    assert q.archived is None
+
+
+@check("counting is refused too, rather than answering zero")
+def _():
+    with fake_goals([goal("g1")], prop=None):
+        try:
+            ops.goal_entry_count("g1")
+            raise AssertionError("should have refused")
+        except ValueError:
+            pass
+
+
+@check("the count and the archive happen under the write lock together")
+def _():
+    # otherwise an entry filed between the two is stranded by a delete that had
+    # already decided the goal was empty
+    import threading
+    held = []
+    with fake_goals([goal("g1")]), fake_query(0) as q:
+        real = ops._notion.pages.update
+
+        def watching(pid, **kw):
+            held.append(ops._write_lock.locked())
+            return real(pid, **kw)
+        ops._notion.pages.update = watching
+        ops.delete_goal("g1")
+    assert held == [True], held
+    assert not ops._write_lock.locked()   # and it is given back
+
+
+@check("deleting when goals aren't set up is refused")
+def _():
+    with fake_goals([], prop=None, ds=None):
+        try:
+            ops.delete_goal("g1")
             raise AssertionError("should have refused")
         except ValueError as exc:
             assert "not set up" in str(exc)

@@ -2361,6 +2361,89 @@ def update_goal(goal_id: str, name: str | None = None, target: float | None = _U
     return goal_map().get(goal_id) or {}
 
 
+class GoalInUse(Exception):
+    """A goal still has hours filed under it, so it can't be deleted.
+
+    Carries the count so the refusal can say how many rather than just no —
+    the difference between "unfile these 12 first" and a dead end.
+    """
+
+    def __init__(self, count: int, more: bool = False):
+        self.count, self.more = count, more
+        n = f"{count}+" if more else str(count)
+        super().__init__(f"{n} {'entry is' if count == 1 and not more else 'entries are'} "
+                         f"still filed under this goal")
+
+
+def goal_entry_count(goal_id: str, cap: int = 500) -> tuple[int, bool]:
+    """How many time entries are filed under a goal, over all time.
+
+    Deliberately unbounded by date: a goal deleted while a January entry still
+    points at it would leave that entry pointing at nothing, which reads as
+    "(deleted goal)" in every report from then on.
+
+    Counted rather than merely detected, so a refusal can name the number, and
+    capped so a goal with thousands of entries doesn't page through them all to
+    tell you what the first page already proves.
+
+    **Fails closed.** Everywhere else an unresolvable Goal column degrades to
+    "no goals" and a page renders without them; here the same silence would
+    read as "nothing is filed under this goal, go ahead and delete it" — and
+    the column has been unresolvable before (this relation is named `val` in
+    Notion today; see goal_prop). A count that cannot be taken is not zero.
+    """
+    prop = goal_prop()
+    if not prop:
+        raise ValueError(
+            "the Goal column on Time Entries can't be read right now, so there "
+            "is no way to tell whether hours are filed under this goal")
+    if not goal_id:
+        return 0, False
+    seen = 0
+    kwargs = {"data_source_id": TIME_DS, "page_size": 100,
+              "filter": {"property": prop, "relation": {"contains": goal_id}}}
+    while True:
+        res = _notion.data_sources.query(**kwargs)
+        seen += len(res["results"])
+        if seen >= cap:
+            return cap, res.get("has_more", False) or seen > cap
+        if not res.get("has_more"):
+            return seen, False
+        kwargs["start_cursor"] = res["next_cursor"]
+
+
+def delete_goal(goal_id: str) -> dict:
+    """Delete a goal — but only once nothing is filed under it.
+
+    The check is here rather than in the route, and it is not optional: a goal
+    is only ever addressed by an id that came from a browser, and the cost of
+    getting this wrong is silent — the hours survive, but they point at a page
+    that no longer exists, so they vanish from every named row of the block and
+    from Unassigned at the same time.
+
+    Closing a goal (`Status: Done`) is the non-destructive alternative and the
+    one to reach for when the work really happened: it keeps the hours and the
+    history, and only takes the goal out of the picker.
+    """
+    if not GOALS_DS:
+        raise ValueError("goals are not set up")
+    _own_goal(goal_id)          # refuses any page that isn't one of our goals
+    # Check and archive under the lock together, the way delete_absence does:
+    # otherwise an entry filed between the count and the write is stranded by a
+    # delete that had already decided the goal was empty. Bounded to a single
+    # page so a global, non-reentrant lock isn't held for a long scan — a goal
+    # with more than a page of entries is refused either way, and "100+" is as
+    # useful a refusal as an exact number. Nothing in here takes the lock again.
+    with _write_lock:
+        count, more = goal_entry_count(goal_id, cap=100)
+        if count:
+            raise GoalInUse(count, more)
+        _notion.pages.update(goal_id, archived=True)
+    all_goals(refresh=True)     # a Notion read; not worth holding the lock for
+    _goal_totals_cache.clear()
+    return {"ok": True, "deleted": True}
+
+
 def set_entry_goals(entry_ids: list[str], goal_id: str | None,
                     allowed_ids: set | None = None,
                     project_id: str | None = None) -> dict:
@@ -2375,7 +2458,14 @@ def set_entry_goals(entry_ids: list[str], goal_id: str | None,
 
     **No `_write_lock`.** It's global and non-reentrant, and a batch of 25
     updates would stall every other save in the app behind it. Goal assignment
-    races with nothing — it touches one property that no other write reads.
+    races with nothing that reads the property it writes.
+
+    The one window that leaves open is deliberate: an admin deleting the goal
+    between two batches of a long filing would leave the rest pointing at an
+    archived page. Both actors are admins working on the same goal in the same
+    moment, delete_goal refuses the instant anything is filed under it, and
+    Notion keeps an archived page restorable — none of which is worth stalling
+    every save in the app behind a batch to prevent.
 
     Writing only the Goal property matters as much: rewriting a page's whole
     property bag would clobber whatever else is on the entry.

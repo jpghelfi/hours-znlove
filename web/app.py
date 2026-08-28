@@ -2721,6 +2721,45 @@ def api_goal(request: Request, g: GoalSave):
     return JSONResponse({"ok": True, "goal": goal})
 
 
+class GoalDelete(BaseModel):
+    goal_id: str
+
+
+@app.post("/api/goal/delete")
+def api_goal_delete(request: Request, g: GoalDelete):
+    """Delete a goal, refusing while anything is still filed under it.
+
+    The count comes back with the refusal so the dialog can say how many and
+    offer to show them, rather than just saying no. Closing a goal
+    (`Status: Done`) stays the non-destructive way out and is what the message
+    points at — deleting is for a goal made by mistake, not for finished work.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not ops.goals_enabled():
+        return JSONResponse({"ok": False, "error": "goals are not set up yet"}, status_code=403)
+    try:
+        res = ops.delete_goal(g.goal_id)
+    except ops.GoalInUse as exc:
+        # 409, not 400: the request is fine, the goal simply still has hours
+        return JSONResponse({"ok": False, "error": str(exc), "in_use": exc.count,
+                             "more": exc.more}, status_code=409)
+    except ValueError as exc:
+        # includes the fail-closed case where the Goal column can't be read:
+        # refusing to delete is the only safe answer when the guard can't run
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Deleting goal %s failed", g.goal_id)
+        return JSONResponse({"ok": False, "error": "could not delete that goal"},
+                            status_code=400)
+    return JSONResponse(res)
+
+
 class GoalAssign(BaseModel):
     entry_ids: list[str]
     goal_id: Optional[str] = None      # None / "" clears the goal
