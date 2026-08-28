@@ -186,8 +186,14 @@
       <span class="goalrow-name">{{ g.name }}
         {%- if g.status and g.status != 'Open' and not g.unassigned %} <span class="gstat">{{ g.status }}</span>{% endif %}</span>
       <span class="goalrow-h">{{ '%g'|format(g.hours) }}<span class="unit">h</span></span>
-      <span class="goalrow-bar"><span class="goalrow-fill" style="width: {{ g.share }}%"></span></span>
-      <span class="goalrow-share">{{ g.share }}%</span>
+      {# the bar and the percentage next to it always say the same thing: how
+         full the target is once a goal has one, otherwise the goal's share of
+         the period. The other reading is in the tooltip rather than on a
+         second, differently-scaled bar. #}
+      <span class="goalrow-bar" data-of="{{ g.bar.of }}"
+            title="{% if g.bar.of == 'target' %}{{ g.bar.pct }}% of the {{ '%g'|format(g.meter.target) }} h target · {{ g.share }}% of the period{% else %}{{ g.share }}% of the period{% endif %}">
+        <span class="goalrow-fill{{ ' is-over' if g.bar.over }}" style="width: {{ g.bar.pct }}%"></span></span>
+      <span class="goalrow-share{{ ' is-over' if g.bar.over }}">{{ g.bar.pct }}%</span>
       {# the target reads as text, not a second bar: two bars of different
          scales in one row read as one broken bar, and /budgets already
          established one-bar-plus-a-number as the idiom here #}
@@ -621,13 +627,11 @@ function repointBlock(moved, toGoal) {
     const h = r.querySelector('.goalrow-h');
     if (h) h.innerHTML = `${(+now.toFixed(2))}<span class="unit">h</span>`;
     const share = total ? Math.round(now / total * 100) : 0;
-    const sh = r.querySelector('.goalrow-share');
-    if (sh) sh.textContent = share + '%';
-    const fill = r.querySelector('.goalrow-fill');
-    if (fill) fill.style.width = share + '%';
+
     // a target counted per month follows the month on screen; one counted in
     // total follows its whole life, which moved by the same delta either way
     const m = r.querySelector('.goalrow-meter[data-target]');
+    let pct = share, over = false;
     if (m) {
       const target = parseFloat(m.dataset.target);
       const used = Math.round((parseFloat(m.dataset.used || '0') + (delta[id] || 0)) * 100) / 100;
@@ -635,7 +639,22 @@ function repointBlock(moved, toGoal) {
       const per = m.querySelector('.per');
       m.textContent = `${+used.toFixed(2)}/${+target.toFixed(2)} h`;
       if (per) m.appendChild(per);
-      m.classList.toggle('is-over', target ? used > target : used > 0);
+      over = target ? used > target : used > 0;
+      m.classList.toggle('is-over', over);
+      // same rule as the server: with a target, the bar is how full it is
+      pct = target ? Math.round(used / target * 100) : (used ? 100 : 0);
+    }
+    const sh = r.querySelector('.goalrow-share');
+    if (sh) { sh.textContent = pct + '%'; sh.classList.toggle('is-over', over); }
+    const fill = r.querySelector('.goalrow-fill');
+    if (fill) {
+      fill.style.width = Math.min(pct, 100) + '%';
+      fill.classList.toggle('is-over', over);
+    }
+    const bar = r.querySelector('.goalrow-bar');
+    if (bar) {
+      bar.title = m ? `${pct}% of the target · ${share}% of the period`
+                    : `${share}% of the period`;
     }
   });
 }

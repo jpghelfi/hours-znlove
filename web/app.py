@@ -2645,30 +2645,42 @@ def _goal_rows(project_id: str, entries: list[dict], goals: list[dict],
         h = round(hours.get(g["id"], 0), 2)
         if not h and g["status"] != "Open":
             continue          # a closed goal with nothing this period is history
+        share = round(h / total * 100) if total else 0
         row = {**g, "hours": h, "entries": counts.get(g["id"], 0),
-               "share": round(h / total * 100) if total else 0, "meter": None}
+               "share": share, "meter": None,
+               # what the bar means, in one place. Without a target it is the
+               # goal's share of the period; with one it is progress toward
+               # that target — because the row prints "35.5/40 h" right next to
+               # it, and a bar that meant something else there read as a bug.
+               "bar": {"pct": share, "over": False, "of": "period"}}
         # `is not None`, not truthiness: 0 is a real target here — "no hours
         # allowed at all" — the same empty-is-not-0 rule _goal_row keeps and
         # Monthly budget documents
         if monthly and g["target"] is not None:
             # a standing goal is measured this month; a one-off over its life
             used = h if g["basis"] == "Per month" else lifetime.get(g["id"], h)
+            pct = round(used / g["target"] * 100) if g["target"] else (100 if used else 0)
             row["meter"] = {
                 "used": round(used, 2), "target": g["target"],
                 # a 0 h target is over the moment anything at all is logged
-                "pct": round(used / g["target"] * 100) if g["target"] else (100 if used else 0),
+                "pct": pct,
                 "over": used > g["target"],
                 "scope": "this month" if g["basis"] == "Per month" else "all time",
             }
+            # the bar follows the target once there is one: 35.5 of 40 h is
+            # 89% full, whatever share of the month those hours happen to be
+            row["bar"] = {"pct": min(pct, 100), "over": used > g["target"], "of": "target"}
         rows.append(row)
     rows.sort(key=lambda r: (-r["hours"], r["name"].lower()))
 
     un = round(hours.get(_UNASSIGNED, 0), 2)
+    un_share = round(un / total * 100) if total else 0
     rows.append({
         "id": _UNASSIGNED, "name": "Unassigned", "status": "Open",
         "target": None, "basis": "Total", "unassigned": True,
         "hours": un, "entries": counts.get(_UNASSIGNED, 0),
-        "share": round(un / total * 100) if total else 0, "meter": None,
+        "share": un_share, "meter": None,
+        "bar": {"pct": un_share, "over": False, "of": "period"},
     })
     return rows
 

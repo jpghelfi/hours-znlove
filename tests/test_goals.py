@@ -621,6 +621,55 @@ def _():
         assert rows[0]["meter"]["pct"] == 100      # not a division by zero
 
 
+@check("the bar fills toward the target once a goal has one")
+def _():
+    # the bug: the bar showed the goal's share of the month (35.5 of 98 h = 36%)
+    # while the text beside it read "35.5/40 h", so it looked broken
+    goals = [goal("g1", "Maintenance", target=40, basis="Per month"),
+             goal("g2", "VSL", target=80, basis="Per month")]
+    entries = [entry("e1", 35.5, "g1", "Maintenance"), entry("e2", 62.5, "g2", "VSL")]
+    with fake_goals(goals):
+        rows = webapp._goal_rows("p1", entries, goals, "monthly")
+    by = {r["name"]: r for r in rows}
+    assert by["Maintenance"]["share"] == 36        # still the share of the month
+    assert by["Maintenance"]["bar"]["pct"] == 89   # but the bar is 35.5 of 40
+    assert by["Maintenance"]["bar"]["of"] == "target"
+    assert by["VSL"]["bar"]["pct"] == 78           # 62.5 of 80
+    assert by["Unassigned"]["bar"]["of"] == "period"
+
+
+@check("without a target the bar is still the share of the period")
+def _():
+    goals = [goal("g1", "No target")]
+    entries = [entry("e1", 3, "g1", "No target"), entry("e2", 1)]
+    with fake_goals(goals):
+        rows = webapp._goal_rows("p1", entries, goals, "monthly")
+    by = {r["name"]: r for r in rows}
+    assert by["No target"]["bar"] == {"pct": 75, "over": False, "of": "period"}
+    assert by["Unassigned"]["bar"]["pct"] == 25
+
+
+@check("a bar past its target is capped at full, and marked over")
+def _():
+    goals = [goal("g1", "Maintenance", target=10, basis="Per month")]
+    entries = [entry("e1", 25, "g1", "Maintenance")]
+    with fake_goals(goals):
+        rows = webapp._goal_rows("p1", entries, goals, "monthly")
+    bar = rows[0]["bar"]
+    assert bar["pct"] == 100 and bar["over"] is True   # a bar can't be 250% long
+    assert rows[0]["meter"]["pct"] == 250              # the number still says 250
+
+
+@check("off a monthly period there is no target, so the bar is the share again")
+def _():
+    goals = [goal("g1", "Maintenance", target=40, basis="Per month")]
+    entries = [entry("e1", 35.5, "g1", "Maintenance"), entry("e2", 64.5)]
+    with fake_goals(goals):
+        rows = webapp._goal_rows("p1", entries, goals, "weekly")
+    assert rows[0]["meter"] is None
+    assert rows[0]["bar"] == {"pct": 36, "over": False, "of": "period"}
+
+
 @check("a stale ?goal= degrades to the whole project, and 'none' is honoured")
 def _():
     goals = [goal("g1")]
