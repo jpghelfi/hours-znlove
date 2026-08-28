@@ -356,9 +356,42 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
 
 # ---- writes ------------------------------------------------------------
 
+class NoteRequired(Exception):
+    """A new entry arrived with neither a description nor a ticket."""
+
+    def __init__(self, message: str = ""):
+        super().__init__(message or (
+            f"Say what you worked on — at least {MIN_DESCRIPTION} characters — "
+            "or link the Notion ticket."))
+
+
+# How much description counts as one. A floor stops *blank*, not *lazy*: this
+# is the number that was asked for, and the ticket is the way past it for the
+# work whose best description really is "ZN-999" — linking it says more than
+# ten characters of prose ever would.
+MIN_DESCRIPTION = 10
+
+
+def note_ok(description: str = "", task_url: str = "") -> bool:
+    """Does this entry say what it was for?
+
+    Either arm satisfies it. Whitespace doesn't count toward the length — an
+    entry described as eleven spaces is a blank one.
+    """
+    if (task_url or "").strip():
+        return True
+    return len(" ".join((description or "").split())) >= MIN_DESCRIPTION
+
+
+def require_note(description: str = "", task_url: str = "") -> None:
+    """Raise unless the entry says what it was for."""
+    if not note_ok(description, task_url):
+        raise NoteRequired()
+
+
 def create_entry(person_id: str | None, project_id: str, date: str, hours: float,
                  description: str = "", task_url: str = "", task_label: str = "",
-                 enforce: bool = False) -> None:
+                 enforce: bool = False, note: bool = False) -> None:
     """Write one new time entry.
 
     `enforce` opts this write into the project's monthly budget cap (see
@@ -366,6 +399,18 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     CLIs, the Harvest importer — keeps working exactly as before, and only the
     routes that serve a non-admin turn it on. A new row adds all of its hours,
     so the delta is simply `hours`.
+
+    `note` opts it into "say what this was for" (see require_note), and defaults
+    to off for the same reason and with more force: `src/sync_harvest.py` writes
+    `"Harvest"` as the description whenever a Harvest entry has no notes, so
+    enforcing here would make the importer refuse hours somebody genuinely
+    worked. docs/budgets.md settled that trade once already — a checker that
+    corrupts the record to protect a rule is the wrong checker. Only the two
+    routes that serve a person typing into a browser turn it on.
+
+    Checked before the budget: it costs no Notion call, and being told "add a
+    description" is a better first answer than "this project is over budget"
+    when both are true.
 
     When enforcing, the check and the write happen under `_write_lock`
     together. Checking outside it is a time-of-check/time-of-use race: two
@@ -379,6 +424,8 @@ def create_entry(person_id: str | None, project_id: str, date: str, hours: float
     with `enforce=False` (it has already run the check itself, against the
     delta rather than the raw hours). Keep it that way or this deadlocks.
     """
+    if note:
+        require_note(description, task_url)
     pname_map = _project_name_map()   # a Notion read: do it before any lock
     props = {
         "Entry": {"title": [{"text": {"content": f"{pname_map.get(project_id, 'Entry')} — {date}"}}]},
@@ -932,7 +979,8 @@ def _norm(name: str) -> str:
 
 
 def set_cell(person_id: str, project_id: str, date: str, hours: float,
-             enforce: bool = False) -> dict:
+             enforce: bool = False, note: bool = False,
+             description: str = "", task_url: str = "", task_label: str = "") -> dict:
     """Upsert the (person, project, date) cell to `hours`. 0/None deletes the entry.
 
     Filters on Person in the query (not a Python scan), paginates, and
@@ -944,6 +992,14 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
     by 2, so the budget check compares against the **delta**, not the submitted
     hours. Getting that wrong would refuse every ordinary grid correction on a
     busy project.
+
+    `note` opts it into "say what this was for" — but **only where this call
+    actually creates an entry**. Correcting a number in a cell that already
+    holds one is not a new piece of work to describe, and an entry logged
+    before the rule existed must stay editable; demanding a description to fix
+    a typo would make old rows unfixable, which is the same trap the budget cap
+    avoids by never refusing a write that lowers a total. Deleting (`0`) asks
+    for nothing either.
     """
     if enforce:
         # Warm the budget cache *before* taking the lock. On a cache miss this
@@ -974,12 +1030,21 @@ def set_cell(person_id: str, project_id: str, date: str, hours: float,
             return {"ok": True, "hours": 0}
 
         if keep:
+            # an existing cell: only the number moves, so nothing new is being
+            # described and the row keeps whatever description it already has
             _notion.pages.update(keep["id"], properties={
                 "Hours": {"number": hours},
                 "Person": {"people": [{"id": person_id}]},
             })
         else:
-            create_entry(person_id, project_id, date, hours)
+            # a brand-new entry — this is the one that has to say what it is.
+            # Checked before the write, and inside the lock we already hold, so
+            # a refusal leaves nothing behind.
+            if note:
+                require_note(description, task_url)
+            create_entry(person_id, project_id, date, hours,
+                         description=description, task_url=task_url,
+                         task_label=task_label)
         return {"ok": True, "hours": hours}
 
 

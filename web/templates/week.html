@@ -81,14 +81,34 @@ async function saveCell(input) {
       input.value = input.dataset.prev; return;
     }
   }
+  // A cell that already holds hours is being *corrected*: the entry exists and
+  // keeps whatever it says, so nothing is asked for. A cell filling from empty
+  // is a new piece of work, and that is the one the rule is about — so ask
+  // before the round trip rather than saving, being refused, and asking after.
+  let note = {description: '', task_url: '', task_label: ''};
+  const isNew = hours && !parseFloat(input.dataset.prev);
+  if (isNew) {
+    const got = await askNote(tr.querySelector('.col-project').textContent.trim(), date, hours);
+    if (!got) { input.value = input.dataset.prev || ''; recalc(); return; }
+    note = got;
+  }
   input.classList.add('saving');
   try {
     const res = await fetch('/api/cell', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({project_id, date, hours})
+      body: JSON.stringify({project_id, date, hours, ...note})
     });
     const data = await res.json();
     input.classList.remove('saving');
+    if (data.note) {
+      // the server had the last word — the cell goes back rather than showing
+      // a number that was never written
+      input.value = input.dataset.prev || '';
+      input.classList.remove('err');
+      zAlert(data.error, {title: 'Say what you worked on'});
+      recalc();
+      return;
+    }
     if (data.budget) {
       // The project is at its monthly cap. Nothing was written, so the cell
       // has to go back to what it held — leaving the typed number on screen
@@ -106,6 +126,67 @@ async function saveCell(input) {
   } catch (e) { input.classList.remove('saving'); input.classList.add('err');
     zAlert('That save never reached the server — check your connection.', {title: 'Save failed'}); }
 }
+
+// The grid has no description field — it is a spreadsheet of numbers — so the
+// one place a new entry can be described is here, at the moment it is created.
+// Resolves to {description, task_url, task_label} or null if they back out.
+function askNote(projectName, date, hours) {
+  return new Promise(resolve => {
+    const dlg = document.getElementById('noteDlg');
+    const desc = document.getElementById('noteDesc');
+    const link = document.getElementById('noteLink');
+    const err = document.getElementById('noteErr');
+    const day = new Date(date + 'T00:00:00');
+    document.getElementById('noteWhat').textContent =
+      `${projectName} · ${day.toLocaleDateString(undefined, {weekday: 'short', day: 'numeric', month: 'short'})} · ${hours} h`;
+    desc.value = '';
+    link.value = '';
+    err.hidden = true;
+
+    // the last few things this person wrote on this project: most cells are
+    // yesterday's work continuing, and one tap beats retyping it
+    const recent = document.getElementById('noteRecent');
+    recent.innerHTML = '';
+    const seen = new Set();
+    RECENT_NOTES.filter(n => n.project === projectName).slice(0, 4).forEach(n => {
+      if (seen.has(n.text)) return;
+      seen.add(n.text);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'gchip gchip-btn';
+      b.textContent = n.text.length > 44 ? n.text.slice(0, 43) + '…' : n.text;
+      b.onclick = () => { desc.value = n.text; err.hidden = true; };
+      recent.appendChild(b);
+    });
+    recent.hidden = !recent.children.length;
+
+    function done(value) {
+      dlg.removeEventListener('close', onClose);
+      document.getElementById('noteGo').onclick = null;
+      dlg.close();
+      resolve(value);
+    }
+    function onClose() { done(null); }        // Esc and the backdrop are a cancel
+
+    document.getElementById('noteGo').onclick = () => {
+      const d = desc.value.trim().replace(/\s+/g, ' ');
+      const url = link.value.trim();
+      if (d.length < MIN_NOTE && !url) {
+        err.textContent = `${MIN_NOTE} characters, or paste the ticket link.`;
+        err.hidden = false;
+        desc.focus();
+        return;
+      }
+      done({description: desc.value.trim(), task_url: url, task_label: ''});
+    };
+    dlg.addEventListener('close', onClose);
+    dlg.showModal();
+    desc.focus();
+  });
+}
+
+const MIN_NOTE = {{ min_note }};
+const RECENT_NOTES = {{ recent_notes|tojson }};
 
 function recalc() {
   let grand = 0;
@@ -142,4 +223,38 @@ function addRow() {
 const PREV_PROJECTS = {{ prev_projects|tojson }};
 function copyLastWeek() { PREV_PROJECTS.forEach(p => addRowWith(p.id, p.name)); }
 </script>
+{% endblock %}
+
+{% block modals %}
+{# Outside the page's forms on purpose: a `required` control inside a closed
+   <dialog> makes the browser refuse a submit it can't focus anything to
+   explain — the bug that silently broke saving hours when the ticket dialog
+   first shipped (see _task_dialog.html). This one has no <form> either;
+   askNote() reads the fields and resolves a promise. #}
+<dialog id="noteDlg" class="pop">
+  <div class="pop-head">
+    <strong>What did you work on?</strong>
+    <button type="button" class="pop-x" onclick="document.getElementById('noteDlg').close()" aria-label="Close">×</button>
+  </div>
+
+  <div class="subtle" id="noteWhat"></div>
+
+  <div id="noteRecent" class="goal-else-list" hidden></div>
+
+  <label>Description
+    <textarea id="noteDesc" rows="3" placeholder="What did you do?"></textarea>
+  </label>
+
+  <label><span>…or paste the Notion ticket <span class="subtle">— instead of a description</span></span>
+    <input id="noteLink" type="url" inputmode="url" autocomplete="off"
+           placeholder="https://www.notion.so/…">
+  </label>
+
+  <div class="pop-err" id="noteErr" hidden></div>
+
+  <div class="pop-actions">
+    <button type="button" class="btn" onclick="document.getElementById('noteDlg').close()">Cancel</button>
+    <button type="button" class="primary" id="noteGo">Save hours</button>
+  </div>
+</dialog>
 {% endblock %}
