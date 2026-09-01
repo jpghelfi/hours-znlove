@@ -568,8 +568,11 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
     # PM/account-manager pick: resolves to a set of project ids and narrows
     # whatever scope the viewer already has, next to the people pick above.
     # Unlike the people pick this isn't admin-only — it only ever removes rows.
-    pm_ids, am_ids = _role_picks(ops.list_people(), pm, am)
-    role_ids = _role_keep_ids(ops.list_projects(active_only=False), pm_ids, am_ids)
+    pm_ids, am_ids = _roles_from_query(pm, am)
+    # inactive projects are included on purpose: an old entry's project may
+    # have been unticked since, and a role filter shouldn't drop its hours
+    role_ids = (_role_keep_ids(ops.list_projects(active_only=False), pm_ids, am_ids)
+                if (pm_ids or am_ids) else None)
     if role_ids is not None:
         entries = [e for e in entries if e.get("project_id") in role_ids]
     total = round(sum(e["hours"] for e in entries), 2)
@@ -982,6 +985,20 @@ def _role_picks(people: list, pm: list, am: list) -> tuple[set, set]:
             {pid for pid in (am or []) if pid in known})
 
 
+def _roles_from_query(pm: list, am: list, people: Optional[list] = None) -> tuple[set, set]:
+    """_role_picks, but it only reads the roster when something was picked.
+
+    list_people() is an uncached Notion query, and the roster is only needed to
+    drop ids that aren't on it — so with no ?pm=/?am= at all there is nothing
+    to validate and nothing to read. That matters because this sits on /reports
+    and on every export, pages that already pay for several Notion reads.
+    Callers holding the roster anyway pass it in.
+    """
+    if not (pm or am):
+        return set(), set()
+    return _role_picks(people if people is not None else ops.list_people(), pm, am)
+
+
 def _role_match(project: dict, pm_ids: set, am_ids: set) -> bool:
     """Does this project satisfy the role filter?
 
@@ -1022,7 +1039,7 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     # PM/account-manager pick narrows the project list *before* ?project= is
     # resolved against it, so the two filters compose (AND) and the rollup
     # below costs no extra Notion round trip — see docs/project-roles.md
-    pm_ids, am_ids = _role_picks(people, pm, am)
+    pm_ids, am_ids = _roles_from_query(pm, am, people)
     role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
     projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
     # ?project= repeats: no pick (or "all") is the every-project rollup, one
@@ -1084,7 +1101,7 @@ def _project_role_scope(project: list, pm: list, am: list,
     meaning the sel_ids-derived keep set has for _period_entries below).
     """
     all_projects = ops.list_projects(include_members=include_members)
-    pm_ids, am_ids = _role_picks(ops.list_people(), pm, am)
+    pm_ids, am_ids = _roles_from_query(pm, am)
     role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
     projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
     sel_ids, sel = _project_picks(projects, project)
@@ -2656,7 +2673,7 @@ def budgets_page(request: Request, start: Optional[str] = None,
     rng = _period_range("monthly", _project_anchor("monthly", start))
     people = ops.list_people()
     projects = ops.list_projects()
-    pm_ids, am_ids = _role_picks(people, pm, am)
+    pm_ids, am_ids = _roles_from_query(pm, am, people)
     if pm_ids or am_ids:
         projects = [p for p in projects if _role_match(p, pm_ids, am_ids)]
     sel_ids, _ = _project_picks(projects, project)
@@ -2698,7 +2715,7 @@ def budgets_csv(request: Request, start: Optional[str] = None,
     rng = _period_range("monthly", _project_anchor("monthly", start))
     people = ops.list_people()
     projects = ops.list_projects()
-    pm_ids, am_ids = _role_picks(people, pm, am)
+    pm_ids, am_ids = _roles_from_query(pm, am, people)
     if pm_ids or am_ids:
         projects = [p for p in projects if _role_match(p, pm_ids, am_ids)]
     sel_ids, _ = _project_picks(projects, project)
