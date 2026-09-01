@@ -17,6 +17,8 @@
   <thead>
     <tr>
       <th class="col-project">Project</th>
+      <th class="col-role">PM</th>
+      <th class="col-role">Account manager</th>
       {% for p in people %}
       {% set parts = p.name.split(' ') %}
       {% set initials = ((parts[0][0] ~ parts[-1][0]) if parts|length > 1 else parts[0][:2]) | upper %}
@@ -42,6 +44,18 @@
                 title="{{ proj.member_ids|length }} of {{ people|length }} people assigned">{{ proj.member_ids|length }}/{{ people|length }}</span>
         </div>
       </td>
+      {% for role, current in [('pm', proj.pm_id), ('am', proj.am_id)] %}
+      <td class="col-role">
+        <select class="role-pick" data-project="{{ proj.id }}" data-role="{{ role }}"
+                aria-label="{{ 'PM' if role == 'pm' else 'Account manager' }} for {{ proj.name }}"
+                onchange="saveRole(this)">
+          <option value="">—</option>
+          {% for p in people %}
+          <option value="{{ p.id }}" {{ 'selected' if p.id == current }}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      {% endfor %}
       {% for p in people %}
       <td class="assign-cell">
         <input type="checkbox" data-project="{{ proj.id }}" data-person="{{ p.id }}"
@@ -53,10 +67,10 @@
     </tr>
     {% endfor %}
     {% if not projects %}
-    <tr class="empty"><td colspan="{{ (people|length) + 1 }}">No projects yet.</td></tr>
+    <tr class="empty"><td colspan="{{ (people|length) + 3 }}">No projects yet.</td></tr>
     {% endif %}
     {% if projects and not people %}
-    <tr class="empty"><td colspan="{{ (people|length) + 1 }}">No people found in the workspace.</td></tr>
+    <tr class="empty"><td colspan="{{ (people|length) + 3 }}">No people found in the workspace.</td></tr>
     {% endif %}
   </tbody>
 </table>
@@ -89,6 +103,32 @@ async function saveAssignment(cb) {
     cb.checked = !on;
     td.classList.remove('saving'); td.classList.add('err');
     showAssignNotice("Couldn't save — check your connection.");
+  }
+}
+
+// dataset.prev holds the last known-saved value, so a failed save can revert
+// to it rather than to whatever the <select> happens to show now
+document.querySelectorAll('.role-pick').forEach(sel => { sel.dataset.prev = sel.value; });
+
+async function saveRole(sel) {
+  const project_id = sel.dataset.project, role = sel.dataset.role, person_id = sel.value || null;
+  const prev = sel.dataset.prev;
+  sel.classList.remove('bad');
+  sel.disabled = true;
+  try {
+    const res = await fetch('/api/project/role', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_id, role, person_id})
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'could not save');
+    sel.dataset.prev = sel.value;
+  } catch (e) {
+    sel.value = prev;
+    sel.classList.add('bad');
+    showAssignNotice("Couldn't save — check your connection.");
+  } finally {
+    sel.disabled = false;
   }
 }
 

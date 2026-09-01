@@ -226,8 +226,9 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
     id in the People property), for the schedule page's assignment view.
 
     Every project also carries "budget" — its monthly hour budget dict, or None
-    when it isn't budgeted. It's parsed off the rows this query already returns,
-    so the budget costs no extra call anywhere it's wanted."""
+    when it isn't budgeted — and "pm_id"/"am_id", the Notion user id of its PM
+    and Account manager (or None). All three are parsed off the rows this query
+    already returns, so none of them costs an extra call anywhere it's wanted."""
     projects = []
     kwargs = {"data_source_id": PROJECTS_DS, "page_size": 100}
     while True:
@@ -243,7 +244,9 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
             if member_of is not None and member_of not in members:
                 continue
             project = {"id": row["id"], "name": name,
-                       "budget": _budget_from_props(props)}
+                       "budget": _budget_from_props(props),
+                       "pm_id": _role_from_props(props, "pm"),
+                       "am_id": _role_from_props(props, "am")}
             if include_members:
                 project["member_ids"] = members
             projects.append(project)
@@ -920,6 +923,10 @@ def planned_rows(date_from: str, date_to: str, person_id: str | None = None) -> 
             out.append({
                 "person_id": pid,
                 "person": person_names.get(pid, "(unassigned)"),
+                # both the name (what pva() aggregates by) and the id (what a
+                # role filter narrows by) — same reasoning as entries_between
+                # carrying both "project" and "project_id"
+                "project_id": rel[0]["id"],
                 "project": pname.get(rel[0]["id"], "(none)"),
                 "hours": props["Hours"]["number"] or 0,
             })
@@ -2163,6 +2170,74 @@ def budget_alert(project_id: str, date: str) -> dict | None:
         "remaining": b["hours"] - tracked,
         "policy": b["policy"], "limit": b["limit"],
     }
+
+
+# ---- project roles (PM / Account manager) -------------------------------
+#
+# "Who do I chase about this project" — a PM and an Account manager, curated
+# in the same Projects data source the budget columns live on. Two people
+# properties, each treated as holding **at most one** person: Notion has no
+# single-person property type, so the app enforces that itself — readers take
+# the first entry, writers replace the whole array. Both ride on the same
+# list_projects read the budget already does, so neither costs an extra call.
+
+PM_PROP = "PM"
+AM_PROP = "Account manager"
+ROLE_PROPS = {"pm": PM_PROP, "am": AM_PROP}
+
+
+def ensure_role_properties() -> None:
+    """Add the PM / Account manager properties to the Projects db if missing.
+
+    Same shape as ensure_budget_properties/ensure_person_property: read the
+    schema, add only what isn't there, one update. Safe to run on every boot.
+    """
+    ds = _notion.data_sources.retrieve(PROJECTS_DS)
+    have = ds["properties"]
+    missing = {}
+    if PM_PROP not in have:
+        missing[PM_PROP] = {"people": {}}
+    if AM_PROP not in have:
+        missing[AM_PROP] = {"people": {}}
+    if missing:
+        _notion.data_sources.update(PROJECTS_DS, properties=missing)
+
+
+def _role_from_props(props: dict, role: str) -> str | None:
+    """The Notion user id sitting in `role`'s people property, or None.
+
+    Every read goes through .get(): this app has been taken down twice by a
+    renamed Notion column (alloc_person_prop; Time Entries' "Logged by",
+    currently called "melisa"). A renamed role column must read as "no PM" —
+    the project just stops being filterable — never as a 500. A second person
+    added by hand in Notion is ignored; only the first is ever read.
+    """
+    people = props.get(ROLE_PROPS[role], {}).get("people") or []
+    return people[0]["id"] if people else None
+
+
+def set_project_role(project_id: str, role: str, person_id: str | None) -> dict:
+    """Set a project's PM or Account manager. person_id=None clears it.
+
+    Rejects an unknown role and a person who isn't on the roster — both ids
+    arrive from the browser, same posture as set_entry_hours refusing a page
+    outside its data source. Deliberately doesn't touch the project's People
+    property: a PM who never logs hours on the project is normal, and
+    membership stays the separate, explicit thing it is today.
+    """
+    if role not in ROLE_PROPS:
+        raise ValueError(f"unknown role {role!r}")
+    if person_id is not None and person_id not in {p["id"] for p in list_people()}:
+        raise ValueError("that person isn't on the roster")
+    with _write_lock:
+        page = _notion.pages.retrieve(project_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(PROJECTS_DS):
+            raise ValueError("not a project")
+        _notion.pages.update(project_id, properties={
+            ROLE_PROPS[role]: {"people": [{"id": person_id}] if person_id else []},
+        })
+    return {"ok": True, "role": role, "person_id": person_id}
 
 
 # ---- goals -------------------------------------------------------------

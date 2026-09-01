@@ -3,6 +3,7 @@
 {% block nav_budgets %}active{% endblock %}
 {% block content %}
 {% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
+{% set qsr %}{% for id in pm_selected %}&pm={{ id }}{% endfor %}{% for id in am_selected %}&am={{ id }}{% endfor %}{% endset %}
 
 <div class="week-head">
   <div>
@@ -19,9 +20,9 @@
     </div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}">←</a>
-    <a class="btn" href="/budgets?start={{ rng.now }}{{ qsp }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}">→</a>
+    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}{{ qsr }}">←</a>
+    <a class="btn" href="/budgets?start={{ rng.now }}{{ qsp }}{{ qsr }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}{{ qsr }}">→</a>
   </div>
 </div>
 
@@ -33,7 +34,9 @@
   </label>
   <span class="seg-label filters-label">Projects</span>
   {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
-  <a class="btn" href="/budgets.csv?start={{ rng.value }}{{ qsp }}">⬇ CSV</a>
+  <span class="seg-label filters-label">Owners</span>
+  {% with pm_selected = pm_selected, am_selected = am_selected %}{% include "_role_filter.html" %}{% endwith %}
+  <a class="btn" href="/budgets.csv?start={{ rng.value }}{{ qsp }}{{ qsr }}">⬇ CSV</a>
 </form>
 
 {# The served percentages are computed from the budgets as they were when the
@@ -48,6 +51,8 @@
     <thead>
       <tr>
         <th class="left">Project</th>
+        <th class="left">PM</th>
+        <th class="left">Account manager</th>
         <th class="bcol">Budget<span class="th-sub">h / month</span></th>
         <th>Tracked</th>
         <th>Left</th>
@@ -65,6 +70,8 @@
              one click and no new screen #}
           <a href="/project?project={{ r.id }}&period=monthly&start={{ rng.value }}">{{ r.name }}</a>
         </td>
+        <td class="left subtle">{{ r.pm_name or '—' }}</td>
+        <td class="left subtle">{{ r.am_name or '—' }}</td>
         <td class="bcol">
           {# every row is already the editor: no "＋ Add budget" to click into
              first, because the first pass over this page is ~37 numbers typed
@@ -109,7 +116,7 @@
         <td class="left"><span class="chip {{ r.status_chip }}">{{ r.status_label }}</span></td>
       </tr>
       {% else %}
-      <tr class="empty"><td colspan="8">
+      <tr class="empty"><td colspan="10">
         No projects here. {% if sel_ids %}<a href="/budgets?start={{ rng.value }}">Show every project</a>.{% endif %}
       </td></tr>
       {% endfor %}
