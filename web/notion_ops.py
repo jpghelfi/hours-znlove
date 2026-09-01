@@ -227,8 +227,11 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
 
     Every project also carries "budget" — its monthly hour budget dict, or None
     when it isn't budgeted — and "pm_id"/"am_id", the Notion user id of its PM
-    and Account manager (or None). All three are parsed off the rows this query
-    already returns, so none of them costs an extra call anywhere it's wanted."""
+    and Account manager (or None) — plus "active", which matters to the callers
+    that pass active_only=False and still need to tell the two apart (the
+    invoices page lists every project but only offers active ones to invoice).
+    All of them are parsed off the rows this query already returns, so none of
+    them costs an extra call anywhere it's wanted."""
     projects = []
     kwargs = {"data_source_id": PROJECTS_DS, "page_size": 100}
     while True:
@@ -243,7 +246,7 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
             members = [p["id"] for p in props.get("People", {}).get("people", [])]
             if member_of is not None and member_of not in members:
                 continue
-            project = {"id": row["id"], "name": name,
+            project = {"id": row["id"], "name": name, "active": active,
                        "budget": _budget_from_props(props),
                        "pm_id": _role_from_props(props, "pm"),
                        "am_id": _role_from_props(props, "am")}
