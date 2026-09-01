@@ -1865,10 +1865,12 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     anchor = _parse_date(start)  # malformed ?start= falls back to the current week
     mon = ops.monday_of(anchor) if anchor else _current_monday()
 
+    today = dt.date.today()
     if view == "days":  # the planner: Mon–Fri, weekends never shown
         days = [mon + dt.timedelta(days=i) for i in range(5)]
         cols = [{"iso": d.isoformat(), "top": d.strftime("%a"),
-                 "sub": d.strftime("%m/%d"), "href": ""} for d in days]
+                 "sub": d.strftime("%m/%d"), "href": "", "today": d == today}
+                for d in days]
         range_from, range_to = days[0].isoformat(), days[-1].isoformat()
         def bucket(iso):
             return iso
@@ -1878,8 +1880,11 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         mondays = [mon + dt.timedelta(weeks=i) for i in range(6)]
         base = (f"&by={by}" + "".join(f"&person={p}" for p in picked)
                 + (f"&project={project}" if project else ""))
+        # the weeks rollup buckets by Monday, so "today" is the week holding it
+        this_mon = ops.monday_of(today)
         cols = [{"iso": m.isoformat(), "top": f"W{m.strftime('%m/%d')}", "sub": m.strftime("%Y"),
-                 "href": f"/schedule?view=days&start={m.isoformat()}{base}"} for m in mondays]
+                 "href": f"/schedule?view=days&start={m.isoformat()}{base}",
+                 "today": m == this_mon} for m in mondays]
         range_from = mondays[0].isoformat()
         range_to = (mondays[-1] + dt.timedelta(days=6)).isoformat()
         def bucket(iso):

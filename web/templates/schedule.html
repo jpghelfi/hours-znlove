@@ -95,7 +95,7 @@
     <tr>
       <th class="col-project">{{ 'Person' if by == 'person' else 'Project' }}</th>
       {% for c in cols %}
-      <th class="col-day">{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span>
+      <th class="col-day{{ ' is-today' if c.today }}"{% if c.today %} aria-current="date"{% endif %}>{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span>
         {# the day column's own wipe: the same gesture as "Clear week", one
            column wide, under the same filters — so a filtered planner only
            deletes the bookings it is showing #}
@@ -119,7 +119,7 @@
          and the pills below are spans rather than buttons — the write endpoints
          would refuse them anyway, and a control that only 403s is worse than
          no control #}
-      <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if not is_admin }}"
+      <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if not is_admin }}{{ ' is-today' if c.today }}"
           data-date="{{ c.iso }}" data-total="{{ d.total }}"
           {% if is_admin %}onclick="cellClick(event, this)"
           ondragover="cellOver(event, this)" ondragleave="cellOut(this)" ondrop="cellDrop(event, this)"{% endif %}>
@@ -172,7 +172,7 @@
         {% endif %}
       </td>
       {% else %}
-      <td class="{{ ('heat ' ~ ('heat-over' if d.total > cap else ('heat-full' if d.total >= cap * 0.8 else 'heat-ok'))) if by == 'person' and d.total else '' }}">
+      <td class="{{ ('heat ' ~ ('heat-over' if d.total > cap else ('heat-full' if d.total >= cap * 0.8 else 'heat-ok'))) if by == 'person' and d.total else '' }}{{ ' is-today' if c.today }}">
         {{ '%g'|format(d.total) if d.total else '' }}</td>
       {% endif %}
       {% endfor %}
@@ -186,7 +186,7 @@
   <tfoot>
     <tr>
       <td class="col-project">All</td>
-      {% for c in cols %}<td class="coltotal" data-date="{{ c.iso }}">{{ '%g'|format(col_totals[c.iso]) if col_totals[c.iso] else '' }}</td>{% endfor %}
+      {% for c in cols %}<td class="coltotal{{ ' is-today' if c.today }}" data-date="{{ c.iso }}">{{ '%g'|format(col_totals[c.iso]) if col_totals[c.iso] else '' }}</td>{% endfor %}
       <td class="col-total grandtotal">{{ '%g'|format(grand_total) }}</td>
     </tr>
   </tfoot>
