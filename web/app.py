@@ -1523,10 +1523,13 @@ def invoices_page(request: Request, project: list[str] = Query(default=[])):
     for r in rows:
         month = _parse_date(r["month"])
         r["month_label"] = month.strftime("%B %Y") if month else r["month"]
+    # The month you invoice is almost always the one that just ended, so that's
+    # what the "New invoice" picker opens on.
+    last_month = dt.date.today().replace(day=1) - dt.timedelta(days=1)
     return templates.TemplateResponse(request, "invoices.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids,
-        "rows": rows,
+        "rows": rows, "default_month": last_month.strftime("%Y-%m"),
         "enabled": ops.invoices_enabled(),
         "total_billed": round(sum(r["hours_billed"] for r in rows), 2),
         "total_tracked": round(sum(r["hours_tracked"] for r in rows), 2),

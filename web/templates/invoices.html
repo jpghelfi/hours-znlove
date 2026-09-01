@@ -13,10 +13,30 @@
       {{ '%g'|format(total_tracked) }} h tracked
     </div>
   </div>
-  <form method="get" action="/invoices" class="range-form">
-    {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
-    <button type="submit" class="btn">Apply</button>
-  </form>
+  <div class="invhead">
+    <form method="get" action="/invoices" class="range-form">
+      {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
+      <button type="submit" class="btn">Apply</button>
+    </form>
+    {% if enabled %}
+    {# Starting an invoice used to mean knowing to go to By project, pick one
+       project and a month, and find the Invoice button — a path only visible
+       in this page's empty state, so it vanished as soon as there was a first
+       invoice. Same destination, named where you look for it. #}
+    <form method="get" action="/project/export" class="range-form newinv">
+      <input type="hidden" name="period" value="monthly">
+      <select name="project" required aria-label="Project to invoice">
+        <option value="" disabled selected>Project…</option>
+        {% for p in projects if p.active %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+      <input type="month" name="start" value="{{ default_month }}" required
+             aria-label="Month to invoice">
+      <button type="submit" class="btn btn-primary">＋ New invoice</button>
+    </form>
+    {% endif %}
+  </div>
 </div>
 
 {% if not enabled %}
@@ -76,8 +96,8 @@
       </tr>
       {% else %}
       <tr class="empty"><td colspan="9">
-        No invoices yet. Open <a href="/project">By project</a>, pick one project and a month,
-        then use the Invoice button.
+        {% if enabled %}No invoices yet — pick a project and a month above, then
+        set the hours to bill.{% else %}No invoices yet.{% endif %}
       </td></tr>
       {% endfor %}
     </tbody>

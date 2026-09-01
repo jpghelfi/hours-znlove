@@ -1006,6 +1006,13 @@ dialog.pop .tpick-hint { margin: -6px 0 12px; }
    decision — so tracked reads back a step */
 .tracked { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .invoicebox { border: 1px solid var(--accent); }
+/* the list's two toolbars — filter what's on file, and start a new one — sit
+   side by side and stack rather than squeeze */
+.invhead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: 10px 26px; }
+.invhead .range-form { margin: 0; }
+/* width:auto beats the global `input, select { width: 100% }`, which would
+   otherwise push the month picker onto a line of its own */
+.newinv select, .newinv input[type=month] { width: auto; max-width: 190px; }
 /* invoice detail: a line billed at less than it was logged, and one billed at
    nothing — the second reads as struck through rather than merely faded, since
    "not on this bill" is a different statement from "small" */

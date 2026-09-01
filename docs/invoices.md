@@ -7,6 +7,16 @@ in two columns — **Tracked** (what Notion holds, read-only) and **To bill**
 project. `/invoices` lists what's been billed. Admins only, like the rest of
 `/project`.
 
+**Two ways to start one.** From `/project`, where you were already looking at
+the month. Or from `/invoices` itself: a **＋ New invoice** picker in the header
+(a project, a month — defaulting to the one that just ended) that GETs
+`/project/export?project=…&period=monthly&start=YYYY-MM`, the same URL the
+Invoice button links to. That picker exists because the route to a *first*
+invoice used to be written only in the list's empty state — so the moment there
+was one invoice on file, the page stopped saying how to make the next one. The
+picker offers **active** projects only; the filter beside it still lists every
+project, including archived ones, since old invoices have to stay findable.
+
 ## The three layers, and why this doesn't break the second one
 
 The export screen's premise has always been that nothing is saved, which is what
