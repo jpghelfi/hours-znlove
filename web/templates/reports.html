@@ -6,15 +6,19 @@
 {% set psq %}{% for pid in r.selected %}&person={{ pid }}{% endfor %}{% endset %}
 {# PM/account-manager picks ride along the same way #}
 {% set rsq %}{% for id in r.pm_selected %}&pm={{ id }}{% endfor %}{% for id in r.am_selected %}&am={{ id }}{% endfor %}{% endset %}
-{% set qs = '&scope=' ~ scope ~ psq ~ rsq %}
+{# so does the project pick #}
+{% set jsq %}{% for id in r.project_selected %}&project={{ id }}{% endfor %}{% endset %}
+{% set qs = '&scope=' ~ scope ~ psq ~ rsq ~ jsq %}
 {% set sel_names = people|selectattr('id', 'in', r.selected)|map(attribute='name')|list %}
+{% set jnames = projects|selectattr('id', 'in', r.project_selected)|map(attribute='name')|list %}
 <div class="week-head">
   <div>
     <h1>Reports</h1>
     <div class="subtle">{{ r.from }} → {{ r.to }} ·
       {%- if r.selected %} {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' people' }}
       {%- elif r.team %} whole team
-      {%- else %} {{ user.name }}{% endif %}</div>
+      {%- else %} {{ user.name }}{% endif %}
+      {%- if r.project_selected %} · {{ jnames|join(', ') if jnames|length <= 3 else jnames|length ~ ' projects' }}{% endif %}</div>
   </div>
   <div class="weeknav weeknav-4">
     <a class="btn {{ 'active' if r.range == 'this-week' }}" href="/reports?range=this-week{{ qs }}">This week</a>
@@ -36,6 +40,9 @@
   {# unlike the people pick this isn't admin-gated — it only ever narrows
      whatever scope the viewer already has #}
   {% with pm_selected = r.pm_selected, am_selected = r.am_selected %}{% include "_role_filter.html" %}{% endwith %}
+  {# the project pick composes with the role pick above (AND) and, like it,
+     only ever removes rows — so it isn't admin-gated either #}
+  {% with selected = r.project_selected %}{% include "_project_filter.html" %}{% endwith %}
   <div class="range-actions">
     <button type="submit" class="btn">Apply</button>
     {% if r.is_admin %}
