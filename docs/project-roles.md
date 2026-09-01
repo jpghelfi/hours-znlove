@@ -135,7 +135,8 @@ entries **and** the planned rows in memory, next to where the people pick alread
 already carried, mirroring how `entries_between` carries both. Unlike the people pick this
 filter is not admin-only in `_report_data` — the whole `/reports` page happens to be
 admin-gated anyway, but the narrowing logic doesn't rely on that: it only ever removes rows
-from whatever scope the viewer already has.
+from whatever scope the viewer already has. The page's own `?project=` pick is resolved to a
+second id set and intersected with this one — see `docs/reports-filters.md`.
 
 ## Tests
 

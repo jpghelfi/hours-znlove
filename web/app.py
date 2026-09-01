@@ -554,7 +554,7 @@ def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: O
 
 
 def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=None, am=None,
-                 roster=None):
+                 roster=None, projects=None, project_list=None):
     f, t, rk = _range_bounds(range_key, date_from, date_to)
     is_admin = auth.is_admin(user)
     # Picking specific people is a team-wide read narrowed down, so it implies
@@ -570,12 +570,26 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
     # whatever scope the viewer already has, next to the people pick above.
     # Unlike the people pick this isn't admin-only — it only ever removes rows.
     pm_ids, am_ids = _roles_from_query(pm, am, roster)
+    picked_projects = [pid for pid in (projects or []) if pid and pid != "all"]
     # inactive projects are included on purpose: an old entry's project may
-    # have been unticked since, and a role filter shouldn't drop its hours
-    role_ids = (_role_keep_ids(ops.list_projects(active_only=False), pm_ids, am_ids)
+    # have been unticked since, and neither filter should drop its hours. The
+    # list is read once for both picks, and only when one of them is set —
+    # /reports.csv has no picker to fill, so with no filter it stays unread.
+    all_projects = project_list
+    if all_projects is None and (pm_ids or am_ids or picked_projects):
+        all_projects = ops.list_projects(active_only=False)
+    role_ids = (_role_keep_ids(all_projects or [], pm_ids, am_ids)
                 if (pm_ids or am_ids) else None)
+    # ?project= repeats like everywhere else: no pick means every project, and
+    # ids that no longer exist are dropped rather than emptying the page.
+    proj_ids, _ = _project_picks(all_projects or [], picked_projects)
+    # the two project-side filters compose (AND): "Ana's projects" narrowed to
+    # the two of them you actually wanted to see
+    keep_ids = set(proj_ids) if proj_ids else None
     if role_ids is not None:
-        entries = [e for e in entries if e.get("project_id") in role_ids]
+        keep_ids = role_ids if keep_ids is None else (keep_ids & role_ids)
+    if keep_ids is not None:
+        entries = [e for e in entries if e.get("project_id") in keep_ids]
     total = round(sum(e["hours"] for e in entries), 2)
 
     def agg(key):
@@ -605,8 +619,8 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
     planned = ops.planned_rows(f, t, None if team else user.get("id"))
     if selected:
         planned = [p for p in planned if p["person_id"] in sel]
-    if role_ids is not None:
-        planned = [p for p in planned if p.get("project_id") in role_ids]
+    if keep_ids is not None:
+        planned = [p for p in planned if p.get("project_id") in keep_ids]
 
     def pva(dim):
         a, p = {}, {}
@@ -636,6 +650,7 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
         "days": days, "people_count": len({e["person"] for e in entries}),
         "pva": pva("project"), "pva_person": pva("person"),
         "selected": selected, "pm_selected": pm_ids, "am_selected": am_ids,
+        "project_selected": proj_ids,
         "person_projects": _person_projects(entries),
         "matrix": _person_project_matrix(entries),
     }
@@ -727,17 +742,26 @@ def _person_project_matrix(entries):
 def reports_page(request: Request, scope: str = "me", range: Optional[str] = None,
                  date_from: Optional[str] = None, date_to: Optional[str] = None,
                  person: list[str] = Query(default=[]),
-                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
+                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                 project: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     roster = ops.list_people()
-    data = _report_data(user, scope, range, date_from, date_to, person, pm, am, roster)
+    # read once and hand it to _report_data, which would otherwise read it again
+    # to resolve the picks — the picker has to be filled either way
+    all_projects = ops.list_projects(active_only=False)
+    data = _report_data(user, scope, range, date_from, date_to, person, pm, am, roster,
+                        project, all_projects)
+    picked = set(data["project_selected"])
     return templates.TemplateResponse(request, "reports.html", {
         "user": user, "r": data, "scope": "team" if data["team"] else "me",
         "is_admin": True, "people": roster,
+        # the dropdown offers the active projects — plus any archived one that's
+        # actually picked, so a bookmark on it still filters and still has a name
+        "projects": [p for p in all_projects if p["active"] or p["id"] in picked],
     })
 
 
@@ -745,13 +769,15 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
 def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None,
                 date_from: Optional[str] = None, date_to: Optional[str] = None,
                 person: list[str] = Query(default=[]),
-                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
+                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                project: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    data = _report_data(user, scope, range, date_from, date_to, person, pm, am)
+    data = _report_data(user, scope, range, date_from, date_to, person, pm, am,
+                        projects=project)
     import csv
     import io
     buf = io.StringIO()
