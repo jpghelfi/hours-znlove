@@ -1265,3 +1265,39 @@ td.desc .tlink { margin-left: 8px; }
 
 /* the log form's live hint on "say what you worked on" */
 #descHint.is-ok { color: var(--ok); }
+
+/* ---- today's column on /schedule ----
+   The planner's most-used landmark is "where am I now". Marked as one stripe
+   — header, every cell and the footer total — rather than on the header
+   alone, which is the first thing to leave the screen once the roster is long
+   enough to scroll. The cell tint is deliberately weaker than
+   `.plan-cell:hover`'s so hovering inside today's column still reads as a
+   hover; the restated hover rules below keep that true for both the clickable
+   and the read-only (`.is-static`) planner. Works in either view: in Days it
+   is the weekday, in the Weeks rollup the week that holds it. */
+.grid thead th.col-day.is-today {
+  background: color-mix(in srgb, var(--active-bg) 55%, var(--head));
+  color: var(--accent);
+}
+.grid thead th.col-day.is-today .dnum { color: var(--accent); opacity: .8; }
+/* thead th is already position: sticky, so it is its own positioning context */
+.grid thead th.col-day.is-today::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--ring);
+}
+/* Rails, not a background, on the body cells: the Weeks rollup paints its
+   cells by load (`.heat-ok`/`.heat-full`/`.heat-over`), and a background here
+   would outrank those single-class rules and blank the heat map on exactly
+   one column. An inset shadow composes with whatever colour the cell already
+   carries. */
+.grid td.is-today {
+  box-shadow: inset 1px 0 0 var(--ring), inset -1px 0 0 var(--ring);
+}
+.grid tfoot td.is-today {
+  background: color-mix(in srgb, var(--active-bg) 55%, var(--head));
+  box-shadow: inset 1px 0 0 var(--ring), inset -1px 0 0 var(--ring), inset 0 -2px 0 var(--ring);
+}
+/* the day planner's cells carry no heat colour, so they take the tint too */
+.plan-cell.is-today { background: color-mix(in srgb, var(--active-bg) 40%, transparent); }
+.plan-cell.is-today:hover { background: var(--active-bg); }
+.plan-cell.is-today.is-static:hover { background: color-mix(in srgb, var(--active-bg) 40%, transparent); }
