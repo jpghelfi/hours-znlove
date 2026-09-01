@@ -1,0 +1,111 @@
+{# PM / Account manager picker: two <details> dropdowns of checkboxes, named
+   "pm" and "am" — the third twin of _people_filter.html / _project_filter.html,
+   same .pfilter markup and styles so the three filter rows can't drift apart.
+   Submits with whatever form encloses it; no pick in a role means every
+   project (including ones with nobody in that role). Context it expects:
+   `people` (the roster, to fill both dropdowns) and `pm_selected` /
+   `am_selected` (the picked ids, as sets) — pass them with
+   {% with pm_selected = …, am_selected = … %} at the include site. #}
+{# macros don't inherit the include's context, so `people` is passed in
+   explicitly rather than relied on implicitly like _people_filter.html can #}
+{% macro role_dd(field, ico, label, plural, selected, dom_id, people) %}
+{% set sel_names = people|selectattr('id', 'in', selected)|map(attribute='name')|list %}
+<details class="pfilter" id="{{ dom_id }}">
+  <summary class="btn pfilter-btn">
+    <span class="pfilter-ico">{{ ico }}</span>
+    <span class="pfilter-label">{{ label if not selected else (sel_names|join(', ') if sel_names|length == 1 else sel_names|length ~ ' ' ~ plural) }}</span>
+    <span class="pfilter-caret" aria-hidden="true">▾</span>
+  </summary>
+  <div class="pfilter-menu">
+    <div class="pfilter-head">
+      <input type="search" class="pfilter-search" placeholder="Search people…" aria-label="Search {{ label|lower }}"
+             autocomplete="off" oninput="rfSearch('{{ dom_id }}', this.value)">
+      <div class="pfilter-tools">
+        <button type="button" class="linkbtn" onclick="rfAll('{{ dom_id }}', '{{ field }}', true)">Select all</button>
+        <span class="pfilter-sep">·</span>
+        <button type="button" class="linkbtn" onclick="rfAll('{{ dom_id }}', '{{ field }}', false)">Clear</button>
+      </div>
+    </div>
+    <div class="pfilter-list">
+      {% for p in people %}
+      <label class="pfilter-opt" data-name="{{ p.name|lower }}">
+        <input type="checkbox" name="{{ field }}" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
+        <span class="pfilter-nm">{{ p.name }}</span>
+      </label>
+      {% else %}<div class="subtle pfilter-empty">No people in the roster.</div>{% endfor %}
+      <div class="subtle pfilter-empty" id="{{ dom_id }}-nomatch" hidden>No one matches that search.</div>
+    </div>
+    <div class="pfilter-foot">
+      <span class="subtle">No pick = every project</span>
+      <button type="submit" class="btn btn-primary">Apply</button>
+    </div>
+  </div>
+</details>
+{% endmacro %}
+{{ role_dd('pm', '🧭', 'Any PM', 'PMs', pm_selected, 'pmfilter', people) }}
+{{ role_dd('am', '🤝', 'Any account manager', 'account managers', am_selected, 'amfilter', people) }}
+<script>
+  (function () {
+    // Shared by both role dropdowns (pmfilter/amfilter): namespaced as rf* so
+    // they can't collide with pfAll/pfSearch (_people_filter.html) or
+    // jfAll/jfSearch (_project_filter.html) on the same page.
+    function dd(id) { return document.getElementById(id); }
+
+    window.rfAll = function (id, field, on) {
+      var el = dd(id);
+      if (!el) return;
+      // only touch what the search currently shows, so "Clear" inside a
+      // search can't silently drop picks the user can't see
+      el.querySelectorAll('.pfilter-opt:not([hidden]) input[name=' + field + ']').forEach(function (c) { c.checked = on; });
+      rfCount(id);
+    };
+
+    window.rfSearch = function (id, q) {
+      var el = dd(id);
+      if (!el) return;
+      q = q.trim().toLowerCase();
+      var shown = 0;
+      el.querySelectorAll('.pfilter-opt').forEach(function (opt) {
+        var hit = !q || opt.dataset.name.indexOf(q) !== -1;
+        opt.hidden = !hit;
+        if (hit) shown++;
+      });
+      var nomatch = document.getElementById(id + '-nomatch');
+      if (nomatch) nomatch.hidden = shown > 0;
+    };
+
+    function rfCount(id) {
+      var el = dd(id);
+      if (!el) return;
+      var boxes = el.querySelectorAll('.pfilter-opt input[type=checkbox]');
+      var checked = el.querySelectorAll('.pfilter-opt input[type=checkbox]:checked');
+      var label = el.querySelector('.pfilter-label');
+      var defaultLabel = id === 'pmfilter' ? 'Any PM' : 'Any account manager';
+      var plural = id === 'pmfilter' ? 'PMs' : 'account managers';
+      if (checked.length === 0) {
+        label.textContent = defaultLabel;
+      } else if (checked.length === 1) {
+        label.textContent = checked[0].parentNode.querySelector('.pfilter-nm').textContent;
+      } else {
+        label.textContent = checked.length + ' ' + plural;
+      }
+      void boxes;
+    }
+
+    ['pmfilter', 'amfilter'].forEach(function (id) {
+      var el = dd(id);
+      if (!el) return;
+      el.querySelectorAll('.pfilter-opt input[type=checkbox]').forEach(function (c) {
+        c.addEventListener('change', function () { rfCount(id); });
+      });
+      // click outside / Esc closes the menu, like any dropdown
+      document.addEventListener('click', function (e) { if (!el.contains(e.target)) el.open = false; });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && el.open) { el.open = false; el.querySelector('summary').focus(); }
+      });
+      el.addEventListener('toggle', function () {
+        if (el.open) el.querySelector('.pfilter-search').focus();
+      });
+    });
+  })();
+</script>

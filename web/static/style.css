@@ -644,6 +644,10 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 .chip-under { background: var(--head); color: var(--muted); }
 .chip-over { background: var(--err); color: var(--err-ink); }
 .chip-none { background: var(--head); color: var(--muted); font-weight: 600; }
+/* PM / Account manager chips on /project's header — a set role reads as
+   "assigned to someone" (accent tint), an unset one falls back to chip-none */
+.chip-role { background: var(--chart-track); color: var(--ink); }
+.rolechips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .pva-row { display: grid; grid-template-columns: 76px 1fr 56px; gap: 10px; align-items: center; margin: 4px 0; }
 .pva-lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .pva-track { background: var(--chart-track); border-radius: 7px; height: 16px; overflow: hidden; }
@@ -675,6 +679,13 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 .assign-grid .proj-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .assign-grid .proj-name { overflow: hidden; text-overflow: ellipsis; }
 .chip-assign { background: var(--head); color: var(--muted); font-variant-numeric: tabular-nums; }
+/* PM / Account manager pickers, one per project row — the only place these
+   are edited, so unlike the checkboxes each cell is its own tiny form */
+.assign-grid .col-role { width: 150px; min-width: 150px; padding: 6px 8px; }
+.role-pick { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+             background: var(--card); color: var(--ink); font: inherit; font-size: 13px; }
+.role-pick.bad { border-color: var(--over); background: var(--err); }
+.role-pick:disabled { opacity: .6; }
 
 /* identity avatars in the person headers; deterministic soft-tint palette
    built from existing theme vars so it adapts to dark mode automatically */
@@ -826,6 +837,9 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 .projgrid tfoot td { background: var(--head); font-weight: 700; }
 .projgrid .col-hours { width: 110px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .projgrid .col-num { width: 90px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* PM/account-manager columns on the all-projects rollup only — project-level,
+   so they're blank on person/entry rows underneath a group */
+.projgrid .col-role { width: 130px; color: var(--muted); font-size: 13px; }
 .projgrid tr.idle td { color: var(--muted); }
 .share { display: flex; align-items: center; gap: 10px; }
 .share-track { flex: 1; min-width: 60px; height: 10px; background: var(--chart-track); border-radius: 6px; overflow: hidden; }
@@ -905,6 +919,9 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   .projgrid .col-hours { width: 52px; }
   .projgrid .col-share { width: 40px; }
   .projgrid .col-num { width: 40px; font-size: 12px; }
+  /* PM/AM don't fit a phone-width rollup row alongside Hours/Share/Days/Ent —
+     the roles are still one tap away on /assignments and /budgets */
+  .projgrid .col-role { display: none; }
   /* every column stays: in the rollup a project row's count pill is its number
      of *people*, so its entry count is nowhere else on the page. Only the
      header shrinks — "Entries" doesn't fit 40px, "Ent" does. */
