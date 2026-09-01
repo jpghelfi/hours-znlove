@@ -119,3 +119,50 @@ Numbers that look low are usually the roster filter, not a bug: Centerline shows
 because only Zarco (1 h) is znlove — the other 21.76 h that month were logged by Bear
 people who aren't on the roster. Saltworks is the same story (22.5 h ours, 17.5 h
 theirs).
+
+## August 2026 backfill (second run)
+
+Run on 2026-09-01 for `2026-08-01..2026-08-31` from an MCP-pulled Harvest export, with
+the same flags as July (`--nonbillable-project "Bear Website" --allow-unassigned`).
+August had **already been synced part-way during the month** (51 Harvest-marked rows,
+Aug 3–21), so this was the first real test of the idempotency rules — and they held:
+
+- 3,085 Harvest entries read → **68 day rows, 134.08 h, 7 people**
+- **10 created, 1 updated, 50 unchanged, 7 skipped (hand-logged)** — the 50 unchanged
+  are exactly the mid-month pull, re-verified rather than re-written
+- an immediate re-run wrote nothing at all (0 created, 0 updated, 61 unchanged),
+  confirming a full-month command is safe to repeat
+- 3,003 entries skipped: the 21 Harvest users who aren't on the znlove roster
+- **no unmapped Harvest projects and no off-assignment pairs this month** — unlike July,
+  neither escape hatch was actually needed
+- the 7 collisions (24.75 h) are days the person had already logged in the app at
+  essentially the same hours, so nothing is missing: 134.08 h planned − 24.75 h
+  already-hand-logged = the 109.33 h now carrying the Harvest marker
+
+August in Notion after the run: 363 rows / 809.33 h — 61 Harvest rows (109.33 h) plus
+the 302 rows (700 h) logged in the app.
+
+| Person | Imported | Projects |
+|---|---|---|
+| Pablo Saracca | 35.50 h | Neurogum, Streamside OSS, True Temper, The Human Bean, Saltworks |
+| Joaquin Kenta Heianna | 25.00 h | Bear Website |
+| Zarco Nontol | 21.00 h | Vital Signals - OSS (80h), Saltworks, True Temper, Neurogum, Centerline, Bear Website |
+| Francisco Andres | 11.50 h | Streamside OSS, Streamside 7 Additional parks |
+| Lautaro Ayub | 11.33 h | 44PRO - Shopify Replatform |
+| Melisa Bellico | 4.00 h | Bear Website |
+| Juan Pablo Ghelfi | 1.00 h | Bear Website |
+
+### Pulling the export through the MCP connector
+
+Worth writing down, because two obvious routes are dead ends:
+
+- `harvest_list_users` and `harvest_resolve_entities` both **403** on this account, so
+  there is no way to look up the znlove people's Harvest user ids directly.
+- `harvest_aggregate_time` *does* work and returns user ids, so a `group_by: ["user"]`
+  call over a **week at a time** (it caps out around 1,000 entries) is the cheap way to
+  discover which roster names appear in Harvest that month, and their ids.
+- `harvest_list_time_entries` is the only bulk read. A full month is ~3,000 entries and
+  far too large to read; the practical move is to request `per_page: 2000` for each page
+  (August was 2 pages), let the harness spill each oversized response to a file, and
+  merge those files into the `--entries` JSON without ever reading them. Per-user calls
+  work too and are much smaller, but you need the ids from the aggregate step first.
