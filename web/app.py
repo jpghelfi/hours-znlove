@@ -553,7 +553,8 @@ def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: O
     return mon.isoformat(), (mon + dt.timedelta(days=6)).isoformat(), "this-week"
 
 
-def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=None, am=None):
+def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=None, am=None,
+                 roster=None):
     f, t, rk = _range_bounds(range_key, date_from, date_to)
     is_admin = auth.is_admin(user)
     # Picking specific people is a team-wide read narrowed down, so it implies
@@ -568,7 +569,7 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
     # PM/account-manager pick: resolves to a set of project ids and narrows
     # whatever scope the viewer already has, next to the people pick above.
     # Unlike the people pick this isn't admin-only — it only ever removes rows.
-    pm_ids, am_ids = _roles_from_query(pm, am)
+    pm_ids, am_ids = _roles_from_query(pm, am, roster)
     # inactive projects are included on purpose: an old entry's project may
     # have been unticked since, and a role filter shouldn't drop its hours
     role_ids = (_role_keep_ids(ops.list_projects(active_only=False), pm_ids, am_ids)
@@ -732,10 +733,11 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    data = _report_data(user, scope, range, date_from, date_to, person, pm, am)
+    roster = ops.list_people()
+    data = _report_data(user, scope, range, date_from, date_to, person, pm, am, roster)
     return templates.TemplateResponse(request, "reports.html", {
         "user": user, "r": data, "scope": "team" if data["team"] else "me",
-        "is_admin": True, "people": ops.list_people(),
+        "is_admin": True, "people": roster,
     })
 
 
@@ -1035,16 +1037,13 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     people = ops.list_people()
-    all_projects = ops.list_projects(include_members=True)
-    # PM/account-manager pick narrows the project list *before* ?project= is
-    # resolved against it, so the two filters compose (AND) and the rollup
-    # below costs no extra Notion round trip — see docs/project-roles.md
-    pm_ids, am_ids = _roles_from_query(pm, am, people)
-    role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
-    projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
-    # ?project= repeats: no pick (or "all") is the every-project rollup, one
-    # pick drills into that project, several roll up just those projects
-    sel_ids, sel = _project_picks(projects, project)
+    # The PM/account-manager pick narrows the project list *before* ?project=
+    # is resolved against it, so the two filters compose (AND) — and ?project=
+    # repeats: no pick (or "all") is the every-project rollup, one pick drills
+    # into that project, several roll up just those. Shared with the exports
+    # so the screen and the file it produces can't read the query differently.
+    projects, sel_ids, sel, role_ids, pm_ids, am_ids = _project_role_scope(
+        project, pm, am, include_members=True, people=people)
     is_all = sel is None
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
@@ -1092,20 +1091,26 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
 
 
 def _project_role_scope(project: list, pm: list, am: list,
-                        include_members: bool = False) -> tuple:
+                        include_members: bool = False,
+                        people: Optional[list] = None) -> tuple:
     """Role-narrow the project list, then resolve ?project= against it, so the
     two filters compose — the shared first step of every /project* route.
 
-    Returns (projects, sel_ids, sel, role_ids); role_ids is None when no
-    pm/am is picked, else the set of project ids the role filter kept (same
-    meaning the sel_ids-derived keep set has for _period_entries below).
+    Returns (projects, sel_ids, sel, role_ids, pm_ids, am_ids); role_ids is
+    None when no pm/am is picked, else the set of project ids the role filter
+    kept (same meaning the sel_ids-derived keep set has for _period_entries
+    below). The picks come back too so a page can put them on its own links.
+
+    `people` is the roster when the caller already holds one — every route
+    that renders names loads it anyway, and list_people() is a live Notion
+    query, so passing it through is one round trip saved per filtered request.
     """
     all_projects = ops.list_projects(include_members=include_members)
-    pm_ids, am_ids = _roles_from_query(pm, am)
+    pm_ids, am_ids = _roles_from_query(pm, am, people)
     role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
     projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
     sel_ids, sel = _project_picks(projects, project)
-    return projects, sel_ids, sel, role_ids
+    return projects, sel_ids, sel, role_ids, pm_ids, am_ids
 
 
 def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict,
@@ -1169,7 +1174,8 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects, sel_ids, sel, role_ids = _project_role_scope(project, pm, am, include_members=True)
+    projects, sel_ids, sel, role_ids, _, _ = _project_role_scope(
+        project, pm, am, include_members=True)
     rng = _period_range(period, _project_anchor(period, start))
     entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids)
     import csv
@@ -1271,9 +1277,11 @@ def project_xlsx(request: Request, project: list[str] = Query(default=[]),
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects, sel_ids, sel, role_ids = _project_role_scope(project, pm, am, include_members=True)
+    people = ops.list_people()
+    projects, sel_ids, sel, role_ids, _, _ = _project_role_scope(
+        project, pm, am, include_members=True, people=people)
     rng = _period_range(period, _project_anchor(period, start))
-    name_map = {p["id"]: p["name"] for p in ops.list_people()}
+    name_map = {p["id"]: p["name"] for p in people}
     rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids),
                         name_map)
     label = _export_label(sel, sel_ids)
@@ -1296,9 +1304,11 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects, sel_ids, sel, role_ids = _project_role_scope(project, pm, am, include_members=True)
+    people = ops.list_people()
+    projects, sel_ids, sel, role_ids, pm_ids, am_ids = _project_role_scope(
+        project, pm, am, include_members=True, people=people)
     rng = _period_range(period, _project_anchor(period, start))
-    name_map = {p["id"]: p["name"] for p in ops.list_people()}
+    name_map = {p["id"]: p["name"] for p in people}
     rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids),
                                name_map),
                   key=lambda r: (r["project"].lower(), r["date"], r["person"].lower()))
@@ -1316,6 +1326,10 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
     return templates.TemplateResponse(request, "project_export.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids,
+        # the picks ride back onto this screen's "back to the report" links —
+        # a filter dropped on the way back is a filter the export silently
+        # disagrees with the next time you look at the page
+        "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
         "period": period, "rng": rng, "start_iso": rng["from"],
         "label": _export_label(sel, sel_ids),
         "can_invoice": can_invoice, "existing_invoice": existing,
