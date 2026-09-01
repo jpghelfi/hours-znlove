@@ -101,6 +101,7 @@ def _startup() -> None:
     ops.ensure_invoice_properties()
     ops.ensure_budget_properties()
     ops.ensure_goal_property()
+    ops.ensure_role_properties()
 
 
 @app.get("/healthz")
@@ -552,7 +553,7 @@ def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: O
     return mon.isoformat(), (mon + dt.timedelta(days=6)).isoformat(), "this-week"
 
 
-def _report_data(user, scope, range_key, date_from, date_to, people=None):
+def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=None, am=None):
     f, t, rk = _range_bounds(range_key, date_from, date_to)
     is_admin = auth.is_admin(user)
     # Picking specific people is a team-wide read narrowed down, so it implies
@@ -563,6 +564,14 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None):
     if selected:
         sel = set(selected)
         entries = [e for e in entries if e["person_id"] in sel]
+
+    # PM/account-manager pick: resolves to a set of project ids and narrows
+    # whatever scope the viewer already has, next to the people pick above.
+    # Unlike the people pick this isn't admin-only — it only ever removes rows.
+    pm_ids, am_ids = _role_picks(ops.list_people(), pm, am)
+    role_ids = _role_keep_ids(ops.list_projects(active_only=False), pm_ids, am_ids)
+    if role_ids is not None:
+        entries = [e for e in entries if e.get("project_id") in role_ids]
     total = round(sum(e["hours"] for e in entries), 2)
 
     def agg(key):
@@ -592,6 +601,8 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None):
     planned = ops.planned_rows(f, t, None if team else user.get("id"))
     if selected:
         planned = [p for p in planned if p["person_id"] in sel]
+    if role_ids is not None:
+        planned = [p for p in planned if p.get("project_id") in role_ids]
 
     def pva(dim):
         a, p = {}, {}
@@ -620,7 +631,7 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None):
         "by_goal": _by_goal(entries),
         "days": days, "people_count": len({e["person"] for e in entries}),
         "pva": pva("project"), "pva_person": pva("person"),
-        "selected": selected,
+        "selected": selected, "pm_selected": pm_ids, "am_selected": am_ids,
         "person_projects": _person_projects(entries),
         "matrix": _person_project_matrix(entries),
     }
@@ -711,13 +722,14 @@ def _person_project_matrix(entries):
 @app.get("/reports", response_class=HTMLResponse)
 def reports_page(request: Request, scope: str = "me", range: Optional[str] = None,
                  date_from: Optional[str] = None, date_to: Optional[str] = None,
-                 person: list[str] = Query(default=[])):
+                 person: list[str] = Query(default=[]),
+                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    data = _report_data(user, scope, range, date_from, date_to, person)
+    data = _report_data(user, scope, range, date_from, date_to, person, pm, am)
     return templates.TemplateResponse(request, "reports.html", {
         "user": user, "r": data, "scope": "team" if data["team"] else "me",
         "is_admin": True, "people": ops.list_people(),
@@ -727,13 +739,14 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
 @app.get("/reports.csv")
 def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None,
                 date_from: Optional[str] = None, date_to: Optional[str] = None,
-                person: list[str] = Query(default=[])):
+                person: list[str] = Query(default=[]),
+                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    data = _report_data(user, scope, range, date_from, date_to, person)
+    data = _report_data(user, scope, range, date_from, date_to, person, pm, am)
     import csv
     import io
     buf = io.StringIO()
@@ -873,6 +886,10 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
     if keep_ids is not None:
         entries = [e for e in entries if e["project_id"] in keep_ids]
         projects = [p for p in projects if p["id"] in keep_ids]
+    # PM/AM per project, off the same `projects` rows list_projects already
+    # attached them to — an entry against an inactive project (not in
+    # `projects`) shows "—" for both, the same way it shows no member_ids
+    roles = {p["id"]: (p.get("pm_id"), p.get("am_id")) for p in projects}
     groups: dict = {}
 
     def group_for(prid, name):
@@ -927,6 +944,9 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
             p["hours"] = round(p["hours"], 2)
         g["rows"] = rows
         g["hours"] = round(g["hours"], 2)
+        pm_id, am_id = roles.get(g["project_id"], (None, None))
+        g["pm_name"] = name_map.get(pm_id) if pm_id else None
+        g["am_name"] = name_map.get(am_id) if am_id else None
     return {
         "groups": ordered, "total": total, "entries": entries,
         "projects_count": sum(1 for g in ordered if g["hours"]),
@@ -952,8 +972,43 @@ def _project_picks(projects: list, picked: list) -> tuple:
     return sel_ids, sel
 
 
+def _role_picks(people: list, pm: list, am: list) -> tuple[set, set]:
+    """Resolve repeated ?pm= / ?am= into (pm_ids, am_ids) — sets, not lists,
+    since only membership is ever asked ("Ana's or Beto's projects" is OR
+    within a role). Unknown ids are dropped, the _project_picks rule: a stale
+    bookmark degrades to the unfiltered page rather than to an empty one."""
+    known = {p["id"] for p in people}
+    return ({pid for pid in (pm or []) if pid in known},
+            {pid for pid in (am or []) if pid in known})
+
+
+def _role_match(project: dict, pm_ids: set, am_ids: set) -> bool:
+    """Does this project satisfy the role filter?
+
+    OR within a role (several picks), AND across roles ("Ana's projects where
+    Beto is the account manager"). No pick in a role matches every project,
+    including ones with nobody in that role — a PM pick excludes an unPMed
+    project, but leaving PM unpicked never hides it.
+    """
+    if pm_ids and project.get("pm_id") not in pm_ids:
+        return False
+    if am_ids and project.get("am_id") not in am_ids:
+        return False
+    return True
+
+
+def _role_keep_ids(projects: list, pm_ids: set, am_ids: set) -> Optional[set]:
+    """The project ids a role filter keeps, or None when no role is picked —
+    the same None-means-everything convention _project_picks' sel_ids use, so
+    callers can tell "no filter" apart from "filtered down to nothing"."""
+    if not pm_ids and not am_ids:
+        return None
+    return {p["id"] for p in projects if _role_match(p, pm_ids, am_ids)}
+
+
 @app.get("/project", response_class=HTMLResponse)
 def project_page(request: Request, project: list[str] = Query(default=[]),
+                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None,
                  goal: Optional[str] = None):
     user = _require_login(request)
@@ -962,14 +1017,26 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects = ops.list_projects(include_members=True)
+    people = ops.list_people()
+    all_projects = ops.list_projects(include_members=True)
+    # PM/account-manager pick narrows the project list *before* ?project= is
+    # resolved against it, so the two filters compose (AND) and the rollup
+    # below costs no extra Notion round trip — see docs/project-roles.md
+    pm_ids, am_ids = _role_picks(people, pm, am)
+    role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
+    projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
     # ?project= repeats: no pick (or "all") is the every-project rollup, one
     # pick drills into that project, several roll up just those projects
     sel_ids, sel = _project_picks(projects, project)
     is_all = sel is None
     rng = _period_range(period, _project_anchor(period, start))
-    people = ops.list_people()
     name_map = {p["id"]: p["name"] for p in people}
+    if sel:
+        # resolved here, not in the template: a role id that's since dropped
+        # off the roster (someone deactivated in People) must read as "—",
+        # not blow up a Jinja lookup that assumes it's always there
+        sel = dict(sel, pm_name=name_map.get(sel.get("pm_id")),
+                  am_name=name_map.get(sel.get("am_id")))
     # Goals belong to a project, so the block and the picker only appear once
     # one is selected — which is also what keeps assignment validatable with a
     # single read (see /api/entry/goal).
@@ -986,10 +1053,15 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
         data = _project_hours(sel["id"], rng, sel.get("member_ids", []), name_map,
                               entries=entries)
     else:
-        data = _all_projects_hours(rng, projects, name_map, set(sel_ids) or None)
+        # a manual ?project= pick wins; otherwise a role pick alone still
+        # narrows the rollup (see _role_keep_ids) rather than showing every
+        # project with the picker just failing to widen it back
+        keep_ids = set(sel_ids) if sel_ids else role_ids
+        data = _all_projects_hours(rng, projects, name_map, keep_ids)
     return templates.TemplateResponse(request, "project.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids, "is_all": is_all,
+        "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
         "period": period, "rng": rng,
         "can_invoice": bool(ops.invoices_enabled() and sel and period == "monthly"),
         "goals_on": bool(sel and ops.goals_enabled()),
@@ -1002,11 +1074,34 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     })
 
 
+def _project_role_scope(project: list, pm: list, am: list,
+                        include_members: bool = False) -> tuple:
+    """Role-narrow the project list, then resolve ?project= against it, so the
+    two filters compose — the shared first step of every /project* route.
+
+    Returns (projects, sel_ids, sel, role_ids); role_ids is None when no
+    pm/am is picked, else the set of project ids the role filter kept (same
+    meaning the sel_ids-derived keep set has for _period_entries below).
+    """
+    all_projects = ops.list_projects(include_members=include_members)
+    pm_ids, am_ids = _role_picks(ops.list_people(), pm, am)
+    role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
+    projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
+    sel_ids, sel = _project_picks(projects, project)
+    return projects, sel_ids, sel, role_ids
+
+
 def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict,
-                    goal_sel: Optional[str] = None) -> list[dict]:
-    """The entries behind the current period + project picks, shared by every
-    export. One project reads through the Notion-side relation filter; a pick of
-    several (or none) narrows the single period read in memory.
+                    goal_sel: Optional[str] = None,
+                    keep_ids: Optional[set] = None) -> list[dict]:
+    """The entries behind the current period + project + role picks, shared by
+    every export. One project reads through the Notion-side relation filter; a
+    pick of several (or none) narrows the single period read in memory.
+
+    `keep_ids` is a role filter's project ids: only consulted when there's no
+    explicit ?project= pick, since an explicit pick already is the narrower of
+    the two (_project_role_scope resolves it against the role-narrowed list,
+    so sel_ids is already a subset of keep_ids whenever both are set).
 
     A goal pick narrows it further, in memory over that same read, so exporting
     "just the homepage hours" costs no extra round trip. It only applies to one
@@ -1021,6 +1116,8 @@ def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict,
     if sel_ids:
         keep = set(sel_ids)
         entries = [e for e in entries if e["project_id"] in keep]
+    elif keep_ids is not None:
+        entries = [e for e in entries if e["project_id"] in keep_ids]
     return entries
 
 
@@ -1046,6 +1143,7 @@ def _export_slug(label: str) -> str:
 
 @app.get("/project.csv")
 def project_csv(request: Request, project: list[str] = Query(default=[]),
+                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                 period: str = "monthly", start: Optional[str] = None,
                 goal: Optional[str] = None):
     user = _require_login(request)
@@ -1054,10 +1152,9 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects = ops.list_projects(include_members=True)
-    sel_ids, sel = _project_picks(projects, project)
+    projects, sel_ids, sel, role_ids = _project_role_scope(project, pm, am, include_members=True)
     rng = _period_range(period, _project_anchor(period, start))
-    entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal))
+    entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids)
     import csv
     import io
     buf = io.StringIO()
@@ -1147,6 +1244,7 @@ def _rows_from_payload(rows: list) -> list[dict]:
 
 @app.get("/project.xlsx")
 def project_xlsx(request: Request, project: list[str] = Query(default=[]),
+                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None,
                  goal: Optional[str] = None):
     """The report as a workbook — a sheet per project, people then their log."""
@@ -1156,17 +1254,18 @@ def project_xlsx(request: Request, project: list[str] = Query(default=[]),
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects = ops.list_projects(include_members=True)
-    sel_ids, sel = _project_picks(projects, project)
+    projects, sel_ids, sel, role_ids = _project_role_scope(project, pm, am, include_members=True)
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in ops.list_people()}
-    rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal)), name_map)
+    rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids),
+                        name_map)
     label = _export_label(sel, sel_ids)
     return _xlsx_response(report_xlsx.build(rows, rng["label"], label), label, rng)
 
 
 @app.get("/project/export", response_class=HTMLResponse)
 def project_export_page(request: Request, project: list[str] = Query(default=[]),
+                        pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                         period: str = "monthly", start: Optional[str] = None,
                         goal: Optional[str] = None,
                         sent: Optional[str] = None, err: Optional[str] = None):
@@ -1180,11 +1279,11 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects = ops.list_projects(include_members=True)
-    sel_ids, sel = _project_picks(projects, project)
+    projects, sel_ids, sel, role_ids = _project_role_scope(project, pm, am, include_members=True)
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in ops.list_people()}
-    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal)), name_map),
+    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids),
+                               name_map),
                   key=lambda r: (r["project"].lower(), r["date"], r["person"].lower()))
     groups = []
     for r in rows:  # rows arrive project-sorted, so a running group is enough
@@ -1827,6 +1926,33 @@ def api_assignment(request: Request, a: Assignment):
         ops.set_project_member(a.project_id, a.person_id, a.on)
     except Exception:
         return JSONResponse({"ok": False, "error": "could not save assignment"}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+class ProjectRole(BaseModel):
+    project_id: str
+    role: str            # "pm" or "am"
+    person_id: Optional[str] = None   # None clears it
+
+
+@app.post("/api/project/role")
+def api_project_role(request: Request, r: ProjectRole):
+    """Set a project's PM or Account manager — /assignments is the only place
+    this is edited, saving one field per call like /api/budget."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        ops.set_project_role(r.project_id, r.role, r.person_id)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Saving the %s for project %s failed", r.role, r.project_id)
+        return JSONResponse({"ok": False, "error": "could not save that role"}, status_code=400)
     return JSONResponse({"ok": True})
 
 
@@ -2479,7 +2605,7 @@ def _budget_pct(b: dict, tracked: float) -> float:
     return tracked / b["hours"] * 100
 
 
-def _budget_rows(projects: list, tracked_by_id: dict) -> list[dict]:
+def _budget_rows(projects: list, tracked_by_id: dict, name_map: Optional[dict] = None) -> list[dict]:
     """One row per project, budgeted rows first (worst first), then the rest.
 
     The two-block sort is deliberate. Trouble-first is right for every visit
@@ -2487,7 +2613,11 @@ def _budget_rows(projects: list, tracked_by_id: dict) -> list[dict]:
     still to type, a list that reorders under the cursor on every save is
     unusable. Rows with no budget keep a stable alphabetical order until they
     get one, so the page settles itself as it fills up.
+
+    `name_map` resolves pm_id/am_id to a display name — omitted by callers
+    (like the budget tests) that don't care about the roles columns.
     """
+    name_map = name_map or {}
     rows = []
     for p in projects:
         b = p.get("budget")
@@ -2496,6 +2626,7 @@ def _budget_rows(projects: list, tracked_by_id: dict) -> list[dict]:
         label, chip, rank = _BUDGET_STATUS[status]
         rows.append({
             "id": p["id"], "name": p["name"], "budget": b, "tracked": tracked,
+            "pm_name": name_map.get(p.get("pm_id")), "am_name": name_map.get(p.get("am_id")),
             "status": status, "status_label": label, "status_chip": chip,
             "remaining": (b["hours"] - tracked) if b else None,
             # `pct` is None only when there is no budget at all — a budget of 0
@@ -2514,7 +2645,8 @@ def _budget_rows(projects: list, tracked_by_id: dict) -> list[dict]:
 
 @app.get("/budgets", response_class=HTMLResponse)
 def budgets_page(request: Request, start: Optional[str] = None,
-                 project: list[str] = Query(default=[])):
+                 project: list[str] = Query(default=[]),
+                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -2522,7 +2654,11 @@ def budgets_page(request: Request, start: Optional[str] = None,
         return RedirectResponse(url="/", status_code=303)
 
     rng = _period_range("monthly", _project_anchor("monthly", start))
+    people = ops.list_people()
     projects = ops.list_projects()
+    pm_ids, am_ids = _role_picks(people, pm, am)
+    if pm_ids or am_ids:
+        projects = [p for p in projects if _role_match(p, pm_ids, am_ids)]
     sel_ids, _ = _project_picks(projects, project)
     shown = [p for p in projects if not sel_ids or p["id"] in sel_ids]
 
@@ -2531,11 +2667,13 @@ def budgets_page(request: Request, start: Optional[str] = None,
         if e["project_id"]:
             tracked[e["project_id"]] = tracked.get(e["project_id"], 0.0) + (e["hours"] or 0)
 
-    rows = _budget_rows(shown, tracked)
+    name_map = {p["id"]: p["name"] for p in people}
+    rows = _budget_rows(shown, tracked, name_map)
     budgeted = [r for r in rows if r["budget"]]
     return templates.TemplateResponse(request, "budgets.html", {
         "user": user, "is_admin": True, "rng": rng, "rows": rows,
         "projects": projects, "sel_ids": sel_ids,
+        "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
         "policies": list(ops.BUDGET_POLICIES),
         "warn_default": ops.default_warn_pct(),
         "policy_block": ops.POLICY_BLOCK,
@@ -2550,16 +2688,22 @@ def budgets_page(request: Request, start: Optional[str] = None,
 
 @app.get("/budgets.csv")
 def budgets_csv(request: Request, start: Optional[str] = None,
-                project: list[str] = Query(default=[])):
+                project: list[str] = Query(default=[]),
+                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     rng = _period_range("monthly", _project_anchor("monthly", start))
+    people = ops.list_people()
     projects = ops.list_projects()
+    pm_ids, am_ids = _role_picks(people, pm, am)
+    if pm_ids or am_ids:
+        projects = [p for p in projects if _role_match(p, pm_ids, am_ids)]
     sel_ids, _ = _project_picks(projects, project)
     shown = [p for p in projects if not sel_ids or p["id"] in sel_ids]
+    name_map = {p["id"]: p["name"] for p in people}
     tracked: dict = {}
     for e in ops.entries_between(rng["from"], rng["to"]):
         if e["project_id"]:
@@ -2568,12 +2712,12 @@ def budgets_csv(request: Request, start: Optional[str] = None,
     import io
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["project", "month", "budget", "tracked", "remaining", "used_pct",
-                "policy", "overrun_pct", "warn_pct", "status"])
-    for r in _budget_rows(shown, tracked):
+    w.writerow(["project", "pm", "account_manager", "month", "budget", "tracked", "remaining",
+                "used_pct", "policy", "overrun_pct", "warn_pct", "status"])
+    for r in _budget_rows(shown, tracked, name_map):
         b = r["budget"]
         w.writerow([
-            r["name"], rng["label"],
+            r["name"], r["pm_name"] or "", r["am_name"] or "", rng["label"],
             f"{b['hours']:g}" if b else "",
             f"{r['tracked']:g}",
             f"{r['remaining']:g}" if b else "",
