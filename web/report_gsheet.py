@@ -28,9 +28,19 @@ def _project_tab(g: dict, period_label: str) -> list[list]:
         ["Person", "Hours", "Days", "Entries"],
     ]
     rows += [[p["name"], p["hours"], p["days"], p["entries"]] for p in g["people"]]
-    rows += [["Total", g["hours"]], [], ["Log"],
-             ["Date", "Person", "Hours", "Comment", "Ticket"]]
-    rows += [[e["date"], e["person"], e["hours"], e["description"], _ticket(e)]
+    rows += [["Total", g["hours"]]]
+    if g["goals"]:
+        # what the month went into, above the log and only for a project that
+        # uses goals — the same block, in the same place, as report_xlsx
+        rows += [[], ["By goal"], ["Goal", "Hours", "Entries"]]
+        rows += [[gl["name"], gl["hours"], gl["entries"]] for gl in g["goals"]]
+        rows += [["Total", g["hours"]]]
+    rows += [[], ["Log"],
+             ["Date", "Person", "Hours"] + (["Goal"] if g["goals"] else [])
+             + ["Comment", "Ticket"]]
+    rows += [[e["date"], e["person"], e["hours"]]
+             + ([e.get("goal") or ""] if g["goals"] else [])
+             + [e["description"], _ticket(e)]
              for e in g["log"]]
     return rows
 
@@ -103,11 +113,13 @@ def create(entries: list[dict], period_label: str, label: str) -> dict:
         sid = sheet_ids[name]
         requests.append(_bold(sid, 0))
         for i, row in enumerate(rows):
-            if row and row[0] in ("Person", "Date", "Project", "By person", "Log", "Total"):
+            if row and row[0] in ("Person", "Date", "Project", "By person", "By goal",
+                                  "Goal", "Log", "Total"):
                 requests.append(_bold(sid, i))
         requests.append({"autoResizeDimensions": {"dimensions": {
             "sheetId": sid, "dimension": "COLUMNS",
-            "startIndex": 0, "endIndex": 6}}})
+            # the log runs one column wider on a sheet that has a Goal column
+            "startIndex": 0, "endIndex": max((len(r) for r in rows), default=6)}}})
     if requests:
         call("POST", f"{CREATE_URL}/{made['spreadsheetId']}:batchUpdate",
              json={"requests": requests})
