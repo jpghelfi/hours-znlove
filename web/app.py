@@ -1632,12 +1632,15 @@ def invoice_detail(request: Request, invoice_id: str):
     # the same set the workbook holds
     sheet_rows = [{"project": invoice["project"], "date": r["date"], "person": r["person"],
                    "hours": round(r["billed"], 2), "description": r["description"],
+                   "goal": r.get("goal") or "",
                    "task_url": r.get("task_url") or ""}
                   for r in rows if r["billed"]]
     return templates.TemplateResponse(request, "invoice_detail.html", {
         "sheet_rows": sheet_rows,
         "user": user, "is_admin": True,
         "invoice": invoice, "days": days, "rng": rng,
+        # every line on screen, not just the billed ones the clipboard gets
+        "has_goals": any(r.get("goal") for r in rows),
         "month_label": month.strftime("%B %Y") if month else invoice["month"],
         "now_tracked": now_tracked,
         "now_billed": round(sum(r["billed"] for r in rows), 2),

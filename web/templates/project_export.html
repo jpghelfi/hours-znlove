@@ -113,8 +113,13 @@
     <span class="subtle"><span class="gtotal">{{ '%g'|format(g.hours) }}</span> h · {{ g.rows|length }} entries</span>
   </div>
   <div class="entrylist-scroll">
+  {# the Goal column only when this project actually uses goals — the same rule
+     report_xlsx applies per sheet, so the screen and the file it produces agree
+     on which projects show one. The value rides in data-goal either way, so a
+     project that starts using goals needs no change here. #}
+  {% set has_goals = g.rows|selectattr('goal')|first is defined %}
   <table class="grid flat exporttable">
-    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Tracked</th><th>To bill</th><th class="left">Comment</th><th class="left">Ticket</th></tr></thead>
+    <thead><tr><th class="left">Date</th><th class="left">Person</th><th>Tracked</th><th>To bill</th>{% if has_goals %}<th class="left">Goal</th>{% endif %}<th class="left">Comment</th><th class="left">Ticket</th></tr></thead>
     <tbody>
       {% for r in g.rows %}
       {# the entry id rides along so an invoice can record which lines were
@@ -122,7 +127,8 @@
       <tr data-entry-id="{{ r.id or '' }}"
           data-project-id="{{ r.project_id or '' }}" data-project="{{ r.project }}"
           data-person="{{ r.person }}" data-date="{{ r.date }}"
-          data-task="{{ r.task }}" data-task-url="{{ r.task_url }}">
+          data-task="{{ r.task }}" data-task-url="{{ r.task_url }}"
+          data-goal="{{ r.goal }}">
         <td class="left nowrap">{{ r.date }}</td>
         <td class="left">{{ r.person }}</td>
         {# tracked is what Notion holds — shown, never edited here; the inline
@@ -133,6 +139,9 @@
                                 data-tracked="{{ '%g'|format(r.hours) }}"
                                 aria-label="Hours to bill — {{ r.person }}, {{ r.date }}"
                                 oninput="recalc()"></td>
+        {# read-only for the same reason as the ticket: what the work was filed
+           under isn't the sender's to reword on the way out #}
+        {% if has_goals %}<td class="left">{{ r.goal }}</td>{% endif %}
         <td class="left"><input type="text" class="xdesc" value="{{ r.description }}"
                                 aria-label="Comment for the export — {{ r.person }}, {{ r.date }}"></td>
         {# read-only: the ticket is what the work was filed against, so unlike
@@ -164,6 +173,9 @@ function rows() {
       description: tr.querySelector('.xdesc').value,
       task: tr.dataset.task || '',
       task_url: tr.dataset.taskUrl || '',
+      // sent even where the column isn't drawn: report_xlsx/report_gsheet
+      // decide per project whether the file shows one
+      goal: tr.dataset.goal || '',
     });
   });
   return out;
@@ -203,9 +215,12 @@ function downloadBook() {
    sheet is the one path that needs no extra authorization: copy the rows as
    TSV (what Sheets pastes into columns), then open sheets.new. */
 function tsv() {
-  const head = ['Project', 'Date', 'Person', 'Hours', 'Comment', 'Ticket'].join('\t');
+  const head = ['Project', 'Date', 'Person', 'Hours', 'Goal', 'Comment', 'Ticket'].join('\t');
   const body = rows().filter(r => r.hours).map(r => [
     r.project, r.date, r.person, r.hours,
+    // one paste covers every project in the period, so Goal is a plain column
+    // here rather than the per-project one the workbook and the sheet build
+    (r.goal || '').replace(/[\t\r\n]+/g, ' '),
     (r.description || '').replace(/[\t\r\n]+/g, ' '),
     r.task_url || ''
   ].join('\t'));

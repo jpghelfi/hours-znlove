@@ -63,6 +63,13 @@
 {% endif %}
 
 <div class="card wide">
+  {# has_goals comes from the route: the column shows when this month's entries
+     carry goals — unbilled lines included, since they're on screen too. Same
+     rule as the export screen and the workbook, so an invoice and the file sent
+     for it show the same columns. #}
+  {# a seventh column pushes this past the card on a laptop, so the table
+     scrolls inside its own box — the same wrapper the export screen uses #}
+  <div class="entrylist-scroll">
   <table class="grid flat">
     <thead>
       <tr>
@@ -70,6 +77,7 @@
         <th class="left">Person</th>
         <th>Tracked</th>
         <th>Billed</th>
+        {% if has_goals %}<th class="left">Goal</th>{% endif %}
         <th class="left">Comment</th>
         <th class="left">Ticket</th>
       </tr>
@@ -81,7 +89,7 @@
         <td class="left"></td>
         <td class="tracked">{{ '%g'|format(day.tracked) }}</td>
         <td>{{ '%g'|format(day.billed) }}</td>
-        <td class="left" colspan="2">
+        <td class="left" colspan="{{ 3 if has_goals else 2 }}">
           {%- if day.billed != day.tracked %}
           <span class="chip chip-under">{{ '%g'|format(day.billed - day.tracked) }} h</span>
           {%- endif %}
@@ -96,6 +104,7 @@
           {%- if r.changed %}<strong class="adjusted">{{ '%g'|format(r.billed) }}</strong>
           {%- else %}{{ '%g'|format(r.billed) }}{% endif %}
         </td>
+        {% if has_goals %}<td class="left">{{ r.goal }}</td>{% endif %}
         <td class="left desc">{{ r.description }}</td>
         <td class="left">
           {%- if r.task_url %}<a class="tlink" href="{{ r.task_url }}" target="_blank"
@@ -104,7 +113,7 @@
       </tr>
       {% endfor %}
       {% else %}
-      <tr class="empty"><td colspan="6">
+      <tr class="empty"><td colspan="{{ 7 if has_goals else 6 }}">
         Nothing is logged against {{ invoice.project }} for {{ month_label }} any more —
         the entries behind this invoice have been removed or moved.
       </td></tr>
@@ -117,11 +126,12 @@
         <td class="left"></td>
         <td class="tracked">{{ '%g'|format(now_tracked) }}</td>
         <td><strong>{{ '%g'|format(now_billed) }}</strong></td>
-        <td class="left" colspan="2"></td>
+        <td class="left" colspan="{{ 3 if has_goals else 2 }}"></td>
       </tr>
     </tfoot>
     {% endif %}
   </table>
+  </div>
 </div>
 
 <script>
@@ -132,9 +142,10 @@ const SHEET_ROWS = {{ sheet_rows|tojson }};
    the clipboard plus a blank sheet is the one path needing no extra
    authorization. Same approach as the export screen. */
 function tsv() {
-  const head = ['Project', 'Date', 'Person', 'Hours', 'Comment', 'Ticket'].join('\t');
+  const head = ['Project', 'Date', 'Person', 'Hours', 'Goal', 'Comment', 'Ticket'].join('\t');
   const body = SHEET_ROWS.map(r => [
     r.project, r.date, r.person, r.hours,
+    (r.goal || '').replace(/[\t\r\n]+/g, ' '),
     (r.description || '').replace(/[\t\r\n]+/g, ' '),
     r.task_url || ''
   ].join('\t'));

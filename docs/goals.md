@@ -197,6 +197,23 @@ exactly the file it was before. A `?goal=` on the page rides along to the CSV,
 the workbook and the export screen, so a link copied off `/project` exports what
 `/project` was showing.
 
+The **Google Sheet** (`report_gsheet`) carries the same two things in the same
+places as the workbook — a By goal block above the log, a Goal column inside it —
+because both build from one `report_xlsx.group()`, so the file and the sheet
+can't disagree about a project. The clipboard fallback pastes a plain `Goal`
+column for every row instead: one paste covers the whole period, so there is no
+per-project header to switch on.
+
+**The export screen** (`/project/export`, and the same screen in invoice mode)
+shows Goal as a read-only column — read-only for the ticket's reason: what the
+work was filed under isn't the sender's to reword, while the hours and the
+comment still are. It shows only for a project whose rows carry goals, but the
+value is **always** in the payload the screen posts back (`data-goal`), because
+the file it produces decides per project — otherwise the Excel downloaded from
+the screen would silently differ from `/project.xlsx`. A **saved invoice**
+(`/invoices/{id}`) shows the column too, on the same rule, so an invoice and the
+file sent for it show the same lines.
+
 ## Setup
 
 ```bash
