@@ -165,16 +165,40 @@ def _member_project_ids(user_id: Optional[str]) -> set:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_landing(request: Request):
+    """The sign-in screen. The button links **straight** at Notion's consent
+    page rather than at /login/start, so the tap is a single navigation.
+
+    That is the iOS fix: bouncing through our own 303 and then Notion's 302
+    landed the browser on app.notion.com by way of a redirect, and Safari handed
+    that to the Notion app — which opened to nothing (see auth.consent_url).
+    The CSRF state is minted here instead, since the browser now leaves for
+    Notion without touching another route of ours first.
+    """
     if current_user(request):
         return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse(request, "login.html", {"denied": request.query_params.get("denied"), "is_admin": False})
+    try:
+        state = secrets.token_urlsafe(24)
+        request.session["oauth_state"] = state
+        signin_url = auth.consent_url(state)
+    except Exception:
+        # OAuth isn't configured (or Notion is unreachable). Still render the
+        # page — /login/start reports the problem in its own words rather than
+        # this screen 500ing where it used to show a button.
+        logging.exception("Could not build the Notion sign-in link")
+        signin_url = "/login/start"
+    return templates.TemplateResponse(request, "login.html", {
+        "denied": request.query_params.get("denied"), "is_admin": False,
+        "signin_url": signin_url,
+    })
 
 
 @app.get("/login/start")
 def login_start(request: Request):
+    """The redirect-based way in, kept for old bookmarks and as the fallback
+    when the button above couldn't be built."""
     state = secrets.token_urlsafe(24)
     request.session["oauth_state"] = state
-    return RedirectResponse(url=auth.login_url(state), status_code=303)
+    return RedirectResponse(url=auth.consent_url(state), status_code=303)
 
 
 @app.get("/auth/callback")

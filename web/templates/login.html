@@ -24,8 +24,25 @@
       {% elif denied %}
         <div class="deny">Sign-in didn't complete. Please try again.</div>
       {% endif %}
-      <a class="notion-btn" href="/login/start">Sign in with Notion</a>
+      {# straight at Notion's consent page, not at our own /login/start: one
+         navigation, no redirect for iOS to hand off to the Notion app. See
+         auth.consent_url. #}
+      <a class="notion-btn" href="{{ signin_url or '/login/start' }}">Sign in with Notion</a>
       <div class="subtle small">Access is limited to approved team members.</div>
+      {# a phone whose Notion app still grabs the link — iOS caches the rules
+         that decide that, and the cache can be days stale — needs a way out
+         that doesn't involve waiting for Apple. Long-pressing gives a plain
+         browser tab; copying the link gets it into any other browser. #}
+      <details class="login-help">
+        <summary>The Notion app opened and nothing happened?</summary>
+        <p>iPhone only, and it's the Notion app grabbing the link before Safari
+           can show the page. Either works:</p>
+        <ul>
+          <li><strong>Long-press</strong> the button above, then <em>Open in New Tab</em>.</li>
+          <li>Or <button type="button" class="linkbtn" id="copylink">copy the sign-in link</button>
+              and paste it into a different browser.</li>
+        </ul>
+      </details>
     </div>
   </main>
   <script>
@@ -33,6 +50,30 @@
     function setThemeIcon(){var b=document.getElementById('themeBtn');if(b)b.textContent=effectiveTheme()==='dark'?'☀️':'🌙';}
     function toggleTheme(){var next=effectiveTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',next);try{localStorage.setItem('theme',next);}catch(e){}setThemeIcon();}
     setThemeIcon();
+
+    (function () {
+      var btn = document.getElementById('copylink');
+      var link = document.querySelector('.notion-btn');
+      if (!btn || !link) return;
+      btn.addEventListener('click', function () {
+        var url = link.href;
+        var done = function (ok) { btn.textContent = ok ? 'copied — now paste it in another browser' : 'copy failed'; };
+        // navigator.clipboard needs a secure context; the textarea fallback is
+        // what works in an in-app browser that doesn't grant it
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(url).then(function () { done(true); }, function () { done(false); });
+          return;
+        }
+        var ta = document.createElement('textarea');
+        ta.value = url; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        done(ok);
+      });
+    })();
   </script>
 </body>
 </html>
