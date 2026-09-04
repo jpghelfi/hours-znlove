@@ -229,7 +229,9 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
     when it isn't budgeted — and "pm_id"/"am_id", the Notion user id of its PM
     and Account manager (or None) — plus "active", which matters to the callers
     that pass active_only=False and still need to tell the two apart (the
-    invoices page lists every project but only offers active ones to invoice).
+    invoices page lists every project but only offers active ones to invoice)
+    — and "partner"/"umbrella", the client umbrella this project sits under
+    ("" when the client is direct) and whether this row *is* that umbrella.
     All of them are parsed off the rows this query already returns, so none of
     them costs an extra call anywhere it's wanted."""
     projects = []
@@ -249,7 +251,9 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
             project = {"id": row["id"], "name": name, "active": active,
                        "budget": _budget_from_props(props),
                        "pm_id": _role_from_props(props, "pm"),
-                       "am_id": _role_from_props(props, "am")}
+                       "am_id": _role_from_props(props, "am"),
+                       "partner": _partner_from_props(props),
+                       "umbrella": bool(props.get(UMBRELLA_PROP, {}).get("checkbox"))}
             if include_members:
                 project["member_ids"] = members
             projects.append(project)
@@ -686,7 +690,8 @@ MAX_COPY_ROWS = 500  # a copy is one write per booking — keep it a burst, not 
 
 def copy_week_allocations(from_monday: str, to_monday: str,
                           person_ids: list[str] | None = None,
-                          project_id: str | None = None) -> dict:
+                          project_id: str | None = None,
+                          project_ids: list[str] | None = None) -> dict:
     """Duplicate one week's bookings onto another week, weekday for weekday.
 
     Additive, not a replace: every (person, project, day) pair in the source
@@ -695,13 +700,16 @@ def copy_week_allocations(from_monday: str, to_monday: str,
     already in the target week is left alone. Planning next week from last week
     is the point; quietly wiping edits already made to next week is not.
 
-    person_ids / project_id narrow the copy to whatever the planner is filtered
-    to, so the button copies what you can actually see. Takes _write_lock once
-    for the whole week, like set_allocation_range.
+    person_ids / project_id / project_ids narrow the copy to whatever the
+    planner is filtered to, so the button copies what you can actually see —
+    project_ids is how a *partner* filter arrives, resolved to its projects by
+    the caller. Takes _write_lock once for the whole week, like
+    set_allocation_range.
     """
     src = dt.date.fromisoformat(from_monday)
     offset = (dt.date.fromisoformat(to_monday) - src).days
     pick = set(person_ids or [])
+    keep = set(project_ids) if project_ids is not None else None
     plan: dict[tuple, float] = {}
     for a in alloc_rows(from_monday, (src + dt.timedelta(days=4)).isoformat()):
         if not a["person_id"] or not a["hours"]:
@@ -709,6 +717,8 @@ def copy_week_allocations(from_monday: str, to_monday: str,
         if pick and a["person_id"] not in pick:
             continue
         if project_id and a["project_id"] != project_id:
+            continue
+        if keep is not None and a["project_id"] not in keep:
             continue
         day = dt.date.fromisoformat(a["date"]) + dt.timedelta(days=offset)
         if day.weekday() >= 5:  # legacy week-scoped rows could land on a weekend
@@ -771,16 +781,20 @@ def paste_allocations(items: list[dict], dates: list[str]) -> dict:
 
 
 def clear_allocations(date_from: str, date_to: str, person_ids: list[str] | None = None,
-                      project_id: str | None = None) -> dict:
+                      project_id: str | None = None,
+                      project_ids: list[str] | None = None) -> dict:
     """Delete every booking in [date_from, date_to] that the given filters keep.
 
     One function behind all three "wipe what I can see" buttons — a whole week,
     one day column, one day cell — because they differ only in how narrow the
     range and the filters are: a cell is a single day scoped to its own row.
 
-    Scoped to whatever the planner is filtered to (person_ids / project_id), so
-    a button removes exactly the bookings on screen and nothing behind a
-    filter. Deletes by page id — the rows this same read returned — rather than
+    Scoped to whatever the planner is filtered to (person_ids / project_id /
+    project_ids — the last being a partner filter, resolved to its projects by
+    the caller), so a button removes exactly the bookings on screen and nothing
+    behind a filter. That is load-bearing rather than tidy: a partner filter the
+    delete could not see would wipe the whole company's week from a screen
+    showing one partner's. Deletes by page id — the rows this same read returned — rather than
     re-deriving (person, project, day) keys, so a duplicate row left over from
     an old race goes too instead of surviving as a ghost.
 
@@ -789,11 +803,14 @@ def clear_allocations(date_from: str, date_to: str, person_ids: list[str] | None
     too-big range is refused whole rather than half-deleted.
     """
     pick = set(person_ids or [])
+    keep = set(project_ids) if project_ids is not None else None
     doomed = []
     for a in alloc_rows(date_from, date_to):
         if pick and a["person_id"] not in pick:
             continue
         if project_id and a["project_id"] != project_id:
+            continue
+        if keep is not None and a["project_id"] not in keep:
             continue
         doomed.append(a)
     if len(doomed) > MAX_COPY_ROWS:
@@ -806,12 +823,13 @@ def clear_allocations(date_from: str, date_to: str, person_ids: list[str] | None
 
 
 def clear_week_allocations(monday: str, person_ids: list[str] | None = None,
-                           project_id: str | None = None) -> dict:
+                           project_id: str | None = None,
+                           project_ids: list[str] | None = None) -> dict:
     """Delete a whole week of bookings in one go — Mon–Fri of `monday`, under
     the page's filters. A thin week-shaped wrapper over clear_allocations."""
     mon = dt.date.fromisoformat(monday)
     return clear_allocations(monday, (mon + dt.timedelta(days=4)).isoformat(),
-                             person_ids, project_id)
+                             person_ids, project_id, project_ids)
 
 
 def move_allocation(person_id: str, project_id: str, date_iso: str,
@@ -2241,6 +2259,180 @@ def set_project_role(project_id: str, role: str, person_id: str | None) -> dict:
             ROLE_PROPS[role]: {"people": [{"id": person_id}] if person_id else []},
         })
     return {"ok": True, "role": role, "person_id": person_id}
+
+
+# ---- partners (client umbrellas) ---------------------------------------
+#
+# Some clients are ours directly; others arrive under a partner agency — Bear
+# brings Streamside and True Temper, Telus brings its own. A partner is *not* a
+# database of its own: it is one `Partner` select column on Projects, curated
+# in Notion beside Active and the budget columns, because a partner has no
+# attributes beyond its name and the projects under it. No partner = direct.
+#
+# A partner shows up in two different ways, and the difference matters:
+#
+#   * as a **filter** — "Bear" means whatever is under Bear *today*. Every page
+#     that filters projects takes a repeated ?partner=, expanded to project ids
+#     at request time, so a saved link that names the umbrella stays right when
+#     a project joins or leaves it. A frozen list of ?project= ids would not.
+#   * as an **umbrella project** — one real Projects row per partner, ticked
+#     `Umbrella`, that hours and allocations can be booked against when the work
+#     is the partner's own rather than any one client's. It has to be a real
+#     project: a Time Entry's (and an Allocation's) Project is a relation into
+#     this data source, and a select value is not bookable.
+#
+# The umbrella row carries its own Partner, so it sits *inside* the Bear
+# filter next to Bear's client projects — booking "Bear" and booking
+# "Streamside" both roll up under Bear, which is the whole point.
+
+PARTNER_PROP = "Partner"
+UMBRELLA_PROP = "Umbrella"
+
+# Seeded onto a freshly created Partner column so a new deploy has the two
+# partners this workspace actually has. Only ever read when the column doesn't
+# exist yet — after that Notion's own option list is the source of truth.
+_SEED_PARTNERS = "Bear,Telus"
+
+_PARTNER_TTL = 300.0
+_partner_cache: dict = {"at": 0.0, "names": None}
+_partner_lock = threading.Lock()
+
+
+def ensure_partner_properties() -> None:
+    """Add the Partner / Umbrella columns to the Projects db if they're missing.
+
+    Same shape as ensure_budget_properties/ensure_role_properties: read the
+    schema, add only what isn't there, one update. Safe to run on every boot.
+    The select's options are seeded once, at creation — never afterwards, since
+    from then on Notion's list is what the app offers and validates against.
+    """
+    ds = _notion.data_sources.retrieve(PROJECTS_DS)
+    have = ds["properties"]
+    missing = {}
+    if PARTNER_PROP not in have:
+        seed = [p.strip() for p in os.getenv("PARTNERS", _SEED_PARTNERS).split(",") if p.strip()]
+        missing[PARTNER_PROP] = {"select": {"options": [{"name": p} for p in seed]}}
+    if UMBRELLA_PROP not in have:
+        missing[UMBRELLA_PROP] = {"checkbox": {}}
+    if missing:
+        _notion.data_sources.update(PROJECTS_DS, properties=missing)
+        with _partner_lock:  # a newly seeded option list must not read as empty
+            _partner_cache.update(at=0.0, names=None)
+
+
+def _partner_from_props(props: dict) -> str:
+    """The partner umbrella this project sits under, or "" for a direct client.
+
+    Through .get() like every other property read here: this app has been taken
+    down twice by a renamed Notion column (alloc_person_prop; Time Entries'
+    "Logged by"). A renamed Partner column must read as "everyone is direct" —
+    the filter simply stops offering partners — never as a 500.
+    """
+    sel = props.get(PARTNER_PROP, {}).get("select") or {}
+    return sel.get("name") or ""
+
+
+def _partner_options() -> list[str]:
+    """Partner names as Notion has them, in the option order set there. Cached
+    briefly: this is consulted on every page that renders the project filter."""
+    now = time.monotonic()
+    with _partner_lock:
+        if _partner_cache["names"] is not None and now - _partner_cache["at"] < _PARTNER_TTL:
+            return list(_partner_cache["names"])
+    names: list[str] = []
+    try:
+        props = _notion.data_sources.retrieve(data_source_id=PROJECTS_DS)["properties"]
+        prop = props.get(PARTNER_PROP) or {}
+        if prop.get("type") == "select":
+            names = [o["name"] for o in (prop.get("select") or {}).get("options", [])]
+        elif PARTNER_PROP in props:
+            logging.warning("Projects' %r column is a %s, not a select — partners are off "
+                            "until it's a select again.", PARTNER_PROP, prop.get("type"))
+    except Exception:
+        logging.exception("Could not read the Projects schema for partner options.")
+        return []   # not cached: a transient failure shouldn't hide partners for 5 min
+    with _partner_lock:
+        _partner_cache.update(at=now, names=list(names))
+    return names
+
+
+def list_partners(projects: list[dict] | None = None) -> list[str]:
+    """The partners to offer, in Notion's option order.
+
+    The schema leads, so an option added in Notion is offerable before any
+    project uses it. Anything the given projects actually carry is appended, so
+    deleting an option in Notion doesn't strand the rows still set to it.
+    """
+    names = _partner_options()
+    seen = set(names)
+    for p in projects or []:
+        name = p.get("partner")
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def set_project_partner(project_id: str, partner: str) -> dict:
+    """Put a project under a partner umbrella, or "" to make it direct again.
+
+    Refuses a name Notion doesn't already have as an option. That is not
+    pedantry: Notion *creates* a select option for any name it's handed, so a
+    typo here would quietly invent a third partner and file a client under it
+    (the same trap create_ticket documents for the ticket board's project
+    column). New partners are added in Notion, or by src/setup_partners.py.
+    """
+    partner = (partner or "").strip()
+    if partner and partner not in _partner_options():
+        raise ValueError(f"{partner!r} isn't a partner — add it in Notion first")
+    with _write_lock:
+        page = _notion.pages.retrieve(project_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(PROJECTS_DS):
+            raise ValueError("not a project")
+        _notion.pages.update(project_id, properties={
+            PARTNER_PROP: {"select": {"name": partner} if partner else None},
+        })
+    return {"ok": True, "project_id": project_id, "partner": partner}
+
+
+def umbrella_project(partner: str, projects: list[dict] | None = None) -> dict | None:
+    """The partner's own bookable project row, or None if it has none yet."""
+    for p in (projects if projects is not None else list_projects(active_only=False)):
+        if p.get("umbrella") and p.get("partner") == partner:
+            return p
+    return None
+
+
+def create_umbrella_project(partner: str) -> dict:
+    """Create the row a partner's own hours get booked against. Idempotent —
+    returns the existing umbrella if there is one, so the setup script can be
+    re-run to pick up a partner added later.
+
+    Titled after the partner with nothing appended: this name ends up in
+    reports, invoices and client-facing exports, where "Bear" reads and
+    "Bear (umbrella)" doesn't. The Umbrella tick is what tells them apart, and
+    it's what the UI badges.
+    """
+    partner = (partner or "").strip()
+    if not partner:
+        raise ValueError("a partner name is required")
+    if partner not in _partner_options():
+        raise ValueError(f"{partner!r} isn't a partner — add it in Notion first")
+    existing = umbrella_project(partner)
+    if existing:
+        return existing
+    page = _notion.pages.create(
+        parent={"type": "data_source_id", "data_source_id": PROJECTS_DS},
+        properties={
+            "Name": {"title": [{"type": "text", "text": {"content": partner}}]},
+            "Active": {"checkbox": True},
+            PARTNER_PROP: {"select": {"name": partner}},
+            UMBRELLA_PROP: {"checkbox": True},
+        },
+    )
+    return {"id": page["id"], "name": partner, "active": True,
+            "partner": partner, "umbrella": True}
 
 
 # ---- goals -------------------------------------------------------------

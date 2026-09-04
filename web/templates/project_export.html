@@ -4,6 +4,9 @@
 {% block content %}
 {% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
 {% set qsr %}{% for id in pm_selected %}&pm={{ id }}{% endfor %}{% for id in am_selected %}&am={{ id }}{% endfor %}{% endset %}
+{# a partner pick rides along the same way — and stays a *partner* pick,
+   so the link keeps meaning "whatever is under Bear" #}
+{% set qsn %}{% for name in partner_selected %}&partner={{ name|urlencode }}{% endfor %}{% endset %}
 <div class="week-head">
   <div>
     <h1>{{ 'Invoice' if can_invoice else 'Export' }} · {{ label }}</h1>
@@ -12,7 +15,7 @@
          else 'what you change here goes in the file only' }}</div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}">← Back to the report</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}">← Back to the report</a>
   </div>
 </div>
 
@@ -20,7 +23,7 @@
   <strong>Adjusting hours here never changes what was logged.</strong> The entries in Notion keep their
   original values{% if can_invoice %}; saving an invoice records what you billed, not a correction to
   anyone's timesheet{% endif %}. To fix what was actually logged, edit it in the entry list on
-  <a href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}">the report</a>.
+  <a href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}">the report</a>.
 </div>
 
 {% if can_invoice %}

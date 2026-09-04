@@ -7,6 +7,10 @@
    server re-applies it on every request anyway. #}
 {% set qs_person %}{% if is_admin %}{% for pid in focus_people %}&person={{ pid }}{% endfor %}{% endif %}{% endset %}
 {% set qs_project = '&project=' ~ focus_project if focus_project else '' %}
+{# a partner pick rides along the same way, and stays a *partner* pick — the
+   link keeps meaning "whatever is under Bear", not the ids that were under it
+   the day it was copied #}
+{% set qs_partner = '&partner=' ~ focus_partner|urlencode if focus_partner else '' %}
 <div class="week-head">
   <div>
     <h1>Schedule</h1>
@@ -29,9 +33,9 @@
     <button type="button" class="btn btn-danger" id="clearweek" onclick="clearWeek(this)" data-busy="Clearing…"
             title="Delete every booking shown in the week of {{ start_iso }}">🗑 Clear week</button>
     {% endif %}
-    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">← Earlier</a>
-    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Now</a>
-    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}">Later →</a>
+    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">← Earlier</a>
+    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Now</a>
+    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Later →</a>
   </div>
 </div>
 
@@ -41,18 +45,23 @@
     <span class="seg-label">View</span>
     <div class="seg-opts">
       <a class="seg-opt{{ ' is-on' if view == 'days' }}" {% if view == 'days' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by={{ by }}&view=days{{ qs_person }}{{ qs_project }}">Days</a>
+         href="/schedule?start={{ start_iso }}&by={{ by }}&view=days{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Days</a>
       <a class="seg-opt{{ ' is-on' if view == 'weeks' }}" {% if view == 'weeks' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by={{ by }}&view=weeks{{ qs_person }}{{ qs_project }}">Weeks</a>
+         href="/schedule?start={{ start_iso }}&by={{ by }}&view=weeks{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Weeks</a>
     </div>
   </div>
   <div class="seg" role="group" aria-label="Group rows by">
     <span class="seg-label">Group by</span>
     <div class="seg-opts">
       <a class="seg-opt{{ ' is-on' if by == 'person' }}" {% if by == 'person' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by=person&view={{ view }}{{ qs_person }}{{ qs_project }}">People</a>
+         href="/schedule?start={{ start_iso }}&by=person&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">People</a>
       <a class="seg-opt{{ ' is-on' if by == 'project' }}" {% if by == 'project' %}aria-current="page"{% endif %}
-         href="/schedule?start={{ start_iso }}&by=project&view={{ view }}{{ qs_person }}{{ qs_project }}">Projects</a>
+         href="/schedule?start={{ start_iso }}&by=project&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Projects</a>
+      {# a rollup, not a planner: a partner row spans several projects, so its
+         cells can't say which one a click would book. It reads; the People and
+         Projects groupings are where you plan. #}
+      <a class="seg-opt{{ ' is-on' if by == 'partner' }}" {% if by == 'partner' %}aria-current="page"{% endif %}
+         href="/schedule?start={{ start_iso }}&by=partner&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Partners</a>
     </div>
   </div>
   <span class="seg-label filters-label">Show</span>
@@ -64,9 +73,30 @@
      else is pinned to their own row by the route, so a picker here would just
      be a control that does nothing. #}
   {% if is_admin %}{% with selected = focus_people %}{% include "_people_filter.html" %}{% endwith %}{% endif %}
+  {% if partners %}
+  <select name="partner" onchange="navStart(); this.form.submit()" aria-label="Partner umbrella">
+    <option value="">All partners</option>
+    {% for name in partners %}<option value="{{ name }}" {{ 'selected' if name == focus_partner }}>{{ name }}</option>{% endfor %}
+  </select>
+  {% endif %}
+  {# grouped by umbrella, so picking "one of Bear's" doesn't mean scanning an
+     alphabetical list of every client we have #}
   <select name="project" onchange="navStart(); this.form.submit()">
     <option value="">All projects</option>
-    {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
+    {% if partners %}
+      {% for name in partners %}
+      {% set gp = projects|selectattr('partner', 'equalto', name)|list %}
+      {% if gp %}<optgroup label="{{ name }}">
+        {% for p in gp %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}{{ ' (umbrella)' if p.umbrella }}</option>{% endfor %}
+      </optgroup>{% endif %}
+      {% endfor %}
+      {% set direct = projects|selectattr('partner', 'equalto', '')|list %}
+      {% if direct %}<optgroup label="Direct clients">
+        {% for p in direct %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
+      </optgroup>{% endif %}
+    {% else %}
+      {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == focus_project }}>{{ p.name }}</option>{% endfor %}
+    {% endif %}
   </select>
 </form>
 
@@ -75,10 +105,10 @@
 {% if hidden_rows and is_admin %}
 <p class="subtle plan-hint">
   {% if by == 'person' %}
-  {{ hidden_rows }} {{ 'person' if hidden_rows == 1 else 'people' }} with nothing booked on this project {{ 'this week' if view == 'days' else 'in these weeks' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
-  <a href="/schedule?start={{ start_iso }}&by={{ by }}&view={{ view }}{{ qs_person }}">clear the project filter</a> to book someone new
+  {{ hidden_rows }} {{ 'person' if hidden_rows == 1 else 'people' }} with nothing booked on {{ 'this partner' if focus_partner and not focus_project else 'this project' }} {{ 'this week' if view == 'days' else 'in these weeks' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
+  <a href="/schedule?start={{ start_iso }}&by={{ by }}&view={{ view }}{{ qs_person }}">clear the {{ 'partner' if focus_partner and not focus_project else 'project' }} filter</a> to book someone new
   {% else %}
-  {{ hidden_rows }} {{ 'project' if hidden_rows == 1 else 'projects' }} with nothing booked for {{ 'this person' if focus_people|length == 1 else 'these people' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
+  {{ hidden_rows }} {{ row_noun if hidden_rows == 1 else row_noun ~ 's' }} with nothing booked for {{ 'this person' if focus_people|length == 1 else 'these people' }} {{ 'is' if hidden_rows == 1 else 'are' }} hidden ·
   <a href="/schedule?start={{ start_iso }}&by={{ by }}&view={{ view }}{{ qs_project }}">clear the people filter</a> to book a new project
   {% endif %}
 </p>
@@ -93,7 +123,7 @@
 <table class="grid plan {{ 'plan-days' if view == 'days' else 'plan-weeks' }}">
   <thead>
     <tr>
-      <th class="col-project">{{ 'Person' if by == 'person' else 'Project' }}</th>
+      <th class="col-project">{{ row_noun|capitalize }}</th>
       {% for c in cols %}
       <th class="col-day{{ ' is-today' if c.today }}"{% if c.today %} aria-current="date"{% endif %}>{% if c.href %}<a class="col-link" href="{{ c.href }}" title="Plan this week day by day">{{ c.top }}</a>{% else %}{{ c.top }}{% endif %}<span class="dnum">{{ c.sub }}</span>
         {# the day column's own wipe: the same gesture as "Clear week", one
@@ -115,13 +145,15 @@
       {% for c in cols %}
       {% set d = r.days[c.iso] %}
       {% if view == 'days' %}
-      {# read-only for everyone but an admin: no click target, no + affordance,
-         and the pills below are spans rather than buttons — the write endpoints
-         would refuse them anyway, and a control that only 403s is worse than
-         no control #}
-      <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if not is_admin }}{{ ' is-today' if c.today }}"
+      {# read-only for everyone but an admin — and for a partner row whatever
+         you are, since a row spanning several projects can't say which one a
+         click would book. No click target, no + affordance, and the pills below
+         are spans rather than buttons: the write endpoints would refuse a
+         non-admin anyway, and a control that only 403s is worse than no
+         control. #}
+      <td class="plan-cell{{ ' is-empty' if not d.pills }}{{ ' is-static' if static_cells }}{{ ' is-today' if c.today }}"
           data-date="{{ c.iso }}" data-total="{{ d.total }}"
-          {% if is_admin %}onclick="cellClick(event, this)"
+          {% if not static_cells %}onclick="cellClick(event, this)"
           ondragover="cellOver(event, this)" ondragleave="cellOut(this)" ondrop="cellDrop(event, this)"{% endif %}>
         {% if by == 'person' %}
         <div class="cap {{ 'cap-over' if d.total > cap else ('cap-full' if d.total >= cap else 'cap-ok') }}" aria-hidden="true">
@@ -131,7 +163,7 @@
         <div class="cap-num">{% if d.total %}{{ '%g'|format(d.total) }}{% if by == 'person' %}<span class="cap-of">/{{ '%g'|format(cap) }}</span>{% endif %}{% endif %}</div>
         <div class="pills">
           {% for p in d.pills %}
-          {% if is_admin %}
+          {% if not static_cells %}
           <button type="button" class="pill s{{ p.swatch }}" data-person="{{ p.person_id }}" data-project="{{ p.project_id }}"
                   data-hours="{{ p.hours }}" data-label="{{ p.label }}"
                   draggable="true" ondragstart="pillDrag(event, this)" ondragend="pillDrop(this)"
@@ -140,8 +172,10 @@
             <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
           </button>
           {% else %}
+          {# in a partner row the label is the person, so the pill has to name
+             its project somewhere — the tooltip is that somewhere #}
           <span class="pill s{{ p.swatch }}" data-hours="{{ p.hours }}"
-                title="{{ p.label }} — {{ '%g'|format(p.hours) }}h">
+                title="{{ p.label }}{% if p.note %} · {{ p.note }}{% endif %} — {{ '%g'|format(p.hours) }}h">
             <span class="pill-name">{{ p.label }}</span><span class="pill-h">{{ '%g'|format(p.hours) }}</span>
           </span>
           {% endif %}
@@ -153,7 +187,7 @@
            room for it, but `.grid td`'s padding outranks `.plan-cell`'s, so
            the reserve never applied. In flow it can't collide, and it gives
            the cell a focusable, touch-friendly click target of its own. #}
-        {% if is_admin %}
+        {% if not static_cells %}
         <button type="button" class="addbtn" aria-label="Book a project on this day"
                 title="Book a project on this day"
                 onclick="event.stopPropagation(); openPop(this.closest('.plan-cell'), null)">+</button>
@@ -243,6 +277,8 @@ const PROJECTS = {{ projects|tojson }};
 const PEOPLE = {{ people|tojson }};
 const FOCUS_PEOPLE = {{ focus_people|tojson }};
 const FOCUS_PROJECT = {{ focus_project|tojson }};
+const FOCUS_PARTNER = {{ focus_partner|tojson }};
+const PARTNERS = {{ partners|tojson }};
 const WEEK = {{ start_iso|tojson }}, WEEK_LABEL = {{ week_label|tojson }};
 const COPY_FROM = {{ copy_from|tojson }}, COPY_FROM_LABEL = {{ copy_from_label|tojson }};
 let POP = null;  // {cell, row, date, personId, projectId, editing}
@@ -252,7 +288,7 @@ let POP = null;  // {cell, row, date, personId, projectId, editing}
    doesn't mention survives — and scoped to the current filters, so the button
    copies exactly the rows on screen. */
 async function copyLastWeek(btn) {
-  const scope = FOCUS_PEOPLE.length || FOCUS_PROJECT ? '\n\nOnly what the current filter shows will be copied.' : '';
+  const scope = FOCUS_PEOPLE.length || FOCUS_PROJECT || FOCUS_PARTNER ? '\n\nOnly what the current filter shows will be copied.' : '';
   if (!await zConfirm('Copy the bookings from the week of ' + COPY_FROM_LABEL
                + ' into the week of ' + WEEK_LABEL + '?'
                + '\n\nBookings already in this week are kept; a day/project that exists in both takes last week\'s hours.'
@@ -263,7 +299,8 @@ async function copyLastWeek(btn) {
     const res = await fetch('/api/allocation/copy-week', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({from_start: COPY_FROM, to_start: WEEK,
-                            person_ids: FOCUS_PEOPLE, project_id: FOCUS_PROJECT || null})
+                            person_ids: FOCUS_PEOPLE, project_id: FOCUS_PROJECT || null,
+                            partner: FOCUS_PARTNER || null})
     });
     const data = await res.json();
     if (!data.ok) { zAlert(data.error || 'Something went wrong.', {title: 'Copy failed'}); return restore(); }
@@ -282,7 +319,7 @@ async function copyLastWeek(btn) {
    showing. Scoped to the filters like the copy, so a filtered view only wipes
    what's on screen — and typed-confirm, because there is no undo. */
 async function clearWeek(btn) {
-  const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT;
+  const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT || FOCUS_PARTNER;
   const what = filtered ? 'every booking the current filter shows' : 'every booking';
   if (!await zConfirm('This deletes ' + what + ' in the week of ' + WEEK_LABEL + '.'
                + '\n\nThis cannot be undone.',
@@ -293,7 +330,8 @@ async function clearWeek(btn) {
     const res = await fetch('/api/allocation/clear-week', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({start: WEEK, person_ids: FOCUS_PEOPLE,
-                            project_id: FOCUS_PROJECT || null})
+                            project_id: FOCUS_PROJECT || null,
+                            partner: FOCUS_PARTNER || null})
     });
     const data = await res.json();
     if (!data.ok) { zAlert(data.error || 'Something went wrong.', {title: 'Clear failed'}); return restore(); }
@@ -341,8 +379,28 @@ function openPop(cell, pill) {
     items.forEach(i => { const o = document.createElement('option'); o.value = i.id; o.textContent = i.name; g.appendChild(o); });
     sel.appendChild(g);
   };
-  group('Assigned', assigned);
-  group(BY === 'person' ? 'Other projects' : 'Other people', other);
+  /* Projects the person is already on come first — that's the list you want
+     nine times in ten. The rest are split by umbrella rather than left as one
+     alphabetical run of every client we have, and each partner's own
+     bookable project leads its group: "this week is Bear's, not any one
+     client's" is a real answer, and it needs to be the easy one to pick. */
+  const byPartner = items => {
+    const seen = new Set();
+    (PARTNERS || []).forEach(name => {
+      const mine = items.filter(p => p.partner === name)
+                        .sort((a, b) => (b.umbrella ? 1 : 0) - (a.umbrella ? 1 : 0));
+      mine.forEach(p => seen.add(p.id));
+      group(name, mine);
+    });
+    group('Direct clients', items.filter(p => !seen.has(p.id)));
+  };
+  if (BY === 'person' && (PARTNERS || []).length) {
+    group('Assigned', assigned);
+    byPartner(other);
+  } else {
+    group('Assigned', assigned);
+    group(BY === 'person' ? 'Other projects' : 'Other people', other);
+  }
   // editing preselects the pair — and stays editable: picking another project
   // (or another person, in the Projects grouping) rewrites the booking in
   // place, so "wrong project" is one dropdown rather than remove-then-add.
@@ -883,7 +941,8 @@ async function clearScope(iso, personIds, projectId, cells, question) {
                       {title: question(n), ok: 'Delete', danger: true})) return false;
   const res = await fetch('/api/allocation/clear-day', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({date: iso, person_ids: personIds, project_id: projectId})
+    body: JSON.stringify({date: iso, person_ids: personIds, project_id: projectId,
+                          partner: FOCUS_PARTNER || null})
   });
   const data = await res.json();
   if (!data.ok) { zAlert(data.error || 'Something went wrong.', {title: 'Delete failed'}); return false; }
@@ -911,7 +970,7 @@ async function clearCell(cell) {
 
 async function clearDay(iso, btn) {
   const cells = [...document.querySelectorAll('tbody .plan-cell[data-date="' + iso + '"]')];
-  const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT;
+  const filtered = FOCUS_PEOPLE.length || FOCUS_PROJECT || FOCUS_PARTNER;
   setBusy(btn, true);
   try {
     await clearScope(iso, FOCUS_PEOPLE, FOCUS_PROJECT || null, cells,

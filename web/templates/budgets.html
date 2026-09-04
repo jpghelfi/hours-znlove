@@ -4,6 +4,9 @@
 {% block content %}
 {% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
 {% set qsr %}{% for id in pm_selected %}&pm={{ id }}{% endfor %}{% for id in am_selected %}&am={{ id }}{% endfor %}{% endset %}
+{# a partner pick rides along the same way — and stays a *partner* pick,
+   so the link keeps meaning "whatever is under Bear" #}
+{% set qsn %}{% for name in partner_selected %}&partner={{ name|urlencode }}{% endfor %}{% endset %}
 
 <div class="week-head">
   <div>
@@ -20,9 +23,9 @@
     </div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}{{ qsr }}">←</a>
-    <a class="btn" href="/budgets?start={{ rng.now }}{{ qsp }}{{ qsr }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}{{ qsr }}">→</a>
+    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}">←</a>
+    <a class="btn" href="/budgets?start={{ rng.now }}{{ qsp }}{{ qsr }}{{ qsn }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}">→</a>
   </div>
 </div>
 
@@ -33,10 +36,10 @@
     <input type="month" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
   </label>
   <span class="seg-label filters-label">Projects</span>
-  {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
+  {% with selected = sel_ids, psel = partner_selected %}{% include "_project_filter.html" %}{% endwith %}
   <span class="seg-label filters-label">Owners</span>
   {% with pm_selected = pm_selected, am_selected = am_selected %}{% include "_role_filter.html" %}{% endwith %}
-  <a class="btn" href="/budgets.csv?start={{ rng.value }}{{ qsp }}{{ qsr }}">⬇ CSV</a>
+  <a class="btn" href="/budgets.csv?start={{ rng.value }}{{ qsp }}{{ qsr }}{{ qsn }}">⬇ CSV</a>
 </form>
 
 {# The served percentages are computed from the budgets as they were when the

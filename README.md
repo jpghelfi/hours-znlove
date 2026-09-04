@@ -182,6 +182,16 @@ Notion's form, plus the editable weekly grid Notion can't natively do.
   that week day by day. Allocation rows carry real dates: day-cell edits save the exact day,
   a week-cell edit replaces the pair's whole week with one Monday-dated row (so week-planned
   hours appear in Monday's cell in the day view until spread out).
+- **Partner umbrellas:** some clients are ours directly, others arrive under an agency (Bear
+  brings Streamside and True Temper; Telus brings its own). One `Partner` column on Projects
+  says which, and the project picker on `/project`, `/reports`, `/budgets` and `/invoices`
+  gains a **Partner umbrellas** section: tick Bear to see everything under Bear — *as it is
+  today*, so the link keeps working when a project joins or leaves. Each partner also gets one
+  real project of its own, so hours and schedule bookings that are the partner's rather than
+  any one client's have somewhere to go. `/schedule` adds a **Partners** grouping (a read-only
+  rollup) and groups its project dropdowns by umbrella; `/project` and `/reports` grow a *By
+  partner* card. Set a project's partner on `/assignments`. See
+  [docs/partners.md](docs/partners.md).
 - **`/absences` — Absences:** log a day (or a range) off with a reason — never asks who, it's
   always you — into a separate Absences database, and read who's away a **week** or a **month**
   at a time. Weekdays only, so a Friday-to-Monday absence costs two days. Admins see the whole
@@ -265,6 +275,7 @@ credentials, and the July 2026 backfill numbers.
 | `src/setup_databases.py` | Creates the two databases (run once). |
 | `src/setup_people_db.py` | Creates the People roster db + seeds it from workspace members (idempotent). |
 | `src/setup_absences_db.py` | Creates the Absences db (idempotent). |
+| `src/setup_partners.py` | Partner umbrellas: the Partner/Umbrella columns, their options, and one umbrella project per partner (idempotent). |
 | `src/seed_projects.py` | Bulk-adds projects, dedupe-safe. |
 | `src/log_hours.py` | Logs one time entry from the CLI. |
 | `src/report.py` | Aggregates hours by person (submitter) or project. |

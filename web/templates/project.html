@@ -6,17 +6,21 @@
 {% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
 {# PM/account-manager picks ride along the same way #}
 {% set qsr %}{% for id in pm_selected %}&pm={{ id }}{% endfor %}{% for id in am_selected %}&am={{ id }}{% endfor %}{% endset %}
+{# a partner pick rides along the same way — and stays a *partner* pick,
+   so the link keeps meaning "whatever is under Bear" #}
+{% set qsn %}{% for name in partner_selected %}&partner={{ name|urlencode }}{% endfor %}{% endset %}
 {# a goal pick rides along too: changing month while looking at one goal should
    keep looking at it. An id that stops existing is dropped server-side. #}
 {% set qsg %}{% if goal_sel %}&goal={{ goal_sel }}{% endif %}{% endset %}
 {% set sel_names = projects|selectattr('id', 'in', sel_ids)|map(attribute='name')|list %}
 <div class="week-head">
   <div>
-    <h1>{{ sel.name if sel else (sel_names|length ~ ' projects' if sel_ids else 'All projects') }}</h1>
+    <h1>{{ sel.name if sel else (sel_names|length ~ ' projects' if sel_ids else (partner_selected|join(' + ') if partner_selected else 'All projects')) }}</h1>
     <div class="subtle">
       {%- if is_all %}Hours per project · expand one to see its people{% else %}Hours per person{% endif %} · {{ rng.label }}
       {%- if goal_sel %} · <strong>{% if goal_sel == unassigned %}not filed under a goal{% else %}{{ (goal_rows|selectattr('id', 'equalto', goal_sel)|first).name }}{% endif %}</strong> only{% endif %}
-      {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|length ~ ' projects' }}{% endif %}</div>
+      {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|length ~ ' projects' }}{% endif %}
+      {%- if partner_selected %} · under <strong>{{ partner_selected|join(', ') }}</strong>{% endif %}</div>
     {# single-project view: PM/AM as chips beside the name — read-only here,
        edited only on /assignments #}
     {% if sel %}
@@ -27,9 +31,9 @@
     {% endif %}
   </div>
   <div class="weeknav">
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsg }}">←</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{{ qsp }}{{ qsr }}{{ qsg }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsg }}">→</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">←</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">→</a>
   </div>
 </div>
 
@@ -41,7 +45,7 @@
          Monthly lands on this month rather than the month the old day sat in #}
       {% for p, lbl in [('daily', 'Daily'), ('weekly', 'Weekly'), ('monthly', 'Monthly')] %}
       <a class="seg-opt{{ ' is-on' if period == p }}" {% if period == p %}aria-current="page"{% endif %}
-         href="/project?period={{ p }}{{ qsp }}{{ qsr }}">{{ lbl }}</a>
+         href="/project?period={{ p }}{{ qsp }}{{ qsr }}{{ qsn }}">{{ lbl }}</a>
       {% endfor %}
     </div>
   </div>
@@ -52,14 +56,14 @@
     <input type="{{ rng.picker }}" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
   </label>
   <span class="seg-label filters-label">Projects</span>
-  {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
+  {% with selected = sel_ids, psel = partner_selected %}{% include "_project_filter.html" %}{% endwith %}
   <span class="seg-label filters-label">Owners</span>
   {% with pm_selected = pm_selected, am_selected = am_selected %}{% include "_role_filter.html" %}{% endwith %}
-  <a class="btn" href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsg }}">⬇ CSV</a>
-  <a class="btn" href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsg }}">⬇ Excel</a>
+  <a class="btn" href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">⬇ CSV</a>
+  <a class="btn" href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">⬇ Excel</a>
   {# one project + a whole month is exactly what an invoice is, so the same
      screen is offered under its real name; anything else is still an export #}
-  <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsg }}"
+  <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"
      title="{% if can_invoice %}Set the hours to bill, then save the invoice{% else %}Adjust the numbers, then download, copy to Sheets or email{% endif %}">{% if can_invoice %}🧾 Invoice{% else %}⧉ Export{% endif %}</a>
 </form>
 
@@ -109,6 +113,30 @@
   <div class="stat card"><div class="stat-n">{{ d.entries|length }}</div><div class="stat-l">entries</div></div>
 </div>
 
+{# One level above the table: what each umbrella came to this period. Only
+   drawn when there is more than one bucket to compare — with no partners set
+   up it would be a single row repeating the total. Each name filters the page
+   down to that partner, which is the same ?partner= the picker sends. #}
+{% if d.by_partner|length > 1 %}
+<div class="card wide">
+  <h3>By partner</h3>
+  {% for b in d.by_partner %}
+  <div class="baritem{{ ' baritem-idle' if not b.hours }}">
+    <div class="bar-name">
+      {%- if b.name == 'Direct' -%}
+        {{ b.name }}
+      {%- else -%}
+        <a class="plain" href="/project?period={{ period }}&start={{ start_iso }}{{ qsr }}&partner={{ b.name|urlencode }}">{{ b.name }}</a>
+      {%- endif -%}
+      <span class="subtle bar-where">{{ b.projects }} project{{ '' if b.projects == 1 else 's' }}</span>
+    </div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{ b.pct }}%"></div></div>
+    <div class="bar-val">{{ '%g'|format(b.hours) }}h</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <div class="grid-wrap">
 <table class="grid projgrid">
   <thead>
@@ -133,6 +161,8 @@
       <td class="col-project">
         <button type="button" class="disclosure" onclick="toggleGroup(this)" aria-expanded="false">
           <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ g.project_name }}</span>
+          {%- if g.umbrella %}<span class="ptag" title="{{ g.partner }}'s own project">umbrella</span>
+          {%- elif g.partner %}<span class="pname-partner">{{ g.partner }}</span>{% endif %}
           <span class="who-count">{{ g.rows|length }}</span>
         </button>
       </td>

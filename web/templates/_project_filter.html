@@ -2,12 +2,33 @@
    the project-side twin of _people_filter.html. Submits with whatever form
    encloses it; no pick means every project. Context it expects: `projects`
    and `selected` (the picked ids) — pass the latter with {% with selected = … %}
-   at the include site. #}
+   at the include site.
+
+   It also carries the **partner** picks (checkboxes named "partner"), because
+   a partner is a way of naming a set of projects and belongs in the control
+   that picks projects rather than in a second dropdown beside it. The two
+   compose on the server (AND): tick Bear to see Bear, then tick two of its
+   projects to see just those. A partner tick is deliberately *not* the same as
+   ticking its projects one by one — it means "whatever is under Bear today",
+   so the link keeps working when a project joins or leaves the umbrella.
+   Optional context: `partners` (the names) and `psel` (the picked ones); a
+   page that passes neither gets exactly the picker it had before. #}
 {% set jsel_names = projects|selectattr('id', 'in', selected)|map(attribute='name')|list %}
+{% set jpartners = partners|default([]) %}
+{% set jpsel = psel|default([]) %}
+{% set jgroups = jpartners + ['Direct'] %}
 <details class="pfilter pfilter-end" id="jfilter">
   <summary class="btn pfilter-btn">
     <span class="pfilter-ico">📁</span>
-    <span class="pfilter-label">{{ 'All projects' if not selected else (jsel_names|join(', ') if jsel_names|length == 1 else jsel_names|length ~ ' projects') }}</span>
+    <span class="pfilter-label">
+      {%- if selected -%}
+        {{ jsel_names|join(', ') if jsel_names|length == 1 else jsel_names|length ~ ' projects' }}
+      {%- elif jpsel -%}
+        {{ jpsel|join(', ') if jpsel|length <= 2 else jpsel|length ~ ' partners' }}
+      {%- else -%}
+        All projects
+      {%- endif -%}
+    </span>
     <span class="pfilter-caret" aria-hidden="true">▾</span>
   </summary>
   <div class="pfilter-menu">
@@ -21,12 +42,47 @@
       </div>
     </div>
     <div class="pfilter-list">
-      {% for p in projects %}
-      <label class="pfilter-opt" data-name="{{ p.name|lower }}">
-        <input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
-        <span class="pfilter-nm">{{ p.name }}</span>
-      </label>
-      {% else %}<div class="subtle pfilter-empty">No projects yet — add one in Notion first.</div>{% endfor %}
+      {% if jpartners %}
+      <div class="pfilter-group" data-group="partners">
+        <div class="pfilter-gh">Partner umbrellas</div>
+        {% for name in jpartners %}
+        <label class="pfilter-opt pfilter-partner" data-name="{{ name|lower }}">
+          <input type="checkbox" name="partner" value="{{ name }}" {{ 'checked' if name in jpsel }}>
+          <span class="pfilter-nm">{{ name }}</span>
+          <span class="pfilter-ct">{{ projects|selectattr('partner', 'equalto', name)|list|length }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% for g in jgroups %}
+      {% set gprojects = projects|selectattr('partner', 'defined')|selectattr('partner', 'equalto', (g if g != 'Direct' else ''))|list %}
+      {% if gprojects %}
+      <div class="pfilter-group" data-group="{{ g }}">
+        {% if jpartners %}<div class="pfilter-gh">{{ g if g != 'Direct' else 'Direct clients' }}</div>{% endif %}
+        {% for p in gprojects %}
+        <label class="pfilter-opt" data-name="{{ p.name|lower }}">
+          <input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
+          <span class="pfilter-nm">{{ p.name }}{% if p.umbrella %} <span class="pfilter-tag" title="{{ g }}'s own project — book the partner's hours here">umbrella</span>{% endif %}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endfor %}
+      {# a project row whose Partner column can't be read (renamed in Notion)
+         still has to be pickable, so anything the groups above missed lands
+         here rather than vanishing from the filter #}
+      {% set ungrouped = projects|rejectattr('partner', 'defined')|list %}
+      {% if ungrouped %}
+      <div class="pfilter-group" data-group="other">
+        {% for p in ungrouped %}
+        <label class="pfilter-opt" data-name="{{ p.name|lower }}">
+          <input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
+          <span class="pfilter-nm">{{ p.name }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if not projects %}<div class="subtle pfilter-empty">No projects yet — add one in Notion first.</div>{% endif %}
       <div class="subtle pfilter-empty" id="jfilter-nomatch" hidden>Nothing matches that search.</div>
     </div>
     <div class="pfilter-foot">
@@ -43,7 +99,7 @@
     window.jfAll = function (on) {
       // only touch what the search currently shows, so "Clear" inside a search
       // can't silently drop picks the user can't see
-      jf.querySelectorAll('.pfilter-opt:not([hidden]) input[name=project]').forEach(function (c) { c.checked = on; });
+      jf.querySelectorAll('.pfilter-opt:not([hidden]) input').forEach(function (c) { c.checked = on; });
       jfCount();
     };
 
@@ -55,16 +111,32 @@
         opt.hidden = !hit;
         if (hit) shown++;
       });
+      // a heading with nothing left under it is noise, so groups follow their
+      // own options rather than staying put through a search
+      jf.querySelectorAll('.pfilter-group').forEach(function (g) {
+        g.hidden = !g.querySelector('.pfilter-opt:not([hidden])');
+      });
       document.getElementById('jfilter-nomatch').hidden = shown > 0;
     };
 
     function jfCount() {
-      var n = jf.querySelectorAll('.pfilter-opt input[name=project]:checked').length;
-      var one = jf.querySelector('.pfilter-opt input[name=project]:checked');
-      jf.querySelector('.pfilter-label').textContent =
-        n === 0 ? 'All projects' : (n === 1 ? one.parentNode.querySelector('.pfilter-nm').textContent : n + ' projects');
+      var projects = jf.querySelectorAll('input[name=project]:checked');
+      var partners = jf.querySelectorAll('input[name=partner]:checked');
+      var label = 'All projects';
+      if (projects.length === 1) {
+        label = projects[0].parentNode.querySelector('.pfilter-nm').textContent.trim();
+      } else if (projects.length) {
+        label = projects.length + ' projects';
+      } else if (partners.length && partners.length <= 2) {
+        label = [].map.call(partners, function (c) {
+          return c.parentNode.querySelector('.pfilter-nm').textContent.trim();
+        }).join(', ');
+      } else if (partners.length) {
+        label = partners.length + ' partners';
+      }
+      jf.querySelector('.pfilter-label').textContent = label;
     }
-    jf.querySelectorAll('.pfilter-opt input[name=project]').forEach(function (c) {
+    jf.querySelectorAll('.pfilter-opt input').forEach(function (c) {
       c.addEventListener('change', jfCount);
     });
 

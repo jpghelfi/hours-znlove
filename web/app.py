@@ -102,6 +102,7 @@ def _startup() -> None:
     ops.ensure_budget_properties()
     ops.ensure_goal_property()
     ops.ensure_role_properties()
+    ops.ensure_partner_properties()
 
 
 @app.get("/healthz")
@@ -554,7 +555,7 @@ def _range_bounds(range_key: Optional[str], date_from: Optional[str], date_to: O
 
 
 def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=None, am=None,
-                 roster=None, projects=None, project_list=None):
+                 roster=None, projects=None, project_list=None, partner=None):
     f, t, rk = _range_bounds(range_key, date_from, date_to)
     is_admin = auth.is_admin(user)
     # Picking specific people is a team-wide read narrowed down, so it implies
@@ -571,20 +572,22 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
     # Unlike the people pick this isn't admin-only — it only ever removes rows.
     pm_ids, am_ids = _roles_from_query(pm, am, roster)
     picked_projects = [pid for pid in (projects or []) if pid and pid != "all"]
+    picked_partners = [n for n in (partner or []) if n and n.strip()]
     # inactive projects are included on purpose: an old entry's project may
     # have been unticked since, and neither filter should drop its hours. The
     # list is read once for both picks, and only when one of them is set —
     # /reports.csv has no picker to fill, so with no filter it stays unread.
     all_projects = project_list
-    if all_projects is None and (pm_ids or am_ids or picked_projects):
+    if all_projects is None and (pm_ids or am_ids or picked_projects or picked_partners):
         all_projects = ops.list_projects(active_only=False)
-    role_ids = (_role_keep_ids(all_projects or [], pm_ids, am_ids)
-                if (pm_ids or am_ids) else None)
+    partners = _partner_picks(picked_partners, ops.list_partners(all_projects)) if picked_partners else []
+    role_ids = (_scope_keep_ids(all_projects or [], pm_ids, am_ids, set(partners))
+                if (pm_ids or am_ids or partners) else None)
     # ?project= repeats like everywhere else: no pick means every project, and
     # ids that no longer exist are dropped rather than emptying the page.
     proj_ids, _ = _project_picks(all_projects or [], picked_projects)
-    # the two project-side filters compose (AND): "Ana's projects" narrowed to
-    # the two of them you actually wanted to see
+    # the project-side filters compose (AND): "Bear, as run by Ana" narrowed to
+    # the two of those projects you actually wanted to see
     keep_ids = set(proj_ids) if proj_ids else None
     if role_ids is not None:
         keep_ids = role_ids if keep_ids is None else (keep_ids & role_ids)
@@ -642,8 +645,24 @@ def _report_data(user, scope, range_key, date_from, date_to, people=None, pm=Non
             })
         return out
 
+    # Which umbrella the hours went to. Only when the project list is already
+    # loaded: /reports.csv has no breakdowns to render, and an unfiltered CSV
+    # must not start paying for a projects read it has no use for.
+    by_partner = []
+    if all_projects is not None:
+        pmap = {pr["id"]: (pr.get("partner") or DIRECT_LABEL) for pr in all_projects}
+        d = {}
+        for e in entries:
+            key = pmap.get(e.get("project_id"), DIRECT_LABEL)
+            d[key] = d.get(key, 0) + e["hours"]
+        mx = max(d.values(), default=0)
+        by_partner = [{"name": k, "hours": round(v, 2),
+                       "pct": round(v / mx * 100) if mx else 0}
+                      for k, v in sorted(d.items(), key=lambda kv: -kv[1])]
+
     return {
         "from": f, "to": t, "range": rk, "team": team, "is_admin": is_admin,
+        "by_partner": by_partner, "partner_selected": partners,
         "entries": entries, "total": total,
         "by_project": agg("project"), "by_person": agg("person") if team else [],
         "by_goal": _by_goal(entries),
@@ -743,7 +762,8 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
                  date_from: Optional[str] = None, date_to: Optional[str] = None,
                  person: list[str] = Query(default=[]),
                  pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
-                 project: list[str] = Query(default=[])):
+                 project: list[str] = Query(default=[]),
+                 partner: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -754,7 +774,7 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
     # to resolve the picks — the picker has to be filled either way
     all_projects = ops.list_projects(active_only=False)
     data = _report_data(user, scope, range, date_from, date_to, person, pm, am, roster,
-                        project, all_projects)
+                        project, all_projects, partner)
     picked = set(data["project_selected"])
     return templates.TemplateResponse(request, "reports.html", {
         "user": user, "r": data, "scope": "team" if data["team"] else "me",
@@ -762,6 +782,7 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
         # the dropdown offers the active projects — plus any archived one that's
         # actually picked, so a bookmark on it still filters and still has a name
         "projects": [p for p in all_projects if p["active"] or p["id"] in picked],
+        "partners": ops.list_partners(all_projects),
     })
 
 
@@ -770,14 +791,15 @@ def reports_csv(request: Request, scope: str = "me", range: Optional[str] = None
                 date_from: Optional[str] = None, date_to: Optional[str] = None,
                 person: list[str] = Query(default=[]),
                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
-                project: list[str] = Query(default=[])):
+                project: list[str] = Query(default=[]),
+                partner: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     data = _report_data(user, scope, range, date_from, date_to, person, pm, am,
-                        projects=project)
+                        projects=project, partner=partner)
     import csv
     import io
     buf = io.StringIO()
@@ -921,6 +943,9 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
     # attached them to — an entry against an inactive project (not in
     # `projects`) shows "—" for both, the same way it shows no member_ids
     roles = {p["id"]: (p.get("pm_id"), p.get("am_id")) for p in projects}
+    # …and the umbrella each one sits under, from those same rows
+    partner_of = {p["id"]: (p.get("partner") or "") for p in projects}
+    umbrellas = {p["id"] for p in projects if p.get("umbrella")}
     groups: dict = {}
 
     def group_for(prid, name):
@@ -978,8 +1003,29 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
         pm_id, am_id = roles.get(g["project_id"], (None, None))
         g["pm_name"] = name_map.get(pm_id) if pm_id else None
         g["am_name"] = name_map.get(am_id) if am_id else None
+        g["partner"] = partner_of.get(g["project_id"], "")
+        g["umbrella"] = g["project_id"] in umbrellas
+
+    # The same hours summed one level up. Derived from the groups rather than
+    # re-walked from the entries, so the partner totals and the project totals
+    # can't disagree — and it costs nothing on a page that already has them.
+    buckets: dict = {}
+    for g in ordered:
+        key = g["partner"] or DIRECT_LABEL
+        b = buckets.setdefault(key, {"name": key, "hours": 0.0, "projects": 0})
+        b["hours"] += g["hours"]
+        if g["hours"]:
+            b["projects"] += 1
+    ptop = max([b["hours"] for b in buckets.values()], default=0)
+    by_partner = sorted(buckets.values(), key=lambda b: (-b["hours"], b["name"].lower()))
+    for b in by_partner:
+        b["pct"] = round(b["hours"] / ptop * 100) if ptop else 0
+        b["share"] = round(b["hours"] / total * 100) if total else 0
+        b["hours"] = round(b["hours"], 2)
+
     return {
         "groups": ordered, "total": total, "entries": entries,
+        "by_partner": by_partner,
         "projects_count": sum(1 for g in ordered if g["hours"]),
         "people_count": len({e["person_id"] for e in entries}),
     }
@@ -1027,33 +1073,57 @@ def _roles_from_query(pm: list, am: list, people: Optional[list] = None) -> tupl
     return _role_picks(people if people is not None else ops.list_people(), pm, am)
 
 
-def _role_match(project: dict, pm_ids: set, am_ids: set) -> bool:
-    """Does this project satisfy the role filter?
+def _partner_picks(picked: list, known: list[str]) -> list[str]:
+    """Resolve repeated ?partner= into the partner names to filter on.
 
-    OR within a role (several picks), AND across roles ("Ana's projects where
-    Beto is the account manager"). No pick in a role matches every project,
-    including ones with nobody in that role — a PM pick excludes an unPMed
-    project, but leaving PM unpicked never hides it.
+    Names, not ids: a partner *is* its name in Notion's select column. Names
+    Notion doesn't have are dropped — the _project_picks rule, so a link to a
+    partner that has since been renamed degrades to the unfiltered page rather
+    than to an empty one. The order follows Notion's own option order, so the
+    label a pick produces reads the same on every page.
+    """
+    want = {p.strip() for p in (picked or []) if p and p.strip()}
+    return [n for n in known if n in want]
+
+
+def _scope_match(project: dict, pm_ids: set, am_ids: set,
+                 partners: Optional[set] = None) -> bool:
+    """Does this project satisfy the role + partner filter?
+
+    OR within a dimension (several picks), AND across them ("Ana's Bear
+    projects where Beto is the account manager"). An unpicked dimension matches
+    every project, including ones with nothing in it — a PM pick excludes an
+    unPMed project, but leaving PM unpicked never hides it, and the same holds
+    for a direct client under no partner.
     """
     if pm_ids and project.get("pm_id") not in pm_ids:
         return False
     if am_ids and project.get("am_id") not in am_ids:
         return False
+    if partners and (project.get("partner") or "") not in partners:
+        return False
     return True
 
 
-def _role_keep_ids(projects: list, pm_ids: set, am_ids: set) -> Optional[set]:
-    """The project ids a role filter keeps, or None when no role is picked —
-    the same None-means-everything convention _project_picks' sel_ids use, so
-    callers can tell "no filter" apart from "filtered down to nothing"."""
-    if not pm_ids and not am_ids:
+def _scope_keep_ids(projects: list, pm_ids: set, am_ids: set,
+                    partners: Optional[set] = None) -> Optional[set]:
+    """The project ids the role/partner filters keep, or None when none is
+    picked — the same None-means-everything convention _project_picks' sel_ids
+    use, so callers can tell "no filter" apart from "filtered down to nothing".
+
+    Resolving a partner to ids here, per request, is what makes "Bear" mean
+    whatever is under Bear today: a project moved under (or out of) the
+    umbrella in Notion changes what an existing ?partner=Bear link shows.
+    """
+    if not pm_ids and not am_ids and not partners:
         return None
-    return {p["id"] for p in projects if _role_match(p, pm_ids, am_ids)}
+    return {p["id"] for p in projects if _scope_match(p, pm_ids, am_ids, partners)}
 
 
 @app.get("/project", response_class=HTMLResponse)
 def project_page(request: Request, project: list[str] = Query(default=[]),
                  pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                 partner: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None,
                  goal: Optional[str] = None):
     user = _require_login(request)
@@ -1068,8 +1138,9 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     # repeats: no pick (or "all") is the every-project rollup, one pick drills
     # into that project, several roll up just those. Shared with the exports
     # so the screen and the file it produces can't read the query differently.
-    projects, sel_ids, sel, role_ids, pm_ids, am_ids = _project_role_scope(
-        project, pm, am, include_members=True, people=people)
+    sc = _project_scope(project, pm, am, partner, include_members=True, people=people)
+    projects, sel_ids, sel = sc["projects"], sc["sel_ids"], sc["sel"]
+    pm_ids, am_ids = sc["pm_ids"], sc["am_ids"]
     is_all = sel is None
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
@@ -1096,14 +1167,16 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
                               entries=entries)
     else:
         # a manual ?project= pick wins; otherwise a role pick alone still
-        # narrows the rollup (see _role_keep_ids) rather than showing every
+        # narrows the rollup (see _scope_keep_ids) rather than showing every
         # project with the picker just failing to widen it back
-        keep_ids = set(sel_ids) if sel_ids else role_ids
+        keep_ids = set(sel_ids) if sel_ids else sc["scope_ids"]
         data = _all_projects_hours(rng, projects, name_map, keep_ids)
     return templates.TemplateResponse(request, "project.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids, "is_all": is_all,
         "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
+        "partners": ops.list_partners(sc["all_projects"]),
+        "partner_selected": sc["partners"],
         "period": period, "rng": rng,
         "can_invoice": bool(ops.invoices_enabled() and sel and period == "monthly"),
         "goals_on": bool(sel and ops.goals_enabled()),
@@ -1116,27 +1189,34 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     })
 
 
-def _project_role_scope(project: list, pm: list, am: list,
-                        include_members: bool = False,
-                        people: Optional[list] = None) -> tuple:
-    """Role-narrow the project list, then resolve ?project= against it, so the
-    two filters compose — the shared first step of every /project* route.
+def _project_scope(project: list, pm: list, am: list, partner: Optional[list] = None,
+                   include_members: bool = False,
+                   people: Optional[list] = None) -> dict:
+    """Narrow the project list by partner and by role, then resolve ?project=
+    against what's left, so all three filters compose — the shared first step
+    of every /project* route.
 
-    Returns (projects, sel_ids, sel, role_ids, pm_ids, am_ids); role_ids is
-    None when no pm/am is picked, else the set of project ids the role filter
-    kept (same meaning the sel_ids-derived keep set has for _period_entries
-    below). The picks come back too so a page can put them on its own links.
+    Returns a dict rather than a tuple: it has grown from "the role scope" to
+    partner + role + pick, and every caller wants a different subset of it.
+    `scope_ids` is None when neither a role nor a partner is picked, else the
+    set of project ids they kept (the same meaning the sel_ids-derived keep set
+    has for _period_entries below). The picks come back too, so a page can put
+    them back on its own links.
 
-    `people` is the roster when the caller already holds one — every route
-    that renders names loads it anyway, and list_people() is a live Notion
-    query, so passing it through is one round trip saved per filtered request.
+    `people` is the roster when the caller already holds one — every route that
+    renders names loads it anyway, and list_people() is a live Notion query, so
+    passing it through is one round trip saved per filtered request.
     """
     all_projects = ops.list_projects(include_members=include_members)
+    partners = _partner_picks(partner or [], ops.list_partners(all_projects))
     pm_ids, am_ids = _roles_from_query(pm, am, people)
-    role_ids = _role_keep_ids(all_projects, pm_ids, am_ids)
-    projects = all_projects if role_ids is None else [p for p in all_projects if p["id"] in role_ids]
+    scope_ids = _scope_keep_ids(all_projects, pm_ids, am_ids, set(partners))
+    projects = (all_projects if scope_ids is None
+                else [p for p in all_projects if p["id"] in scope_ids])
     sel_ids, sel = _project_picks(projects, project)
-    return projects, sel_ids, sel, role_ids, pm_ids, am_ids
+    return {"all_projects": all_projects, "projects": projects,
+            "sel_ids": sel_ids, "sel": sel, "scope_ids": scope_ids,
+            "pm_ids": pm_ids, "am_ids": am_ids, "partners": partners}
 
 
 def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict,
@@ -1148,7 +1228,7 @@ def _period_entries(sel: Optional[dict], sel_ids: list, rng: dict,
 
     `keep_ids` is a role filter's project ids: only consulted when there's no
     explicit ?project= pick, since an explicit pick already is the narrower of
-    the two (_project_role_scope resolves it against the role-narrowed list,
+    the two (_project_scope resolves it against the already-narrowed list,
     so sel_ids is already a subset of keep_ids whenever both are set).
 
     A goal pick narrows it further, in memory over that same read, so exporting
@@ -1181,8 +1261,21 @@ def _export_goal(sel: Optional[dict], goal: Optional[str]) -> Optional[str]:
     return _goal_pick(goal, ops.list_goals(sel["id"]))
 
 
-def _export_label(sel: Optional[dict], sel_ids: list) -> str:
-    return sel["name"] if sel else (f"{len(sel_ids)} projects" if sel_ids else "All projects")
+def _export_label(sel: Optional[dict], sel_ids: list,
+                  partners: Optional[list] = None) -> str:
+    """What this export is *of* — the title on the workbook and the filename.
+
+    A partner pick with no project pick names the partner: a Bear rollup is
+    "Bear", not "All projects", because that is what it is and what the file
+    will be called when it reaches somebody.
+    """
+    if sel:
+        return sel["name"]
+    if sel_ids:
+        return f"{len(sel_ids)} projects"
+    if partners:
+        return partners[0] if len(partners) == 1 else " + ".join(partners)
+    return "All projects"
 
 
 def _export_slug(label: str) -> str:
@@ -1192,6 +1285,7 @@ def _export_slug(label: str) -> str:
 @app.get("/project.csv")
 def project_csv(request: Request, project: list[str] = Query(default=[]),
                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                partner: list[str] = Query(default=[]),
                 period: str = "monthly", start: Optional[str] = None,
                 goal: Optional[str] = None):
     user = _require_login(request)
@@ -1200,10 +1294,11 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
-    projects, sel_ids, sel, role_ids, _, _ = _project_role_scope(
-        project, pm, am, include_members=True)
+    sc = _project_scope(project, pm, am, partner, include_members=True)
+    sel_ids, sel = sc["sel_ids"], sc["sel"]
     rng = _period_range(period, _project_anchor(period, start))
-    entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids)
+    entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal),
+                              keep_ids=sc["scope_ids"])
     import csv
     import io
     buf = io.StringIO()
@@ -1218,7 +1313,7 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
                    + ([e.get("goal", "")] if goals_on else [])
                    + [e["hours"], e["description"], e.get("task", ""), e.get("task_url", "")])
     from fastapi.responses import Response
-    fname = f"{_export_slug(_export_label(sel, sel_ids))}_{rng['from']}_{rng['to']}.csv"
+    fname = f"{_export_slug(_export_label(sel, sel_ids, sc['partners']))}_{rng['from']}_{rng['to']}.csv"
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
@@ -1294,6 +1389,7 @@ def _rows_from_payload(rows: list) -> list[dict]:
 @app.get("/project.xlsx")
 def project_xlsx(request: Request, project: list[str] = Query(default=[]),
                  pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                 partner: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None,
                  goal: Optional[str] = None):
     """The report as a workbook — a sheet per project, people then their log."""
@@ -1304,19 +1400,21 @@ def project_xlsx(request: Request, project: list[str] = Query(default=[]),
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     people = ops.list_people()
-    projects, sel_ids, sel, role_ids, _, _ = _project_role_scope(
-        project, pm, am, include_members=True, people=people)
+    sc = _project_scope(project, pm, am, partner, include_members=True, people=people)
+    sel_ids, sel = sc["sel_ids"], sc["sel"]
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
-    rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids),
+    rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal),
+                                        keep_ids=sc["scope_ids"]),
                         name_map)
-    label = _export_label(sel, sel_ids)
+    label = _export_label(sel, sel_ids, sc["partners"])
     return _xlsx_response(report_xlsx.build(rows, rng["label"], label), label, rng)
 
 
 @app.get("/project/export", response_class=HTMLResponse)
 def project_export_page(request: Request, project: list[str] = Query(default=[]),
                         pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                        partner: list[str] = Query(default=[]),
                         period: str = "monthly", start: Optional[str] = None,
                         goal: Optional[str] = None,
                         sent: Optional[str] = None, err: Optional[str] = None):
@@ -1331,11 +1429,13 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         return RedirectResponse(url="/", status_code=303)
     period = period if period in _PERIODS else "monthly"
     people = ops.list_people()
-    projects, sel_ids, sel, role_ids, pm_ids, am_ids = _project_role_scope(
-        project, pm, am, include_members=True, people=people)
+    sc = _project_scope(project, pm, am, partner, include_members=True, people=people)
+    projects, sel_ids, sel = sc["projects"], sc["sel_ids"], sc["sel"]
+    pm_ids, am_ids = sc["pm_ids"], sc["am_ids"]
     rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
-    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal), keep_ids=role_ids),
+    rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal),
+                                               keep_ids=sc["scope_ids"]),
                                name_map),
                   key=lambda r: (r["project"].lower(), r["date"], r["person"].lower()))
     groups = []
@@ -1356,8 +1456,10 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         # a filter dropped on the way back is a filter the export silently
         # disagrees with the next time you look at the page
         "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
+        "partners": ops.list_partners(sc["all_projects"]),
+        "partner_selected": sc["partners"],
         "period": period, "rng": rng, "start_iso": rng["from"],
-        "label": _export_label(sel, sel_ids),
+        "label": _export_label(sel, sel_ids, sc["partners"]),
         "can_invoice": can_invoice, "existing_invoice": existing,
         "today_iso": dt.date.today().isoformat(),
         "groups": groups, "total": round(sum(r["hours"] for r in rows), 2),
@@ -1527,7 +1629,8 @@ def _mark_stale(rows: list[dict]) -> None:
 
 
 @app.get("/invoices", response_class=HTMLResponse)
-def invoices_page(request: Request, project: list[str] = Query(default=[])):
+def invoices_page(request: Request, project: list[str] = Query(default=[]),
+                  partner: list[str] = Query(default=[])):
     """What we've billed, newest month first (admins).
 
     Shows tracked next to billed so the gap is visible, and flags a month whose
@@ -1539,9 +1642,17 @@ def invoices_page(request: Request, project: list[str] = Query(default=[])):
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    projects = ops.list_projects(include_members=True, active_only=False)
+    all_projects = ops.list_projects(include_members=True, active_only=False)
+    partners = _partner_picks(partner, ops.list_partners(all_projects))
+    # a partner pick narrows the list *before* ?project= resolves against it,
+    # exactly as on /project — the two compose rather than override
+    projects = ([p for p in all_projects if (p.get("partner") or "") in set(partners)]
+                if partners else all_projects)
     sel_ids, sel = _project_picks(projects, project)
     rows = ops.list_invoices(sel["id"] if sel else None)
+    if partners and not sel:
+        keep_partner = {p["id"] for p in projects}
+        rows = [r for r in rows if r["project_id"] in keep_partner]
     if sel_ids and not sel:          # several picked: filter the one read in memory
         keep = set(sel_ids)
         rows = [r for r in rows if r["project_id"] in keep]
@@ -1555,6 +1666,7 @@ def invoices_page(request: Request, project: list[str] = Query(default=[])):
     return templates.TemplateResponse(request, "invoices.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids,
+        "partners": ops.list_partners(all_projects), "partner_selected": partners,
         "rows": rows, "default_month": last_month.strftime("%Y-%m"),
         "enabled": ops.invoices_enabled(),
         "total_billed": round(sum(r["hours_billed"] for r in rows), 2),
@@ -1787,11 +1899,33 @@ def _day_target() -> float:
     return float(os.environ.get("DAY_TARGET_HOURS", "8"))
 
 
+DIRECT_LABEL = "Direct"
+
+
+def _partner_of(projects: list[dict]) -> dict:
+    """project id -> the partner umbrella it sits under, DIRECT_LABEL if none.
+
+    A label, not "": partner rows are read as names on screen, and a client
+    who is ours directly is a real bucket worth naming rather than a blank.
+    """
+    return {p["id"]: (p.get("partner") or DIRECT_LABEL) for p in projects}
+
+
 def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
                    people: list[dict], projects: list[dict],
-                   focus_people: set, focus_project: Optional[str]) -> list[dict]:
-    """Planner rows: one per person (by="person") or per project, each holding
-    a stack of pills per column. Returns (rows, hidden) — see the pruning note.
+                   focus_people: set, focus_project: Optional[str],
+                   partner_of: Optional[dict] = None,
+                   partners: Optional[list] = None,
+                   focus_partner: Optional[str] = None) -> list[dict]:
+    """Planner rows: one per person (by="person"), per project, or per partner
+    umbrella, each holding a stack of pills per column. Returns (rows, hidden)
+    — see the pruning note.
+
+    The partner grouping is a **rollup**, not a planner: a partner row spans
+    several projects, so a click on one of its cells could not say which
+    project it meant. Its cells render read-only (the same treatment a
+    non-admin gets), and booking a partner's own hours goes through its
+    umbrella project in the ordinary Projects/People groupings instead.
 
     Every roster person/project gets a row even with nothing booked — an empty
     row is what you click to make the first assignment, so the old
@@ -1825,6 +1959,13 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
             if focus_people and p["id"] not in focus_people:
                 continue
             row_for(p["id"], p["name"])
+    elif by == "partner":
+        # every umbrella gets a row even at zero, so the rollup reads as the
+        # whole book of business rather than only the busy half of it
+        for name in list(partners or []) + [DIRECT_LABEL]:
+            if focus_partner and name != focus_partner:
+                continue
+            row_for(name, name)
     else:
         for p in projects:
             if focus_project and p["id"] != focus_project:
@@ -1836,12 +1977,17 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
         if col not in cols:
             continue
         person = pnames.get(a["person_id"], a["person_name"])
-        rid = a["person_id"] if by == "person" else a["project_id"]
-        label = a["project_name"] if by == "person" else person
+        if by == "person":
+            rid, label = a["person_id"], a["project_name"]
+        elif by == "partner":
+            rid = (partner_of or {}).get(a["project_id"], DIRECT_LABEL)
+            label = person
+        else:
+            rid, label = a["project_id"], person
         if rid not in rows:
             # an allocation for somebody off the roster (or an archived
             # project) — still show it rather than silently hiding hours
-            row_for(rid, person if by == "person" else a["project_name"])
+            row_for(rid, {"person": person, "partner": rid}.get(by, a["project_name"]))
         cell = rows[rid]["days"][col]
         pill = next((p for p in cell["pills"]
                      if p["person_id"] == a["person_id"] and p["project_id"] == a["project_id"]), None)
@@ -1851,16 +1997,30 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
             cell["pills"].append({
                 "person_id": a["person_id"], "project_id": a["project_id"],
                 "label": label, "hours": a["hours"], "swatch": _swatch(a["project_id"]),
+                # a partner row stacks several projects' pills together, so the
+                # pill needs to name its project somewhere — the label is the
+                # person there, as in the Projects grouping
+                "note": a["project_name"] if by == "partner" else "",
             })
         cell["total"] += a["hours"]
         rows[rid]["total"] += a["hours"]
 
-    ordered = sorted(rows.values(), key=lambda r: r["name"].lower())
+    if by == "partner":
+        # Notion's own partner order, Direct last: it isn't a partner, it's
+        # everything that has none
+        rank = {name: i for i, name in enumerate(list(partners or []) + [DIRECT_LABEL])}
+        ordered = sorted(rows.values(),
+                         key=lambda r: (rank.get(r["name"], len(rank)), r["name"].lower()))
+    else:
+        ordered = sorted(rows.values(), key=lambda r: r["name"].lower())
     for r in ordered:
         for c in cols:
             r["days"][c]["pills"].sort(key=lambda p: (-p["hours"], p["label"].lower()))
 
-    narrowed = (focus_project and not focus_people) if by == "person" else (focus_people and not focus_project)
+    # a partner focus narrows the same way a project focus does: "Bear's week"
+    # means the people on Bear, not the roster with four rows filled in
+    focused_work = focus_project or focus_partner
+    narrowed = (focused_work and not focus_people) if by == "person" else (focus_people and not focused_work)
     hidden = 0
     if narrowed:
         kept = [r for r in ordered if r["total"]]
@@ -1872,7 +2032,7 @@ def _schedule_rows(allocs: list[dict], cols: list[str], by: str, bucket,
 @app.get("/schedule", response_class=HTMLResponse)
 def schedule_page(request: Request, start: Optional[str] = None, by: str = "person",
                   person: list[str] = Query(default=[]), project: Optional[str] = None,
-                  view: str = "days"):
+                  partner: Optional[str] = None, view: str = "days"):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -1889,7 +2049,7 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         picked = [user["id"]]
     else:
         return RedirectResponse(url="/", status_code=303)   # no identity to scope to
-    by = by if by in ("person", "project") else "person"
+    by = by if by in ("person", "project", "partner") else "person"
     view = view if view in ("weeks", "days") else "days"
     anchor = _parse_date(start)  # malformed ?start= falls back to the current week
     mon = ops.monday_of(anchor) if anchor else _current_monday()
@@ -1908,7 +2068,8 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     else:  # read-only rollup: six weeks, each column a Monday
         mondays = [mon + dt.timedelta(weeks=i) for i in range(6)]
         base = (f"&by={by}" + "".join(f"&person={p}" for p in picked)
-                + (f"&project={project}" if project else ""))
+                + (f"&project={project}" if project else "")
+                + (f"&partner={quote(partner)}" if partner else ""))
         # the weeks rollup buckets by Monday, so "today" is the week holding it
         this_mon = ops.monday_of(today)
         cols = [{"iso": m.isoformat(), "top": f"W{m.strftime('%m/%d')}", "sub": m.strftime("%Y"),
@@ -1923,6 +2084,11 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
 
     people = ops.list_people()
     projects = ops.list_projects(include_members=True)
+    partner_names = ops.list_partners(projects)
+    # an unknown ?partner= is dropped rather than emptying the page — the
+    # _project_picks rule, so a link to a renamed partner still plans
+    focus_partner = partner if partner in partner_names else None
+    partner_of = _partner_of(projects)
     # A multi-person pick still filters in Python (same as /reports): the read
     # is one week of everyone either way. One person is the exception worth
     # pushing into Notion — it's every non-admin's view of this page, so it's
@@ -1934,9 +2100,17 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         allocs = [a for a in allocs if a["person_id"] in focus_people]
     if project:
         allocs = [a for a in allocs if a["project_id"] == project]
+    if focus_partner:
+        # "Bear's week" means whatever is under Bear today — resolved from the
+        # projects read this page already does, never from a frozen id list
+        allocs = [a for a in allocs
+                  if partner_of.get(a["project_id"]) == focus_partner]
     col_isos = [c["iso"] for c in cols]
-    rows, hidden_rows = _schedule_rows(allocs, col_isos, by, bucket, people, projects,
-                                       focus_people, project)
+    shown_projects = ([p for p in projects if (p.get("partner") or DIRECT_LABEL) == focus_partner]
+                      if focus_partner else projects)
+    rows, hidden_rows = _schedule_rows(allocs, col_isos, by, bucket, people, shown_projects,
+                                       focus_people, project, partner_of, partner_names,
+                                       focus_partner)
 
     col_totals = {c: sum(r["days"][c]["total"] for r in rows) for c in col_isos}
     return templates.TemplateResponse(request, "schedule.html", {
@@ -1945,10 +2119,16 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
         "hidden_rows": hidden_rows,
         "grand_total": sum(col_totals.values()),
         "focus_people": picked, "focus_project": project or "",
+        "focus_partner": focus_partner or "", "partners": partner_names,
+        # a partner row spans projects, so its cells are a read-only rollup —
+        # see _schedule_rows
+        "static_cells": (not is_admin) or by == "partner",
+        "row_noun": {"person": "person", "project": "project"}.get(by, "partner"),
         "is_admin": is_admin,
         "people": people,
         "projects": [{"id": p["id"], "name": p["name"], "member_ids": p.get("member_ids", []),
-                      "swatch": _swatch(p["id"])} for p in projects],
+                      "swatch": _swatch(p["id"]), "partner": p.get("partner") or "",
+                      "umbrella": bool(p.get("umbrella"))} for p in projects],
         "prev_start": (mon - step).isoformat(),
         "next_start": (mon + step).isoformat(),
         "this_start": _current_monday().isoformat(),
@@ -1967,11 +2147,15 @@ def assignments_page(request: Request):
     user = _require_login(request)
     if not user or not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
+    projects = ops.list_projects(include_members=True)
     return templates.TemplateResponse(request, "assignments.html", {
         "user": user,
         "is_admin": True,
-        "projects": ops.list_projects(include_members=True),
+        "projects": projects,
         "people": ops.list_people(),
+        # the umbrella a project sits under is edited here, beside its PM and
+        # its people — the one page that answers "how is this project set up"
+        "partners": ops.list_partners(projects),
     })
 
 
@@ -2022,6 +2206,30 @@ def api_project_role(request: Request, r: ProjectRole):
         logging.exception("Saving the %s for project %s failed", r.role, r.project_id)
         return JSONResponse({"ok": False, "error": "could not save that role"}, status_code=400)
     return JSONResponse({"ok": True})
+
+
+class ProjectPartner(BaseModel):
+    project_id: str
+    # "" makes the client direct again; anything else must already be one of
+    # Notion's options (set_project_partner refuses the rest, since Notion
+    # invents a select option for any name it is handed)
+    partner: str = ""
+
+
+@app.post("/api/project/partner")
+def api_project_partner(request: Request, r: ProjectPartner):
+    user = _require_login(request)
+    if not user or not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        return JSONResponse(ops.set_project_partner(r.project_id, r.partner))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("set_project_partner failed")
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=500)
 
 
 class Alloc(BaseModel):
@@ -2106,11 +2314,27 @@ def api_allocation(request: Request, alloc: Alloc):
     return JSONResponse(res)
 
 
+def _partner_project_ids(partner: Optional[str]) -> Optional[list[str]]:
+    """The projects under `partner`, or None when no partner is filtered on.
+
+    Resolved here from Notion rather than taken from the browser: these ids
+    decide what a bulk **delete** is allowed to touch, and a filter the delete
+    can't see would wipe the whole company's week off a screen showing one
+    partner's. An unknown name resolves to the empty list — nothing matches, so
+    the write does nothing, which is the right way for a stale filter to fail.
+    """
+    if not partner:
+        return None
+    return [p["id"] for p in ops.list_projects(active_only=False)
+            if (p.get("partner") or "") == partner]
+
+
 class CopyWeek(BaseModel):
     from_start: str                     # any date in the source week
     to_start: str                       # any date in the target week
     person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter
     project_id: Optional[str] = None
+    partner: Optional[str] = None       # the ?partner= filter, resolved server-side
 
 
 @app.post("/api/allocation/copy-week")
@@ -2135,7 +2359,8 @@ def api_copy_week(request: Request, c: CopyWeek):
                             status_code=400)
     try:
         res = ops.copy_week_allocations(src.isoformat(), dst.isoformat(),
-                                        c.person_ids, c.project_id)
+                                        c.person_ids, c.project_id,
+                                        _partner_project_ids(c.partner))
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception:
@@ -2148,6 +2373,7 @@ class ClearWeek(BaseModel):
     start: str                          # any date in the week to wipe
     person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter
     project_id: Optional[str] = None
+    partner: Optional[str] = None       # the ?partner= filter, resolved server-side
 
 
 @app.post("/api/allocation/clear-week")
@@ -2166,7 +2392,8 @@ def api_clear_week(request: Request, c: ClearWeek):
         return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
     mon = ops.monday_of(day)
     try:
-        res = ops.clear_week_allocations(mon.isoformat(), c.person_ids, c.project_id)
+        res = ops.clear_week_allocations(mon.isoformat(), c.person_ids, c.project_id,
+                                         _partner_project_ids(c.partner))
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception:
@@ -2242,6 +2469,7 @@ class ClearDay(BaseModel):
     date: str                           # the day column to wipe
     person_ids: list[str] = []          # empty = everyone, mirroring the ?person= filter
     project_id: Optional[str] = None
+    partner: Optional[str] = None       # the ?partner= filter, resolved server-side
 
 
 @app.post("/api/allocation/clear-day")
@@ -2261,7 +2489,8 @@ def api_clear_day(request: Request, c: ClearDay):
         return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
     try:
         res = ops.clear_allocations(day.isoformat(), day.isoformat(),
-                                    c.person_ids, c.project_id)
+                                    c.person_ids, c.project_id,
+                                    _partner_project_ids(c.partner))
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     except Exception:
@@ -2714,7 +2943,8 @@ def _budget_rows(projects: list, tracked_by_id: dict, name_map: Optional[dict] =
 @app.get("/budgets", response_class=HTMLResponse)
 def budgets_page(request: Request, start: Optional[str] = None,
                  project: list[str] = Query(default=[]),
-                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
+                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                 partner: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -2724,9 +2954,10 @@ def budgets_page(request: Request, start: Optional[str] = None,
     rng = _period_range("monthly", _project_anchor("monthly", start))
     people = ops.list_people()
     projects = ops.list_projects()
+    partners = _partner_picks(partner, ops.list_partners(projects))
     pm_ids, am_ids = _roles_from_query(pm, am, people)
-    if pm_ids or am_ids:
-        projects = [p for p in projects if _role_match(p, pm_ids, am_ids)]
+    if pm_ids or am_ids or partners:
+        projects = [p for p in projects if _scope_match(p, pm_ids, am_ids, set(partners))]
     sel_ids, _ = _project_picks(projects, project)
     shown = [p for p in projects if not sel_ids or p["id"] in sel_ids]
 
@@ -2742,6 +2973,7 @@ def budgets_page(request: Request, start: Optional[str] = None,
         "user": user, "is_admin": True, "rng": rng, "rows": rows,
         "projects": projects, "sel_ids": sel_ids,
         "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
+        "partners": ops.list_partners(projects), "partner_selected": partners,
         "policies": list(ops.BUDGET_POLICIES),
         "warn_default": ops.default_warn_pct(),
         "policy_block": ops.POLICY_BLOCK,
@@ -2757,7 +2989,8 @@ def budgets_page(request: Request, start: Optional[str] = None,
 @app.get("/budgets.csv")
 def budgets_csv(request: Request, start: Optional[str] = None,
                 project: list[str] = Query(default=[]),
-                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[])):
+                pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
+                partner: list[str] = Query(default=[])):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
@@ -2766,9 +2999,10 @@ def budgets_csv(request: Request, start: Optional[str] = None,
     rng = _period_range("monthly", _project_anchor("monthly", start))
     people = ops.list_people()
     projects = ops.list_projects()
+    partners = _partner_picks(partner, ops.list_partners(projects))
     pm_ids, am_ids = _roles_from_query(pm, am, people)
-    if pm_ids or am_ids:
-        projects = [p for p in projects if _role_match(p, pm_ids, am_ids)]
+    if pm_ids or am_ids or partners:
+        projects = [p for p in projects if _scope_match(p, pm_ids, am_ids, set(partners))]
     sel_ids, _ = _project_picks(projects, project)
     shown = [p for p in projects if not sel_ids or p["id"] in sel_ids]
     name_map = {p["id"]: p["name"] for p in people}

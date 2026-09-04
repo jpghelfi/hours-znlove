@@ -527,6 +527,29 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 .pfilter-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pfilter-opt[hidden] { display: none; }
 .pfilter-empty { padding: 10px; font-size: 13px; grid-column: 1 / -1; }
+
+/* partner grouping inside the project picker. Each group spans the picker's
+   full width and re-declares the same auto-fill grid for its own options, so
+   the headings read as headings instead of becoming a third column of them. */
+.pfilter-group {
+  grid-column: 1 / -1; display: grid; gap: 2px; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.pfilter-group[hidden] { display: none; }
+.pfilter-gh {
+  grid-column: 1 / -1; padding: 8px 10px 4px; font-size: 11px; font-weight: 800;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.pfilter-group + .pfilter-group .pfilter-gh { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 10px; }
+.pfilter-partner .pfilter-nm { font-weight: 700; }
+.pfilter-ct { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--muted); }
+.pfilter-tag, .ptag {
+  font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 4px; white-space: nowrap;
+}
+/* the partner an item belongs to, said quietly beside its name */
+.pname-partner { font-size: 11px; font-weight: 700; color: var(--muted); }
 .pfilter-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 12px; border-top: 1px solid var(--line); background: var(--head);
@@ -600,7 +623,7 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   .pfilter { width: 100%; }
   .range-form .pfilter > summary { width: 100%; max-width: none; justify-content: center; padding: 11px 10px; }
   .pfilter-menu, .pfilter-end > .pfilter-menu { left: 0; right: 0; width: auto; min-width: 0; max-width: none; max-height: 70vh; }
-  .pfilter-list { grid-template-columns: 1fr; }
+  .pfilter-list, .pfilter-group { grid-template-columns: 1fr; }
   .range-form .pfilter-opt { padding: 11px 10px; font-size: 15px; }
   .range-form .pfilter-search { min-height: 42px; }
 

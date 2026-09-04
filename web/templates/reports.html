@@ -8,7 +8,10 @@
 {% set rsq %}{% for id in r.pm_selected %}&pm={{ id }}{% endfor %}{% for id in r.am_selected %}&am={{ id }}{% endfor %}{% endset %}
 {# so does the project pick #}
 {% set jsq %}{% for id in r.project_selected %}&project={{ id }}{% endfor %}{% endset %}
-{% set qs = '&scope=' ~ scope ~ psq ~ rsq ~ jsq %}
+{# a partner pick rides along the same way — and stays a *partner* pick,
+   so the link keeps meaning "whatever is under Bear" #}
+{% set qsn %}{% for name in r.partner_selected %}&partner={{ name|urlencode }}{% endfor %}{% endset %}
+{% set qs = '&scope=' ~ scope ~ psq ~ rsq ~ jsq ~ qsn %}
 {% set sel_names = people|selectattr('id', 'in', r.selected)|map(attribute='name')|list %}
 {% set jnames = projects|selectattr('id', 'in', r.project_selected)|map(attribute='name')|list %}
 <div class="week-head">
@@ -42,7 +45,7 @@
   {% with pm_selected = r.pm_selected, am_selected = r.am_selected %}{% include "_role_filter.html" %}{% endwith %}
   {# the project pick composes with the role pick above (AND) and, like it,
      only ever removes rows — so it isn't admin-gated either #}
-  {% with selected = r.project_selected %}{% include "_project_filter.html" %}{% endwith %}
+  {% with selected = r.project_selected, psel = r.partner_selected %}{% include "_project_filter.html" %}{% endwith %}
   <div class="range-actions">
     <button type="submit" class="btn">Apply</button>
     {% if r.is_admin %}
@@ -72,6 +75,23 @@
     </div>
     {% endfor %}
   </div>
+</div>
+{% endif %}
+
+{# Where the work came from: our own clients, or a partner's. Only worth a card
+   once there is more than one bucket — a shop with no partners would otherwise
+   get a chart of a single bar reading "Direct". Each bar links to that
+   partner's own view, keeping whatever people/role picks are already on. #}
+{% if r.by_partner|length > 1 %}
+<div class="card wide">
+  <h3>By partner</h3>
+  {% for pn in r.by_partner %}
+  <div class="baritem">
+    <div class="bar-name"><a class="plain" href="/reports?range={{ r.range }}&date_from={{ r.from }}&date_to={{ r.to }}&scope={{ scope }}{{ psq }}{{ rsq }}{% if pn.name != 'Direct' %}&partner={{ pn.name|urlencode }}{% endif %}">{{ pn.name }}</a></div>
+    <div class="bar-track"><div class="bar-fill" style="width: {{ pn.pct }}%"></div></div>
+    <div class="bar-val">{{ '%g'|format(pn.hours) }}h</div>
+  </div>
+  {% endfor %}
 </div>
 {% endif %}
 
