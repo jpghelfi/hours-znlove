@@ -15,7 +15,7 @@
   </div>
   <div class="invhead">
     <form method="get" action="/invoices" class="range-form">
-      {% with selected = sel_ids %}{% include "_project_filter.html" %}{% endwith %}
+      {% with selected = sel_ids, psel = partner_selected %}{% include "_project_filter.html" %}{% endwith %}
       <button type="submit" class="btn">Apply</button>
     </form>
     {% if enabled %}

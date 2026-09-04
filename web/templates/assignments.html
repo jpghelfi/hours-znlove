@@ -17,6 +17,7 @@
   <thead>
     <tr>
       <th class="col-project">Project</th>
+      {% if partners %}<th class="col-role">Partner</th>{% endif %}
       <th class="col-role">PM</th>
       <th class="col-role">Account manager</th>
       {% for p in people %}
@@ -44,6 +45,22 @@
                 title="{{ proj.member_ids|length }} of {{ people|length }} people assigned">{{ proj.member_ids|length }}/{{ people|length }}</span>
         </div>
       </td>
+      {# the umbrella a client sits under, edited where its PM and its people
+         are — the one page that answers "how is this project set up". The
+         options are Notion's own: the app never invents one, since Notion
+         would create a select option for any name it is handed. #}
+      {% if partners %}
+      <td class="col-role">
+        <select class="partner-pick" data-project="{{ proj.id }}"
+                aria-label="Partner umbrella for {{ proj.name }}" onchange="savePartner(this)">
+          <option value="">Direct</option>
+          {% for name in partners %}
+          <option value="{{ name }}" {{ 'selected' if name == proj.partner }}>{{ name }}</option>
+          {% endfor %}
+        </select>
+        {% if proj.umbrella %}<span class="ptag" title="{{ proj.partner }}'s own project — book the partner's own hours here">umbrella</span>{% endif %}
+      </td>
+      {% endif %}
       {% for role, current in [('pm', proj.pm_id), ('am', proj.am_id)] %}
       <td class="col-role">
         <select class="role-pick" data-project="{{ proj.id }}" data-role="{{ role }}"
@@ -67,10 +84,10 @@
     </tr>
     {% endfor %}
     {% if not projects %}
-    <tr class="empty"><td colspan="{{ (people|length) + 3 }}">No projects yet.</td></tr>
+    <tr class="empty"><td colspan="{{ (people|length) + 3 + (1 if partners else 0) }}">No projects yet.</td></tr>
     {% endif %}
     {% if projects and not people %}
-    <tr class="empty"><td colspan="{{ (people|length) + 3 }}">No people found in the workspace.</td></tr>
+    <tr class="empty"><td colspan="{{ (people|length) + 3 + (1 if partners else 0) }}">No people found in the workspace.</td></tr>
     {% endif %}
   </tbody>
 </table>
@@ -108,7 +125,30 @@ async function saveAssignment(cb) {
 
 // dataset.prev holds the last known-saved value, so a failed save can revert
 // to it rather than to whatever the <select> happens to show now
-document.querySelectorAll('.role-pick').forEach(sel => { sel.dataset.prev = sel.value; });
+document.querySelectorAll('.role-pick, .partner-pick').forEach(sel => { sel.dataset.prev = sel.value; });
+
+async function savePartner(sel) {
+  const project_id = sel.dataset.project, partner = sel.value;
+  const prev = sel.dataset.prev;
+  sel.classList.remove('bad');
+  sel.disabled = true;
+  try {
+    const res = await fetch('/api/project/partner', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_id, partner})
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'could not save');
+    sel.dataset.prev = sel.value;
+  } catch (e) {
+    sel.value = prev;
+    sel.classList.add('bad');
+    // the server's own words: "'Bea' isn't a partner" is worth reading
+    showAssignNotice(e.message || "Couldn't save — check your connection.");
+  } finally {
+    sel.disabled = false;
+  }
+}
 
 async function saveRole(sel) {
   const project_id = sel.dataset.project, role = sel.dataset.role, person_id = sel.value || null;
