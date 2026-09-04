@@ -414,6 +414,14 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   background: var(--ink); color: var(--bg); font-weight: 700; text-decoration: none;
 }
 .login-card .small { font-size: 12px; }
+/* the iPhone escape hatch: present but folded away, since it's noise for
+   everyone whose sign-in just works */
+.login-help { margin-top: 18px; text-align: left; font-size: 12px; color: var(--muted); }
+.login-help > summary { cursor: pointer; font-weight: 600; text-align: center; }
+.login-help p { margin: 10px 0 6px; }
+.login-help ul { margin: 0; padding-left: 18px; }
+.login-help li { margin-bottom: 6px; }
+.login-help .linkbtn { font-size: 12px; }
 .deny { background: var(--err); color: var(--err-ink); border-radius: 9px; padding: 10px 12px; margin: 12px 0; font-weight: 600; font-size: 13px; }
 
 /* reports */

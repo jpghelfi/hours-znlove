@@ -209,6 +209,13 @@ only for *identity* — all data access uses the integration token. So you manag
 access, and who is an admin, entirely in Notion — no redeploy needed (changes take up to a
 minute to propagate).
 
+The **Sign in with Notion** button points directly at Notion's consent page rather than at a
+redirect. That matters on iPhone: Notion's `api.notion.com` authorize URL 302s to
+`app.notion.com`, which the Notion app claims as a universal link, so Safari used to hand the
+tap to the app — which opened to nothing. The app resolves Notion's consent page once (cached,
+with a fallback to the documented endpoint) and links straight there. If a phone still grabs
+the link, the login card has a fold-out with two ways round it.
+
 `ALLOWED_EMAILS` / `ADMIN_EMAILS` (comma-separated emails) stay as a **fallback**, OR'd on
 top of the roster so a People-db misconfig can't lock everyone out; leave at least your own
 email in `ADMIN_EMAILS` as a break-glass admin.
