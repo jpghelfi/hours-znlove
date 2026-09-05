@@ -172,6 +172,13 @@ defaults the Rate field from the project and lets it be typed over — a
 discounted month is common enough that forcing an edit in Notion first would
 just mean the rate gets left wrong.
 
+Reopening an invoice pins its saved rate, **including a rate of zero**. A month
+deliberately billed as hours only stores a real 0, and an invoice filed before
+rates existed stores nothing at all — `_invoice_row` returns `None` for the
+second so the two can't collapse into each other. Without that distinction,
+re-saving a free month to fix its hours would silently pick up whatever rate the
+project has acquired since and put a charge on it.
+
 **A project with no rate still produces a valid document.** The money columns
 aren't drawn and it reads as a statement of hours. Nobody was going to fill a
 rate in for 35 projects on deploy day, and an invoice printing "0.00" would be
@@ -187,6 +194,11 @@ outside Notion and someone always renumbers a row by hand. It's assigned under
 the same write lock that does the upsert, so two invoices saved at once can't
 collide, and **a correction keeps the number it already had**: re-saving July
 after someone logs late is the same bill, not a second one.
+
+That lock is one process's, which is the whole of the deployment today (one free
+Render instance, one worker). On more than one worker two saves in the same year
+could each read the same highest number; the fix then is a uniqueness check
+after the write, not a bigger lock.
 
 ### The client's address
 
@@ -247,3 +259,12 @@ has needed to make yet.
 - Driven in a real browser: typing a rate on the export screen updated the
   header live (*tracked 20.75 h · billing 20.75 h · $1,129.84 incl. VAT*), and
   the confirm dialog names the money as well as the hours.
+- The zero-rate distinction: `_invoice_row` reads an unset `Rate` as `None` and
+  a saved 0 as `0`, so reopening a month billed as hours only leaves the Rate
+  field blank instead of refilling it from the project.
+- The printed lines add up to the printed total: with three people whose line
+  amounts each round up, the summed lines (200.49) and one multiplication of the
+  hours (200.31) differ, and the document now shows the former in both places.
+- A `NaN` rate is refused with 400 rather than sailing past `max(0, …)` — which
+  it does, since NaN compares false against everything — and failing inside
+  Notion's write.

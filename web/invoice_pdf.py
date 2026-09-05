@@ -91,11 +91,20 @@ def tax_pct() -> float:
     return company()["tax_pct"]
 
 
-def totals(hours: float, rate: float) -> dict:
+def totals(hours: float, rate: float, subtotal: float | None = None) -> dict:
     """Subtotal / tax / total for a bill — shared with the screens, so what the
-    browser previews and what the PDF prints can't drift."""
+    browser previews and what the PDF prints can't drift.
+
+    `subtotal` overrides the hours × rate arithmetic with the sum of the line
+    amounts actually printed. Each line is rounded to the cent before it is
+    shown, so several people on one invoice can sum to a cent either side of
+    one multiplication — and a total that doesn't match the lines above it is
+    exactly what an accounts-payable department bounces.
+    """
     co = company()
-    subtotal = round(float(hours) * float(rate or 0), 2)
+    if subtotal is None:
+        subtotal = round(float(hours) * float(rate or 0), 2)
+    subtotal = round(float(subtotal), 2)
     tax = round(subtotal * co["tax_pct"] / 100, 2) if rate else 0.0
     return {"subtotal": subtotal, "tax": tax, "tax_pct": co["tax_pct"],
             "tax_label": co["tax_label"], "total": round(subtotal + tax, 2)}
@@ -232,8 +241,8 @@ def _items_table(items: list[dict], rate: float, currency: str, st: dict,
 
 
 def _totals_table(hours: float, rate: float, currency: str, co: dict, st: dict,
-                  width: float) -> Table:
-    sums = totals(hours, rate)
+                  width: float, subtotal: float | None = None) -> Table:
+    sums = totals(hours, rate, subtotal)
     rows = []
     if rate:
         rows.append(("Total hours", _hours(hours) + " h"))
@@ -352,9 +361,9 @@ def build(invoice: dict, rows: list[dict], client: dict | None = None) -> bytes:
     story += [who, Spacer(1, 8 * mm)]
 
     # ---- the bill itself
-    table, _ = _items_table(by_person(rows), rate, currency, st, width)
+    table, lines_total = _items_table(by_person(rows), rate, currency, st, width)
     story += [table, Spacer(1, 6 * mm),
-              _totals_table(hours, rate, currency, co, st, width * 0.45)]
+              _totals_table(hours, rate, currency, co, st, width * 0.45, lines_total)]
 
     if invoice.get("client_note"):
         story += [Spacer(1, 8 * mm), Paragraph("NOTES", st["label"]),

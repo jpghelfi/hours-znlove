@@ -1689,7 +1689,10 @@ def next_invoice_number(year: int) -> str:
     INVOICE_NUMBER_PREFIX rides in front ("ZN-2026-014").
 
     Called under the write lock in save_invoice, so two invoices saved at once
-    can't be handed the same number.
+    can't be handed the same number — within one process. That is the whole of
+    it today (one free Render instance, one worker); on more than one worker two
+    saves in the same year could still scan the same highest number, and this
+    would need a uniqueness check after the write.
     """
     prefix = os.environ.get("INVOICE_NUMBER_PREFIX", "").strip()
     highest = 0
@@ -1755,7 +1758,11 @@ def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
         # the document's own fields — every one optional, since invoices filed
         # before the PDF existed have none of them
         "number": _plain(props, NUMBER_PROP),
-        "rate": props.get(INV_RATE_PROP, {}).get("number") or 0,
+        # None, not 0: an invoice deliberately billed as hours only stores a
+        # real 0, and the export screen has to tell that apart from an invoice
+        # filed before rates existed — otherwise re-saving the first one picks
+        # up the project's current rate and quietly prices a free month.
+        "rate": props.get(INV_RATE_PROP, {}).get("number"),
         "amount": props.get(AMOUNT_PROP, {}).get("number") or 0,
         "currency": _plain(props, INV_CURRENCY_PROP) or default_currency(),
         "client_note": _plain(props, CLIENT_NOTE_PROP),

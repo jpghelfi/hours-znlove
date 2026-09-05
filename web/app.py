@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import math
 import os
 import secrets
 from pathlib import Path
@@ -1479,7 +1480,11 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
     # file keeps the rate it was saved at, so correcting July's hours in
     # October can't quietly re-price a bill that has already gone out.
     billing = ops.project_billing(sel["id"]) if can_invoice else {}
-    if existing and existing.get("rate"):
+    # `is not None`, not truthiness: a month deliberately billed at no rate has
+    # a rate of 0, and re-saving it must not pick the project's rate back up.
+    # An invoice filed before rates existed has None, and does take the
+    # project's — there is nothing else it could mean.
+    if existing and existing.get("rate") is not None:
         billing = dict(billing, rate=existing["rate"],
                        currency=existing.get("currency") or billing.get("currency"))
     return templates.TemplateResponse(request, "project_export.html", {
@@ -1570,8 +1575,13 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
     billed = sum(r["hours"] for r in rows)
     # A negative rate is the only value that could turn a bill into a credit
     # note by accident; anything else the browser sends is a number we're happy
-    # to record, including 0 for "hours only, no money on this one".
-    rate = max(0.0, float(req.rate or 0))
+    # to record, including 0 for "hours only, no money on this one". NaN is the
+    # exception max() can't handle — it compares false against everything, so it
+    # would sail through and fail later inside Notion's write.
+    rate = float(req.rate or 0)
+    if not math.isfinite(rate):
+        return JSONResponse({"ok": False, "error": "that isn't a rate"}, status_code=400)
+    rate = max(0.0, rate)
     currency = (req.currency or ops.default_currency()).upper()[:8]
     try:
         saved = ops.save_invoice(project["id"], month.isoformat(), tracked, billed,
