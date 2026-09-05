@@ -81,6 +81,47 @@ services:
       # monthly allowance better.
       - key: BUDGET_WARN_PCT
         value: "95"
+      # Invoices (src/setup_invoices_db.py). Unset hides invoicing entirely —
+      # no Invoice button, and /invoices explains what to run.
+      - key: INVOICES_DS_ID
+        sync: false
+      - key: INVOICES_DB_ID
+        sync: false
+      # Emailing an *invoice* is the only thing this app sends outside the
+      # company, so it gets its own switch rather than riding the report one:
+      # turning on internal report email must not arm a button that mails a
+      # bill to a client. Downloading the PDF works with this off.
+      - key: INVOICE_EMAIL_ENABLED
+        value: "0"
+      # Blind copy on every invoice sent. Empty = nobody.
+      - key: INVOICE_CC
+        sync: false
+      # What the invoice PDF says about the sender. All of it is presentation,
+      # so it lives here rather than in Notion or the code. Use "|" for a line
+      # break inside a value.
+      - key: INVOICE_COMPANY
+        value: ZN Love
+      - key: INVOICE_COMPANY_DETAILS
+        sync: false
+      - key: INVOICE_PAYMENT
+        sync: false
+      - key: INVOICE_FOOTER
+        sync: false
+      # Tax is a property of the sender, not of a project: the rate lives on
+      # the project in Notion, the tax rate here. 0 prints no tax line.
+      - key: INVOICE_TAX_LABEL
+        value: VAT
+      - key: INVOICE_TAX_PCT
+        value: "0"
+      # 0 prints no due date.
+      - key: INVOICE_DUE_DAYS
+        value: "0"
+      # The currency a project falls back to when its own Currency is blank.
+      - key: INVOICE_CURRENCY
+        value: USD
+      # Rides in front of the year-sequence number ("ZN-2026-014"). Empty is fine.
+      - key: INVOICE_NUMBER_PREFIX
+        sync: false
       # The one board "＋ New ticket" writes to (a data source id). Creating is
       # the only ticket feature that *writes* to Notion, so it targets exactly
       # one board named here — never one the browser picks — and the button
