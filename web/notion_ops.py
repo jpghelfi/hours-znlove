@@ -231,7 +231,9 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
     that pass active_only=False and still need to tell the two apart (the
     invoices page lists every project but only offers active ones to invoice)
     — and "partner"/"umbrella", the client umbrella this project sits under
-    ("" when the client is direct) and whether this row *is* that umbrella.
+    ("" when the client is direct) and whether this row *is* that umbrella —
+    and "billing", the rate, currency and client contact an invoice PDF is
+    addressed with.
     All of them are parsed off the rows this query already returns, so none of
     them costs an extra call anywhere it's wanted."""
     projects = []
@@ -250,6 +252,7 @@ def list_projects(active_only: bool = True, member_of: str | None = None,
                 continue
             project = {"id": row["id"], "name": name, "active": active,
                        "budget": _budget_from_props(props),
+                       "billing": _billing_from_props(props),
                        "pm_id": _role_from_props(props, "pm"),
                        "am_id": _role_from_props(props, "am"),
                        "partner": _partner_from_props(props),
@@ -1516,6 +1519,102 @@ def create_ticket(title: str, description: str = "", project_option: str = "",
             "url": page.get("url") or f"https://www.notion.so/{_bare(page['id'])}"}
 
 
+# ---- billing details (rate + who the bill is addressed to) --------------
+#
+# An invoice PDF needs three things this app never had: an hourly rate, a
+# currency, and a client to address. All three belong to the *project*, and all
+# three are curated in Notion rather than edited here — the same call made for
+# the People roster, the Partner column and the PM/AM roles. The columns are
+# added on boot the way the budget ones are, so the day this ships every
+# project has somewhere to put them.
+#
+# A project with no rate is not an error: invoice_pdf.build simply drops the
+# money columns and the document reads as a statement of hours. Nobody is going
+# to fill a rate in for 35 projects on deploy day.
+
+RATE_PROP = "Rate"
+CURRENCY_PROP = "Currency"
+CLIENT_NAME_PROP = "Client name"
+CLIENT_EMAIL_PROP = "Client email"
+CLIENT_ADDRESS_PROP = "Client address"
+
+# Seeded onto a freshly created Currency column so the dropdown isn't empty.
+# Notion invents an option for any name it is handed, so we only ever *read*
+# this column — a currency we don't know still comes through fine.
+_CURRENCY_OPTIONS = ("USD", "EUR", "GBP", "ARS")
+
+
+def default_currency() -> str:
+    return (os.environ.get("INVOICE_CURRENCY") or "USD").strip().upper()[:8] or "USD"
+
+
+def ensure_billing_properties() -> None:
+    """Add the rate / client columns to the Projects db if they're missing.
+
+    Same shape as ensure_budget_properties: read the schema, add only what
+    isn't there, one update. Safe to run on every boot.
+    """
+    ds = _notion.data_sources.retrieve(PROJECTS_DS)
+    have = ds["properties"]
+    missing = {}
+    if RATE_PROP not in have:
+        missing[RATE_PROP] = {"number": {}}
+    if CURRENCY_PROP not in have:
+        missing[CURRENCY_PROP] = {"select": {"options": [
+            {"name": c} for c in _CURRENCY_OPTIONS]}}
+    if CLIENT_NAME_PROP not in have:
+        missing[CLIENT_NAME_PROP] = {"rich_text": {}}
+    if CLIENT_EMAIL_PROP not in have:
+        missing[CLIENT_EMAIL_PROP] = {"email": {}}
+    if CLIENT_ADDRESS_PROP not in have:
+        missing[CLIENT_ADDRESS_PROP] = {"rich_text": {}}
+    if missing:
+        _notion.data_sources.update(PROJECTS_DS, properties=missing)
+
+
+def _plain(props: dict, name: str) -> str:
+    text = props.get(name, {}).get("rich_text") or []
+    return "".join(t.get("plain_text", "") for t in text).strip()
+
+
+def _billing_from_props(props: dict) -> dict:
+    """The rate and client contact off a project page.
+
+    Every read goes through .get() for the reason _budget_from_props does: these
+    columns are addressed by name, and a rename in the Notion UI has taken two
+    pages down before (see alloc_person_prop). A renamed column here must read
+    as "no rate set" — the invoice loses its money columns — never as a 500.
+    """
+    rate = props.get(RATE_PROP, {}).get("number")
+    sel = props.get(CURRENCY_PROP, {}).get("select") or {}
+    return {
+        "rate": float(rate) if rate is not None else 0.0,
+        "currency": (sel.get("name") or default_currency()).upper(),
+        "client_name": _plain(props, CLIENT_NAME_PROP),
+        "client_email": (props.get(CLIENT_EMAIL_PROP, {}).get("email") or "").strip(),
+        "client_address": _plain(props, CLIENT_ADDRESS_PROP),
+    }
+
+
+def project_billing(project_id: str) -> dict:
+    """One project's billing block, read straight from its page.
+
+    A page retrieve rather than a scan of list_projects: this runs when an
+    invoice is opened or sent, where the caller wants *this* project's rate and
+    not a list of 35.
+    """
+    blank = {"rate": 0.0, "currency": default_currency(), "client_name": "",
+             "client_email": "", "client_address": ""}
+    if not project_id:
+        return blank
+    try:
+        page = _notion.pages.retrieve(project_id)
+    except Exception:
+        logging.warning("Could not read billing details for project %s", project_id)
+        return blank
+    return _billing_from_props(page.get("properties") or {})
+
+
 # ---- invoices ----------------------------------------------------------
 #
 # An invoice records a decision *about* logged hours — "for July we billed
@@ -1532,16 +1631,74 @@ def invoices_enabled() -> bool:
 
 
 def ensure_invoice_properties() -> None:
-    """Make sure the Invoices db can hold the per-entry adjustments.
+    """Make sure the Invoices db can hold everything an invoice now records.
 
-    Invoices created before the detail view only stored totals, so add the
-    column on startup the way ensure_person_property does.
+    Three generations of the same database: totals first, then the per-entry
+    adjustments the detail view needs, then the number / rate / amount and the
+    send log the PDF needs. Each was added on startup the way
+    ensure_person_property does, so an existing Notion db catches up on boot
+    rather than needing the setup script re-run.
     """
     if not INVOICES_DS:
         return
     ds = _notion.data_sources.retrieve(INVOICES_DS)
-    if _ADJ_PROP not in ds["properties"]:
-        _notion.data_sources.update(INVOICES_DS, properties={_ADJ_PROP: {"rich_text": {}}})
+    have = ds["properties"]
+    missing = {}
+    if _ADJ_PROP not in have:
+        missing[_ADJ_PROP] = {"rich_text": {}}
+    if NUMBER_PROP not in have:
+        missing[NUMBER_PROP] = {"rich_text": {}}
+    if INV_RATE_PROP not in have:
+        missing[INV_RATE_PROP] = {"number": {}}
+    if AMOUNT_PROP not in have:
+        missing[AMOUNT_PROP] = {"number": {}}
+    if INV_CURRENCY_PROP not in have:
+        missing[INV_CURRENCY_PROP] = {"rich_text": {}}
+    if SENT_TO_PROP not in have:
+        missing[SENT_TO_PROP] = {"rich_text": {}}
+    if SENT_AT_PROP not in have:
+        missing[SENT_AT_PROP] = {"date": {}}
+    if CLIENT_NOTE_PROP not in have:
+        missing[CLIENT_NOTE_PROP] = {"rich_text": {}}
+    if missing:
+        _notion.data_sources.update(INVOICES_DS, properties=missing)
+
+
+# What the invoice *document* carries, on top of the hours the record already
+# held. The rate and currency are copied off the project at save time rather
+# than looked up when the PDF is drawn: a rate that changes in Notion next
+# quarter must not silently restate a bill that has already gone out.
+NUMBER_PROP = "Number"
+INV_RATE_PROP = "Rate"
+AMOUNT_PROP = "Amount"
+INV_CURRENCY_PROP = "Currency"
+SENT_TO_PROP = "Sent to"
+SENT_AT_PROP = "Sent at"
+CLIENT_NOTE_PROP = "Client note"   # printed on the PDF, unlike `Note`, which is internal
+
+
+_NUMBER_RE = re.compile(r"(\d{4})-(\d+)\s*$")
+
+
+def next_invoice_number(year: int) -> str:
+    """The next number in this year's sequence, e.g. "2026-014".
+
+    Derived from the numbers already filed rather than from a counter, because
+    a counter would be a second source of truth living outside Notion — and
+    someone will always renumber a row by hand. An optional
+    INVOICE_NUMBER_PREFIX rides in front ("ZN-2026-014").
+
+    Called under the write lock in save_invoice, so two invoices saved at once
+    can't be handed the same number.
+    """
+    prefix = os.environ.get("INVOICE_NUMBER_PREFIX", "").strip()
+    highest = 0
+    for page in _query_all({"data_source_id": INVOICES_DS, "page_size": 100}):
+        raw = _plain(page.get("properties") or {}, NUMBER_PROP)
+        m = _NUMBER_RE.search(raw)
+        if m and int(m.group(1)) == year:
+            highest = max(highest, int(m.group(2)))
+    return f"{prefix}{year}-{highest + 1:03d}"
 
 
 # Only the entries whose billed hours differ from what was logged are stored —
@@ -1595,6 +1752,15 @@ def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
         "note": "".join(t.get("plain_text", "") for t in note),
         "adjustments": _adjustments_from_props(props),
         "url": page.get("url", ""),
+        # the document's own fields — every one optional, since invoices filed
+        # before the PDF existed have none of them
+        "number": _plain(props, NUMBER_PROP),
+        "rate": props.get(INV_RATE_PROP, {}).get("number") or 0,
+        "amount": props.get(AMOUNT_PROP, {}).get("number") or 0,
+        "currency": _plain(props, INV_CURRENCY_PROP) or default_currency(),
+        "client_note": _plain(props, CLIENT_NOTE_PROP),
+        "sent_to": _plain(props, SENT_TO_PROP),
+        "sent_at": ((props.get(SENT_AT_PROP, {}).get("date") or {}).get("start") or "")[:19],
     }
 
 
@@ -1648,13 +1814,20 @@ def get_invoice(invoice_id: str) -> dict | None:
 
 def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed: float,
                  issued: str, note: str = "", person_id: str | None = None,
-                 adjustments: dict | None = None) -> dict:
+                 adjustments: dict | None = None, rate: float = 0.0,
+                 currency: str = "", client_note: str = "") -> dict:
     """File (or correct) the invoice for one project and one month.
 
     Upserts on (project, month), the same discipline as set_cell: saving July
     for a project twice is nearly always a correction, not a second bill. On a
     correction `Issued` keeps whatever it already said unless a new date is
-    passed — Notion's own page history is the audit trail.
+    passed — and so does `Number`: a bill that has gone out keeps the number it
+    went out with. Notion's own page history is the audit trail.
+
+    `rate`/`currency` are copied onto the row rather than read from the project
+    when the PDF is drawn, so next quarter's rate can't restate a bill already
+    sent. `Amount` is the pre-tax subtotal — tax is a property of the sender
+    (INVOICE_TAX_PCT), applied when the document is built.
     """
     if not INVOICES_DS:
         raise RuntimeError("Invoices database isn't configured (INVOICES_DS_ID).")
@@ -1668,6 +1841,11 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
         "Hours tracked": {"number": round(hours_tracked, 2)},
         "Hours billed": {"number": round(hours_billed, 2)},
         "Note": {"rich_text": [{"text": {"content": note[:1900]}}]},
+        CLIENT_NOTE_PROP: {"rich_text": [{"text": {"content": (client_note or "")[:1900]}}]},
+        INV_RATE_PROP: {"number": round(float(rate or 0), 2)},
+        AMOUNT_PROP: {"number": round(float(hours_billed) * float(rate or 0), 2)},
+        INV_CURRENCY_PROP: {"rich_text": [
+            {"text": {"content": (currency or default_currency()).upper()[:8]}}]},
         # rewritten every save, so an entry billed back at its logged hours
         # stops being an adjustment instead of lingering as one
         _ADJ_PROP: {"rich_text": _adjustments_to_rich_text(adjustments or {})},
@@ -1688,6 +1866,11 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
         keep = matches[0] if matches else None
         for extra in matches[1:]:   # duplicates from an old race: fold into one
             _notion.pages.update(extra["id"], archived=True)
+        # a number is assigned once and then kept: correcting July's hours must
+        # not hand the client a second invoice number for the same bill
+        if not (keep and _plain(keep.get("properties") or {}, NUMBER_PROP)):
+            props[NUMBER_PROP] = {"rich_text": [{"text": {"content": next_invoice_number(
+                dt.date.fromisoformat(month).year)}}]}
         if keep:
             _notion.pages.update(keep["id"], properties=props)
             page = _notion.pages.retrieve(keep["id"])
@@ -1696,6 +1879,25 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
                 parent={"type": "data_source_id", "data_source_id": INVOICES_DS},
                 properties=props)
     return dict(_invoice_row(page, pname, _person_name_map()), replaced=bool(keep))
+
+
+def mark_invoice_sent(invoice_id: str, recipients: list[str]) -> dict:
+    """Record that this invoice went out, and to whom.
+
+    Written only after Gmail has accepted the message, so the row can't claim a
+    send that failed. The parent check is get_invoice's, for the same reason:
+    the id comes from a browser.
+    """
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        raise ValueError("that isn't an invoice")
+    to = ", ".join(recipients)[:1900]
+    _notion.pages.update(invoice_id, properties={
+        SENT_TO_PROP: {"rich_text": [{"text": {"content": to}}]},
+        SENT_AT_PROP: {"date": {"start": dt.datetime.now().astimezone().isoformat(
+            timespec="seconds")}},
+    })
+    return dict(invoice, sent_to=to)
 
 
 def entry_task(props: dict) -> dict:

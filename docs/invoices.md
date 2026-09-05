@@ -50,6 +50,12 @@ and wired into both id paths in `src/config.py` — `databases.json` locally,
 | `Saved by` | people | who pressed the button |
 | `Note` | rich text | internal, one line |
 | `Adjustments` | rich text | `{entry id: billed hours}` for the lines billed at something other than their logged hours (added on startup by `ensure_invoice_properties`) |
+| `Number` | rich text | `2026-014` — assigned once and then kept |
+| `Rate` | number | the hourly rate **as billed**, copied off the project at save time |
+| `Amount` | number | `Hours billed × Rate`, pre-tax |
+| `Currency` | rich text | copied off the project too |
+| `Client note` | rich text | printed on the PDF, unlike `Note`, which is internal |
+| `Sent to` / `Sent at` | rich text / date | written only after Gmail accepts the message |
 
 Everything degrades quietly when it isn't configured: `invoices_enabled()` is
 False, the Invoice button never appears, and `/invoices` explains what to run
@@ -137,14 +143,82 @@ computed for the last four months only, from a **single** read of that window
 rather than one query per invoice: a two-year invoice list would otherwise cost
 two years of round trips to draw.
 
+## The PDF, and sending it to a client
+
+`/invoices/{id}.pdf` builds the document itself (`web/invoice_pdf.py`), and
+**✉ Send to client** on the invoice mails that exact file. The download and the
+send go through one helper (`_invoice_document` in `app.py`) precisely so the
+file a client receives is byte-for-byte the one an admin previewed.
+
+The document is a bill, not a report: a company block, an addressee, a numbered
+header with issue and due dates, one line per person (hours × rate = amount), a
+total, and — on a second page — every billed entry with its date, person and
+comment, so a client can check the total without asking for a spreadsheet. The
+lines are `_invoice_export_rows`, the same billed rows the workbook and the
+clipboard get, which is why the three can't disagree about what was billed.
+
+### Money: three places, on purpose
+
+| What | Lives in | Why there |
+|---|---|---|
+| Hourly `Rate`, `Currency` | the **project**, in Notion | it's a fact about the client relationship, curated where every other project fact is |
+| `INVOICE_TAX_PCT`, company, address, payment terms | the **environment** | it's a fact about *us*, identical on every invoice, and changing entity shouldn't need a deploy |
+| The rate this bill was actually cut at | the **invoice row** | copied off the project when the invoice is saved |
+
+That last one is the important one. A rate that changes next quarter must not
+restate a bill already sent, so `save_invoice` copies rate and currency onto the
+row rather than the PDF looking them up when it's drawn. The export screen
+defaults the Rate field from the project and lets it be typed over — a
+discounted month is common enough that forcing an edit in Notion first would
+just mean the rate gets left wrong.
+
+**A project with no rate still produces a valid document.** The money columns
+aren't drawn and it reads as a statement of hours. Nobody was going to fill a
+rate in for 35 projects on deploy day, and an invoice printing "0.00" would be
+worse than one printing none. The invoice page says so and links back to
+re-invoice once the rate is set.
+
+### Numbering
+
+`Number` is a per-calendar-year sequence — `2026-014`, with an optional
+`INVOICE_NUMBER_PREFIX` in front — derived from the numbers already filed rather
+than from a counter, because a counter would be a second source of truth living
+outside Notion and someone always renumbers a row by hand. It's assigned under
+the same write lock that does the upsert, so two invoices saved at once can't
+collide, and **a correction keeps the number it already had**: re-saving July
+after someone logs late is the same bill, not a second one.
+
+### The client's address
+
+Also curated in Notion, on the project: `Client name`, `Client email`,
+`Client address`, added to the Projects db on boot by
+`ensure_billing_properties` the way the budget columns are. The send box
+prefills To from `Client email` and stays editable; when the project has none it
+says so rather than offering an empty field with no hint of where the address is
+supposed to come from.
+
+### The switch
+
+Emailing invoices rides `INVOICE_EMAIL_ENABLED`, **not** the report's
+`REPORT_EMAIL_ENABLED`. One Google authorization powers three features now
+(Sheets export, report email, invoice email) and this is the only one that sends
+outside the company — turning on an internal report email must not arm a button
+that mails a bill to a client. Downloading the PDF works with the switch off.
+The transport is the Gmail API over HTTPS for the reason `mailer.py` explains:
+Render's free instances block the SMTP ports outright.
+
+`Sent to` / `Sent at` are written only **after** Gmail accepts the message, so a
+row can't claim a send that failed — and if that write fails afterwards it's
+logged rather than failing the request, since the client already has the
+invoice and a 502 would only invite a second send. Nothing is queued or
+retried.
+
 ## Not in scope
 
-No rates, amounts, currency, tax or invoice numbers — this records **hours
-billed**, not money. Projects has no rate field today; adding money later means a
-rate on the Project (or per person) and deciding whose rate wins when several
-people work one project. Nothing here blocks that.
-
-No status (draft / sent / paid) in v1 — one Notion property whenever it's wanted.
+No line-item discounts, no multi-currency conversion, no payment status
+(draft / sent / paid — `Sent at` is as far as it goes), no PDF logo. A logo is
+one image and an env var whenever it's wanted; the rest are decisions nobody
+has needed to make yet.
 
 ## Verified
 
@@ -160,3 +234,16 @@ No status (draft / sent / paid) in v1 — one Notion property whenever it's want
   the project and amount, and the saved invoice appears on `/invoices`.
 - The staleness flag: logging 2 h into an already-invoiced month made the list
   show *"now 8.5 h logged"* against the 6.5 h it was invoiced at.
+- The PDF, end to end against real Notion: saving with a rate filed
+  `2026-014` / rate 45 / amount 382.50; re-saving at a different rate **kept the
+  number and the page**; the document rendered with the company block, bill-to,
+  line items, VAT and total, and a second page listing every billed entry; a
+  project with no rate produced the same document without money columns; a month
+  billed at nothing produced a valid one-page file rather than an error.
+- The guards: `/api/invoice/send` answers 403 while `INVOICE_EMAIL_ENABLED` is
+  off, and the To/Subject/Send controls aren't rendered at all — the same rule
+  the export screen follows. With the switch on, the send box appears, names the
+  Cc, and says which project has no `Client email` in Notion.
+- Driven in a real browser: typing a rate on the export screen updated the
+  header live (*tracked 20.75 h · billing 20.75 h · $1,129.84 incl. VAT*), and
+  the confirm dialog names the money as well as the hours.

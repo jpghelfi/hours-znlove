@@ -25,6 +25,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
 from . import google_auth
+from . import invoice_pdf
 from . import mailer
 from . import notion_ops as ops
 from . import report_gsheet
@@ -99,6 +100,7 @@ def _startup() -> None:
     ops.ensure_admin_property()
     ops.ensure_task_properties()
     ops.ensure_invoice_properties()
+    ops.ensure_billing_properties()
     ops.ensure_budget_properties()
     ops.ensure_goal_property()
     ops.ensure_role_properties()
@@ -1473,6 +1475,13 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
     # that's what you're looking at; the POST re-checks both (see _invoicable).
     can_invoice = bool(ops.invoices_enabled() and sel and period == "monthly")
     existing = ops.find_invoice(sel["id"], rng["from"]) if can_invoice else None
+    # The rate is the project's, curated in Notion — but an invoice already on
+    # file keeps the rate it was saved at, so correcting July's hours in
+    # October can't quietly re-price a bill that has already gone out.
+    billing = ops.project_billing(sel["id"]) if can_invoice else {}
+    if existing and existing.get("rate"):
+        billing = dict(billing, rate=existing["rate"],
+                       currency=existing.get("currency") or billing.get("currency"))
     return templates.TemplateResponse(request, "project_export.html", {
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids,
@@ -1485,6 +1494,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         "period": period, "rng": rng, "start_iso": rng["from"],
         "label": _export_label(sel, sel_ids, sc["partners"]),
         "can_invoice": can_invoice, "existing_invoice": existing,
+        "billing": billing, "tax": invoice_pdf.company() if can_invoice else {},
         "today_iso": dt.date.today().isoformat(),
         "groups": groups, "total": round(sum(r["hours"] for r in rows), 2),
         "recipients": ", ".join(mailer.default_recipients()),
@@ -1507,7 +1517,13 @@ class InvoiceRequest(ExportRequest):
     project_id: str = ""
     month: str = ""
     issued: str = ""
-    note: str = ""
+    note: str = ""            # internal
+    client_note: str = ""     # printed on the PDF
+    # The rate the browser was showing. Defaulted from the project, but typed
+    # over for this one bill often enough (a discounted month, a different
+    # scope) that pinning it to Notion would just mean editing Notion first.
+    rate: float = 0.0
+    currency: str = ""
 
 
 # ---- invoices ----------------------------------------------------------
@@ -1552,10 +1568,17 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
               if e.get("id")}
     tracked = sum(logged.values())
     billed = sum(r["hours"] for r in rows)
+    # A negative rate is the only value that could turn a bill into a credit
+    # note by accident; anything else the browser sends is a number we're happy
+    # to record, including 0 for "hours only, no money on this one".
+    rate = max(0.0, float(req.rate or 0))
+    currency = (req.currency or ops.default_currency()).upper()[:8]
     try:
         saved = ops.save_invoice(project["id"], month.isoformat(), tracked, billed,
                                  issued.isoformat(), req.note[:500], user.get("id"),
-                                 adjustments=_invoice_adjustments(req.rows, logged))
+                                 adjustments=_invoice_adjustments(req.rows, logged),
+                                 rate=rate, currency=currency,
+                                 client_note=req.client_note[:500])
     except Exception:
         logging.exception("Saving the invoice for %s %s failed", project["name"], req.month)
         return JSONResponse({"ok": False, "error": "could not save that invoice"},
@@ -1720,6 +1743,136 @@ def _invoice_export_rows(invoice: dict) -> tuple[list[dict], dict]:
     return rows, rng
 
 
+def _invoice_document(invoice: dict) -> tuple[bytes, str, dict]:
+    """The invoice PDF, its filename, and the client it's addressed to.
+
+    One helper for both ways out — the download and the send — so the file a
+    client is emailed is byte-for-byte the one an admin previewed. The rows are
+    `_invoice_export_rows`, i.e. the same billed lines the workbook and the
+    clipboard get.
+    """
+    rows, _ = _invoice_export_rows(invoice)
+    month = _parse_date(invoice["month"])
+    doc = dict(invoice,
+               period_label=month.strftime("%B %Y") if month else invoice["month"])
+    client = ops.project_billing(invoice["project_id"])
+    return (invoice_pdf.build(doc, rows, {"name": client.get("client_name"),
+                                          "email": client.get("client_email"),
+                                          "address": client.get("client_address")}),
+            invoice_pdf.filename(invoice), client)
+
+
+@app.get("/invoices/{invoice_id}.pdf")
+def invoice_pdf_download(request: Request, invoice_id: str):
+    """The invoice as a PDF — the document a client actually receives.
+
+    Declared before /invoices/{invoice_id} for the same reason the .xlsx route
+    is: a path parameter will happily swallow the suffix and render HTML for a
+    download.
+    """
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    invoice = ops.get_invoice(invoice_id)
+    if not invoice:
+        return RedirectResponse(url="/invoices", status_code=303)
+    pdf, fname, _ = _invoice_document(invoice)
+    from fastapi.responses import Response
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+class InvoiceSend(BaseModel):
+    invoice_id: str
+    to: str = ""
+    subject: str = ""
+    message: str = ""
+
+
+@app.post("/api/invoice/send")
+def api_invoice_send(request: Request, req: InvoiceSend):
+    """Email one invoice, as a PDF, to the client.
+
+    The only thing this app sends *outside* the company, which is why it rides
+    its own switch (INVOICE_EMAIL_ENABLED) rather than the report one: turning
+    on internal report email must not arm a button that mails a bill to a
+    client. The recipients default to the project's `Client email` in Notion
+    and are editable per send, validated by the same rules the report uses.
+
+    Nothing is queued: the send either completes inside this request or reports
+    Google's own words. `Sent to` / `Sent at` are written only after Gmail has
+    accepted the message, so the row can't claim a send that failed.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not mailer.invoice_email_enabled():
+        return JSONResponse({"ok": False, "error": "emailing invoices is turned off"},
+                            status_code=403)
+    via = mailer.invoice_transport()
+    if not via:
+        return JSONResponse({"ok": False, "error": "email isn't set up yet — add "
+                             + ", ".join(mailer.invoice_missing_vars())
+                             + " to the environment"}, status_code=503)
+    invoice = ops.get_invoice(req.invoice_id)
+    if not invoice:
+        return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
+
+    pdf, fname, client = _invoice_document(invoice)
+    try:
+        to = mailer.clean_recipients(req.to or client.get("client_email") or "")
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    month = _parse_date(invoice["month"])
+    period = month.strftime("%B %Y") if month else invoice["month"]
+    number = invoice.get("number")
+    subject = req.subject.strip() or (
+        f"Invoice {number} — {invoice['project']} — {period}" if number
+        else f"Invoice — {invoice['project']} — {period}")
+    body = req.message.strip() or _invoice_email_body(invoice, period, user)
+    try:
+        res = mailer.send_report(to, subject, body, pdf, fname,
+                                 cc=mailer.invoice_cc(), via=via)
+    except mailer.NotConfigured as e:
+        return JSONResponse({"ok": False, "error": f"missing {e}"}, status_code=503)
+    except Exception as e:
+        logging.exception("Sending invoice %s to %s failed", req.invoice_id, to)
+        return JSONResponse({"ok": False, "error": mailer.explain(e)}, status_code=502)
+
+    try:
+        ops.mark_invoice_sent(invoice["id"], to)
+    except Exception:
+        # the client has the invoice; failing the request now would invite a
+        # second send, so the log is the right place for this
+        logging.exception("Invoice %s was sent but not marked as sent", invoice["id"])
+    return JSONResponse(dict(res, filename=fname))
+
+
+def _invoice_email_body(invoice: dict, period: str, user: dict) -> str:
+    """The default covering note. Says what's attached and what it totals —
+    a client should not have to open the PDF to know what arrived."""
+    hours = round(invoice.get("hours_billed") or 0, 2)
+    rate = invoice.get("rate") or 0
+    sums = invoice_pdf.totals(hours, rate)
+    line = f"{hours:g} h"
+    if rate:
+        line += f" at {invoice_pdf.money(rate, invoice.get('currency'))}/h — " \
+                f"{invoice_pdf.money(sums['total'], invoice.get('currency'))}"
+        if sums["tax_pct"]:
+            line += f" (incl. {sums['tax_label']})"
+    return (f"Hi,\n\nPlease find attached invoice "
+            f"{invoice.get('number') or ''} for {invoice['project']}, {period}: "
+            f"{line}.\n\nThe full breakdown of hours is on the second page.\n\n"
+            f"— {user.get('name') or user.get('email') or 'ZN Love'}\n")
+
+
 @app.get("/invoices/{invoice_id}.xlsx")
 def invoice_xlsx(request: Request, invoice_id: str):
     """The invoice as a workbook — the billed hours, ready to send on."""
@@ -1771,8 +1924,23 @@ def invoice_detail(request: Request, invoice_id: str):
                    "goal": r.get("goal") or "",
                    "task_url": r.get("task_url") or ""}
                   for r in rows if r["billed"]]
+    # the rate on the invoice, not the project's rate today: a bill already
+    # sent must keep saying what it said (see save_invoice)
+    billing = ops.project_billing(invoice["project_id"])
+    sums = invoice_pdf.totals(round(sum(r["billed"] for r in rows), 2),
+                              invoice.get("rate") or 0)
     return templates.TemplateResponse(request, "invoice_detail.html", {
         "sheet_rows": sheet_rows,
+        "billing": billing, "sums": sums,
+        "money": lambda v: invoice_pdf.money(v, invoice.get("currency")),
+        # the client email lives on the project in Notion; when it's missing the
+        # send box says so rather than offering an empty To field with no hint
+        # of where the address is supposed to come from
+        "recipients": billing.get("client_email") or "",
+        "mail_ready": bool(mailer.invoice_transport()),
+        "mail_missing": mailer.invoice_missing_vars(),
+        "mail_cc": mailer.invoice_cc(),
+        "sender": mailer.sender(),
         "user": user, "is_admin": True,
         "invoice": invoice, "days": days, "rng": rng,
         # every line on screen, not just the billed ones the clipboard gets
