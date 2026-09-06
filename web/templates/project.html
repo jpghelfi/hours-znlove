@@ -30,10 +30,10 @@
     </div>
     {% endif %}
   </div>
-  <div class="weeknav">
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">←</a>
+  <div class="weeknav arrows">
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}" aria-label="Earlier" title="Earlier">←</a>
     <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">→</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}" aria-label="Later" title="Later">→</a>
   </div>
 </div>
 
@@ -59,8 +59,13 @@
   {% with selected = sel_ids, psel = partner_selected %}{% include "_project_filter.html" %}{% endwith %}
   <span class="seg-label filters-label">Owners</span>
   {% with pm_selected = pm_selected, am_selected = am_selected %}{% include "_role_filter.html" %}{% endwith %}
-  <a class="btn" href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">⬇ CSV</a>
-  <a class="btn" href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">⬇ Excel</a>
+  <details class="btnmenu">
+    <summary class="btn">⬇ Download<span class="caret">▾</span></summary>
+    <div class="menu-list">
+      <a href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"><b>CSV</b><small>one row per entry</small></a>
+      <a href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"><b>Excel</b><small>a sheet per project, with the log</small></a>
+    </div>
+  </details>
   {# one project + a whole month is exactly what an invoice is, so the same
      screen is offered under its real name; anything else is still an export #}
   <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"

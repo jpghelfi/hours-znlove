@@ -13,33 +13,109 @@
 </head>
 <body>
   <div class="navprog" id="navprog" hidden><i></i></div>
+{#- The nav_* blocks each page overrides with "active". Defined inside a
+    swallowed set so the word never prints into the page: base.html renders
+    them itself, once, below. -#}
+{%- set _nav_blocks -%}
+{% block nav_form %}{% endblock %}{% block nav_week %}{% endblock %}{% block nav_absences %}{% endblock %}
+{% block nav_schedule %}{% endblock %}{% block nav_reports %}{% endblock %}{% block nav_project %}{% endblock %}
+{% block nav_budgets %}{% endblock %}{% block nav_assignments %}{% endblock %}{% block nav_invoices %}{% endblock %}
+{%- endset -%}
+{#- Which page is on: each page overrides one nav_* block with "active".
+    Rendering them here once gives the grouped menus and the phone tab bar a
+    single answer to "is this section current?" -#}
+{%- set nav = {
+  'form': self.nav_form()|trim, 'week': self.nav_week()|trim,
+  'absences': self.nav_absences()|trim, 'schedule': self.nav_schedule()|trim,
+  'reports': self.nav_reports()|trim, 'project': self.nav_project()|trim,
+  'budgets': self.nav_budgets()|trim, 'assignments': self.nav_assignments()|trim,
+  'invoices': self.nav_invoices()|trim } -%}
+{%- set on_reports = nav.reports or nav.project or nav.budgets -%}
+{%- set on_admin = nav.assignments or nav.invoices -%}
   <header class="topbar">
-    <div class="brand">⏱ Hours Tracker</div>
-    <nav>
-      <div class="nav-links">
-        <a href="/" class="{% block nav_form %}{% endblock %}">Log hours</a>
-        <a href="/week" class="{% block nav_week %}{% endblock %}">Weekly grid</a>
-        {# everyone logs their own absences, so this one isn't admin-only —
-           and /schedule reads as your own week for anyone who isn't an admin #}
-        <a href="/absences" class="{% block nav_absences %}{% endblock %}">Absences</a>
-        <a href="/schedule" class="{% block nav_schedule %}{% endblock %}">Schedule</a>
-        {% if is_admin %}
-        <a href="/reports" class="{% block nav_reports %}{% endblock %}">Reports</a>
-        <a href="/project" class="{% block nav_project %}{% endblock %}">By project</a>
-        <a href="/assignments" class="{% block nav_assignments %}{% endblock %}">Assignments</a>
-        <a href="/budgets" class="{% block nav_budgets %}{% endblock %}">Budgets</a>
-        <a href="/invoices" class="{% block nav_invoices %}{% endblock %}">Invoices</a>
-        {% endif %}
-      </div>
-      <div class="nav-user">
-        {% if user %}<span class="who">{{ user.name }}</span><form method="post" action="/logout" class="logout-form"><button type="submit" class="logout-btn">Log out</button></form>{% endif %}
-        <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode">🌙</button>
-      </div>
+    <a class="brand" href="/">⏱ Hours Tracker</a>
+    {# Desktop: the four everyday pages stay flat; the admin pages fold into two
+       groups so the bar is one row at any laptop width. Phone: hidden — the
+       tab bar at the bottom of the screen takes over (see .tabbar below). #}
+    <nav class="mainnav" aria-label="Main">
+      <a href="/" class="{{ nav.form }}">Log hours</a>
+      <a href="/week" class="{{ nav.week }}">My week</a>
+      {# everyone logs their own absences, so this one isn't admin-only —
+         and /schedule reads as your own week for anyone who isn't an admin #}
+      <a href="/absences" class="{{ nav.absences }}">Absences</a>
+      <a href="/schedule" class="{{ nav.schedule }}">Schedule</a>
+      {% if is_admin %}
+      <details class="navmenu">
+        <summary class="{{ 'active' if on_reports }}">Reports<span class="caret">▾</span></summary>
+        <div class="menu-list">
+          <a href="/reports" class="{{ nav.reports }}"><b>Reports</b><small>hours by day, project and person</small></a>
+          <a href="/project" class="{{ nav.project }}"><b>By project</b><small>one period per project · export · invoice</small></a>
+          <a href="/budgets" class="{{ nav.budgets }}"><b>Budgets</b><small>monthly allowance per project</small></a>
+        </div>
+      </details>
+      <details class="navmenu">
+        <summary class="{{ 'active' if on_admin }}">Admin<span class="caret">▾</span></summary>
+        <div class="menu-list">
+          <a href="/invoices" class="{{ nav.invoices }}"><b>Invoices</b><small>what was billed, month by month</small></a>
+          <a href="/assignments" class="{{ nav.assignments }}"><b>Assignments</b><small>who's on which project · PM · partner</small></a>
+        </div>
+      </details>
+      {% endif %}
     </nav>
+    {% if user %}
+    {# One user menu on every screen size: name, theme, log out. Log out is a
+       once-a-month action and doesn't earn a permanent spot in the bar. #}
+    <details class="navmenu usermenu">
+      <summary aria-label="Account menu" title="{{ user.name }}">
+        <span class="avatar" aria-hidden="true">{{ user.name.split()[0][:1] ~ (user.name.split()[-1][:1] if user.name.split()|length > 1 else '') }}</span>
+      </summary>
+      <div class="menu-list menu-end">
+        <div class="menu-who"><b>{{ user.name }}</b>{% if user.email %}<small>{{ user.email }}</small>{% endif %}</div>
+        <button type="button" id="themeBtn" onclick="toggleTheme()"><span class="theme-ico">🌙</span> <span class="theme-lbl">Dark mode</span></button>
+        <form method="post" action="/logout" class="logout-form"><button type="submit">Log out</button></form>
+      </div>
+    </details>
+    {% endif %}
   </header>
   <main>
     {% block content %}{% endblock %}
   </main>
+  {# Phone navigation: a thumb-reach tab bar with the everyday pages, and a
+     More sheet with the whole map. Hidden above 720px. #}
+  <nav class="tabbar" aria-label="Main">
+    <a href="/" class="{{ nav.form }}"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>Log</a>
+    <a href="/week" class="{{ nav.week }}"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Week</a>
+    <a href="/schedule" class="{{ nav.schedule }}"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="17" r="2.5"/></svg>Schedule</a>
+    {% if is_admin %}
+    <a href="/reports" class="{{ nav.reports }}"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>Reports</a>
+    {% else %}
+    <a href="/absences" class="{{ nav.absences }}"><svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/></svg>Absences</a>
+    {% endif %}
+    <button type="button" class="{{ 'active' if (is_admin and (nav.absences or nav.project or nav.budgets or on_admin)) }}" onclick="document.getElementById('moreSheet').showModal()"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>More</button>
+  </nav>
+  <dialog class="zdlg sheet" id="moreSheet" aria-label="All pages">
+    <div class="sheet-grab" aria-hidden="true"></div>
+    <div class="sheet-group"><div class="sheet-title">Track</div>
+      <a href="/" class="{{ nav.form }}">Log hours</a>
+      <a href="/week" class="{{ nav.week }}">My week</a>
+      <a href="/absences" class="{{ nav.absences }}">Absences</a>
+    </div>
+    <div class="sheet-group"><div class="sheet-title">Plan</div>
+      <a href="/schedule" class="{{ nav.schedule }}">Schedule</a>
+    </div>
+    {% if is_admin %}
+    <div class="sheet-group"><div class="sheet-title">Reports</div>
+      <a href="/reports" class="{{ nav.reports }}">Reports</a>
+      <a href="/project" class="{{ nav.project }}">By project</a>
+      <a href="/budgets" class="{{ nav.budgets }}">Budgets</a>
+    </div>
+    <div class="sheet-group"><div class="sheet-title">Admin</div>
+      <a href="/invoices" class="{{ nav.invoices }}">Invoices</a>
+      <a href="/assignments" class="{{ nav.assignments }}">Assignments</a>
+    </div>
+    {% endif %}
+    <button type="button" class="btn sheet-close" onclick="document.getElementById('moreSheet').close()">Close</button>
+  </dialog>
   {# Dialogs go here, not inside the page's forms: a required field in a closed
      dialog is still validated on submit and can't be focused to complain, which
      makes the form's own submit button do nothing at all. #}
@@ -66,9 +142,23 @@
   <footer class="foot">Notion is the source of truth · entries sync to the Time Entries database</footer>
   <script>
     function effectiveTheme(){var t=document.documentElement.getAttribute('data-theme');return t||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
-    function setThemeIcon(){var b=document.getElementById('themeBtn');if(b)b.textContent=effectiveTheme()==='dark'?'☀️':'🌙';}
+    function setThemeIcon(){var d=effectiveTheme()==='dark';var i=document.querySelector('#themeBtn .theme-ico'),l=document.querySelector('#themeBtn .theme-lbl');if(i)i.textContent=d?'☀️':'🌙';if(l)l.textContent=d?'Light mode':'Dark mode';}
     function toggleTheme(){var next=effectiveTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',next);try{localStorage.setItem('theme',next);}catch(e){}setThemeIcon();}
     setThemeIcon();
+    // grouped menus: one open at a time, closed by a click elsewhere or Esc
+    document.addEventListener('click', function (e) {
+      document.querySelectorAll('details.navmenu[open], details.btnmenu[open]').forEach(function (d) { if (!d.contains(e.target)) d.removeAttribute('open'); });
+    });
+    document.addEventListener('toggle', function (e) {
+      var d = e.target;
+      if (!d.matches || !d.matches('details.navmenu') || !d.open) return;
+      document.querySelectorAll('details.navmenu[open]').forEach(function (o) { if (o !== d) o.removeAttribute('open'); });
+    }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') document.querySelectorAll('details.navmenu[open], details.btnmenu[open]').forEach(function (d) { d.removeAttribute('open'); });
+    });
+    var sheet = document.getElementById('moreSheet');
+    if (sheet) sheet.addEventListener('click', function (e) { if (e.target === sheet) sheet.close(); });
     // scroll-wheel over a focused number cell silently changes + saves values — blur instead
     document.addEventListener('wheel', function(e){
       var a = document.activeElement;
@@ -232,7 +322,7 @@
         try { url = new URL(a.href, location.href); } catch (err) { return; }
         if (url.origin !== location.origin) return;
         if (url.href.split('#')[0] === location.href.split('#')[0]) return;  // hash jump, not a load
-        if (/\.csv$/.test(url.pathname)) return;  // a download never navigates: no pageshow to stop the bar
+        if (/\.(csv|xlsx|pdf)$/.test(url.pathname)) return;  // a download never navigates: no pageshow to stop the bar
         navStart();
       });
       document.addEventListener('submit', function (e) { if (!e.defaultPrevented) navStart(); });

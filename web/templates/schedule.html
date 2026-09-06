@@ -26,16 +26,20 @@
       {%- endif -%}
     </div>
   </div>
-  <div class="weeknav{{ ' weeknav-4' if view == 'days' and is_admin }}">
+  <div class="weeknav arrows">
     {% if view == 'days' and is_admin %}
-    <button type="button" class="btn" id="copyweek" onclick="copyLastWeek(this)" data-busy="Copying…"
-            title="Copy every booking from the week of {{ copy_from }} into this week">⧉ Copy last week</button>
-    <button type="button" class="btn btn-danger" id="clearweek" onclick="clearWeek(this)" data-busy="Clearing…"
-            title="Delete every booking shown in the week of {{ start_iso }}">🗑 Clear week</button>
+    {# bulk actions live in their own group: Clear week is destructive and
+       shouldn't sit shoulder to shoulder with the arrows #}
+    <div class="week-actions">
+      <button type="button" class="btn" id="copyweek" onclick="copyLastWeek(this)" data-busy="Copying…"
+              title="Copy every booking from the week of {{ copy_from }} into this week">⧉ Copy last week</button>
+      <button type="button" class="btn btn-danger" id="clearweek" onclick="clearWeek(this)" data-busy="Clearing…"
+              title="Delete every booking shown in the week of {{ start_iso }}">🗑 Clear week</button>
+    </div>
     {% endif %}
-    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">← Earlier</a>
-    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Now</a>
-    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">Later →</a>
+    <a class="btn" href="/schedule?start={{ prev_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}" aria-label="Earlier" title="Earlier">←</a>
+    <a class="btn" href="/schedule?start={{ this_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}">{{ 'This week' if view == 'days' else 'Now' }}</a>
+    <a class="btn" href="/schedule?start={{ next_start }}&by={{ by }}&view={{ view }}{{ qs_person }}{{ qs_project }}{{ qs_partner }}" aria-label="Later" title="Later">→</a>
   </div>
 </div>
 

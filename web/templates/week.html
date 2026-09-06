@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Weekly grid · Hours Tracker{% endblock %}
+{% block title %}My week · Hours Tracker{% endblock %}
 {% block nav_week %}active{% endblock %}
 {% block content %}
 <div class="week-head">
   <div>
-    <h1>Your week</h1>
+    <h1>My week</h1>
     <div class="subtle">{{ user.name }} · {{ iso_week }} · {{ grid.days[0].strftime('%b %d') }} – {{ grid.days[4].strftime('%b %d, %Y') }}</div>
   </div>
-  <div class="weeknav">
-    <a class="btn" href="/week?monday={{ prev_mon }}">← Prev</a>
+  <div class="weeknav arrows">
+    <a class="btn" href="/week?monday={{ prev_mon }}" aria-label="Previous week" title="Previous week">←</a>
     <a class="btn" href="/week?monday={{ this_mon }}">This week</a>
-    <a class="btn" href="/week?monday={{ next_mon }}">Next →</a>
+    <a class="btn" href="/week?monday={{ next_mon }}" aria-label="Next week" title="Next week">→</a>
   </div>
 </div>
 

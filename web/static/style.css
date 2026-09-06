@@ -42,19 +42,70 @@ body {
 .brand { letter-spacing: -0.01em; }
 h1 { letter-spacing: -0.015em; }
 .topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px 14px; flex-wrap: wrap;
-  padding: 12px 18px; background: var(--card); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 8px 18px;
+  padding: 0 18px; min-height: 54px; background: var(--card); border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 5;
 }
-.brand { font-weight: 700; white-space: nowrap; }
-.topbar nav { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
-.nav-links, .nav-user { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
-.topbar nav a {
-  text-decoration: none; color: var(--muted); font-weight: 600;
-  padding: 6px 10px; border-radius: 8px; white-space: nowrap;
+.brand { font-weight: 700; white-space: nowrap; color: var(--ink); text-decoration: none; }
+/* main nav: flat links plus two grouped menus, one row on any laptop */
+.mainnav { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+.mainnav > a, .navmenu > summary {
+  text-decoration: none; color: var(--muted); font-weight: 600; font-size: 14px;
+  padding: 7px 11px; border-radius: 8px; white-space: nowrap; cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; gap: 4px; line-height: 1.3;
 }
-.topbar nav a.active { color: var(--active-ink); background: var(--active-bg); }
+.mainnav > a:hover, .navmenu > summary:hover { color: var(--ink); background: var(--active-bg); }
+.mainnav > a.active, .navmenu > summary.active { color: var(--active-ink); background: var(--active-bg); }
+.mainnav > a:focus-visible, .navmenu > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.navmenu { position: relative; }
+.navmenu > summary { list-style: none; }
+.navmenu > summary::-webkit-details-marker { display: none; }
+.navmenu .caret { font-size: 11px; color: var(--muted); transition: transform .15s; margin-left: 1px; }
+.navmenu[open] .caret { transform: rotate(180deg); }
+.menu-list {
+  position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; min-width: 240px;
+  display: flex; flex-direction: column; padding: 6px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(0,0,0,.16);
+}
+.menu-list.menu-end { left: auto; right: 0; }
+.menu-list > a, .menu-list > button, .menu-list > form > button {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: 8px; text-decoration: none; color: var(--ink);
+  background: none; border: 0; font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; line-height: 1.3;
+}
+.menu-list > a small { font-weight: 500; font-size: 12px; color: var(--muted); }
+.menu-list > button, .menu-list > form > button { flex-direction: row; align-items: center; gap: 8px; }
+.menu-list > a:hover, .menu-list > button:hover, .menu-list > form > button:hover { background: var(--active-bg); }
+.menu-list > a.active { color: var(--active-ink); background: var(--active-bg); }
+.menu-list > a.active small { color: var(--active-ink); opacity: .75; }
+.menu-who { padding: 8px 10px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; display: flex; flex-direction: column; line-height: 1.3; }
+.menu-who b { font-size: 14px; }
+.menu-who small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.logout-form { display: block; }
+.usermenu { margin-left: auto; }
+.usermenu > summary { padding: 3px; border-radius: 50%; }
+.usermenu > summary:hover { background: var(--active-bg); }
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 700; letter-spacing: .02em;
+}
+/* a card that folds: summary reads as a button row, body is the form */
+details.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary .card-title { margin: 0; }
+details.fold[open] > summary { margin-bottom: 6px; }
+details.fold > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+/* a button that opens a small menu (⬇ Download on /project) */
+.btnmenu { position: relative; display: inline-block; }
+.btnmenu > summary { list-style: none; cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px; }
+.btnmenu > summary::-webkit-details-marker { display: none; }
+.btnmenu[open] > summary { border-color: var(--accent); box-shadow: 0 0 0 3px var(--chart-track); }
+/* bulk actions beside the period arrows: a visible gap says "not navigation" */
+.week-actions { display: flex; gap: 8px; margin-right: 10px; padding-right: 10px; border-right: 1px solid var(--line); }
+/* phone tab bar — off unless the phone media query below turns it on */
+.tabbar { display: none; }
 .theme-btn {
   background: transparent; border: 1px solid var(--line); color: var(--ink);
   width: 34px; height: 34px; border-radius: 9px; cursor: pointer; font-size: 15px;
@@ -264,7 +315,7 @@ table.plan { min-width: 720px; }
 .plan-scroll tfoot .col-project { z-index: 4; }
 /* the last body row's border disappears under the sticky footer otherwise */
 .plan-scroll tfoot td { box-shadow: 0 -1px 0 var(--line); }
-@media (max-width: 700px) { .plan-scroll { max-height: calc(100vh - 150px); } }
+@media (max-width: 700px) { .plan-scroll { max-height: calc(100vh - 150px - var(--tabbar-h, 0px)); } }
 
 /* ---- dragging a booking ------------------------------------------------ */
 .plan .pill[draggable="true"] { cursor: grab; }
@@ -401,9 +452,27 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   @keyframes zdlg-in { from { opacity: 0; transform: translateY(-6px); } }
 }
 
-/* nav user */
-.topbar nav .who { color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
-.topbar nav a.logout { color: var(--muted); font-size: 13px; }
+
+
+/* the phone's More sheet: every page, grouped, rising from the bottom edge */
+dialog.sheet {
+  margin: auto 0 0; width: 100%; max-width: none; border-radius: 18px 18px 0 0;
+  padding: 8px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  max-height: 85vh; overflow: auto;
+}
+dialog.sheet[open] { animation: sheet-in .18s ease-out; }
+@keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { dialog.sheet[open] { animation: none; } }
+.sheet-grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 10px; }
+.sheet-group { padding: 6px 0; }
+.sheet-group + .sheet-group { border-top: 1px solid var(--line); }
+.sheet-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 6px 10px 2px; }
+.sheet-group > a {
+  display: block; padding: 11px 10px; border-radius: 10px; text-decoration: none;
+  color: var(--ink); font-weight: 600; font-size: 16px;
+}
+.sheet-group > a.active { color: var(--active-ink); background: var(--active-bg); }
+.sheet-close { width: 100%; margin-top: 10px; text-align: center; }
 
 /* login page */
 .login-main { display: flex; min-height: 70vh; align-items: center; justify-content: center; }
@@ -581,7 +650,6 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 /* ---- mobile ---- */
 @media (max-width: 560px) {
   main { margin: 18px auto; padding: 0 12px; }
-  .topbar { padding: 10px 14px; }
   .brand { font-size: 15px; }
   .card { padding: 18px; border-radius: 12px; }
   .row2 { grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -598,6 +666,11 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   /* reports' 4-item range nav: tidy 2x2 grid instead of squeezed, wrapping chips.
      Scoped to .weeknav-4 so the 3-item Prev/This week/Next nav (week/schedule) is untouched. */
   .weeknav-4 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .weeknav.arrows .week-actions { grid-column: 1 / -1; border: 0; margin: 0; padding: 0; }
+  .week-actions .btn { flex: 1; }
+  /* the ← [This week] → trio: arrows narrow, label wide */
+  .weeknav.arrows { display: grid; grid-template-columns: auto 1fr auto; }
+  .weeknav.arrows .btn { padding: 9px 14px; }
   .weeknav-4 .btn { flex: none; padding: 10px 6px; white-space: nowrap; }
 
   /* grid: tighter so more days fit before scrolling */
@@ -656,9 +729,6 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
   .cols { height: 110px; }
 }
 
-.logout-form { display: inline; }
-.logout-btn { background: none; border: none; padding: 6px 10px; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; border-radius: 8px; }
-.logout-btn:hover { background: var(--active-bg); }
 
 /* scheduled vs tracked */
 .pva-legend { display: flex; gap: 18px; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
@@ -779,20 +849,28 @@ dialog.zdlg::backdrop { background: rgba(0,5,40,.35); }
 @media (max-width: 720px) {
   .filters-label { display: none; } .seg-opts { flex: 1; } .seg-opt { flex: 1; text-align: center; }
 
-  /* topbar: two tidy rows instead of ragged wrapping — row 1 is brand + user
-     cluster, row 2 is the nav links spanning full width. `nav` becomes a
-     transparent wrapper (display:contents) so its two children act as direct
-     flex items of .topbar, which is what lets them land on different rows. */
-  .topbar { flex-wrap: wrap; row-gap: 8px; }
-  .topbar nav { display: contents; }
-  .nav-user { order: 2; }
-  .nav-links {
-    order: 3; flex: 1 1 100%; width: 100%;
-    display: flex; gap: 4px;
+  /* phone: the top bar keeps only brand + account; navigation moves to a
+     thumb-reach tab bar pinned to the bottom of the screen. The everyday
+     pages are tabs, everything else is behind More. */
+  .topbar { min-height: 50px; padding: 0 14px; }
+  .mainnav { display: none; }
+  :root { --tabbar-h: calc(56px + env(safe-area-inset-bottom, 0px)); }
+  main { padding-bottom: calc(var(--tabbar-h) + 8px); }
+  .tabbar {
+    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    height: var(--tabbar-h); padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--card); border-top: 1px solid var(--line);
   }
-  .nav-links a { flex: 1; text-align: center; font-size: 13px; padding: 7px 4px; white-space: nowrap; }
-  /* the page body already shows who's logged in — drop the name to save space */
-  .who { display: none; }
+  .tabbar > a, .tabbar > button {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    font: inherit; font-size: 11px; font-weight: 600; color: var(--muted); text-decoration: none;
+    background: none; border: 0; padding: 6px 2px 4px; cursor: pointer; border-radius: 0;
+  }
+  .tabbar svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .tabbar > a.active, .tabbar > button.active { color: var(--active-ink); }
+  .tabbar > a.active svg, .tabbar > button.active svg { stroke-width: 2.3; }
+  .tabbar > a:focus-visible, .tabbar > button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 }
 
 /* per-project hours: one row per person for the chosen day/week/month. The

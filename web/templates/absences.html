@@ -16,10 +16,10 @@
       {%- if not is_admin %} · your own absences{% endif %}
     </div>
   </div>
-  <div class="weeknav weeknav-4">
-    <a class="btn" href="/absences?period={{ period }}&start={{ rng.prev }}{{ qs_person }}">← Earlier</a>
+  <div class="weeknav arrows">
+    <a class="btn" href="/absences?period={{ period }}&start={{ rng.prev }}{{ qs_person }}" aria-label="Earlier" title="Earlier">←</a>
     <a class="btn" href="/absences?period={{ period }}&start={{ rng.now }}{{ qs_person }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/absences?period={{ period }}&start={{ rng.next }}{{ qs_person }}">Later →</a>
+    <a class="btn" href="/absences?period={{ period }}&start={{ rng.next }}{{ qs_person }}" aria-label="Later" title="Later">→</a>
   </div>
 </div>
 
@@ -35,9 +35,12 @@
 {# ---- log one ---------------------------------------------------------
    No "who": it's always the person looking at the screen. Leave the last day
    blank for a single day off. #}
-<div class="card">
-  <h3 class="card-title">Log an absence</h3>
-  <div class="subtle">Logging as <strong>{{ user.name }}</strong></div>
+{# Folded by default: most visits are "who's away?", and the form was the
+   whole first screen. It opens itself after a save or a refusal, so the
+   message lands where the form is. The required fields sit inside the same
+   <details> as the submit button, so they're always visible when it's used. #}
+<details class="card fold" {{ 'open' if ok or err }}>
+  <summary><span class="card-title">＋ Log an absence</span><span class="subtle">as <strong>{{ user.name }}</strong></span></summary>
   {% if ok %}<div class="flash">✓ {{ ok }}</div>{% endif %}
   {% if err %}<div class="deny">{{ err }}</div>{% endif %}
   <form method="post" action="/absences" class="entry-form" data-lock>
@@ -60,7 +63,7 @@
     <button type="submit" data-busy="Saving to Notion…" {{ 'disabled' if not enabled }}>
       Save absence</button>
   </form>
-</div>
+</details>
 
 {# ---- the dashboard ---------------------------------------------------- #}
 <form class="range-form" method="get" action="/absences">
