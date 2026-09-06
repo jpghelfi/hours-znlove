@@ -29,6 +29,16 @@ def invoice_props(projects_ds_id: str) -> dict:
         "Issued": {"date": {}},
         "Saved by": {"people": {}},
         "Note": {"rich_text": {}},
+        # what the invoice *document* carries. The rate and currency are copied
+        # off the project when the invoice is saved rather than read when the
+        # PDF is drawn: next quarter's rate must not restate a bill already sent
+        "Number": {"rich_text": {}},
+        "Rate": {"number": {"format": "number"}},
+        "Amount": {"number": {"format": "number"}},
+        "Currency": {"rich_text": {}},
+        "Client note": {"rich_text": {}},   # printed on the PDF, unlike Note
+        "Sent to": {"rich_text": {}},
+        "Sent at": {"date": {}},
     }
 
 

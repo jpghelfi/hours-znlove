@@ -32,6 +32,7 @@
     <strong>🧾 Invoice · {{ label }} · {{ rng.label }}</strong>
     <span class="subtle" id="invtotals">
       tracked <strong>{{ '%g'|format(total) }}</strong> h · billing <strong class="ibill">{{ '%g'|format(total) }}</strong> h
+      <span class="iamount"></span>
     </span>
   </div>
   {% if existing_invoice %}
@@ -48,11 +49,26 @@
     <label>Issued
       <input type="date" id="issued" value="{{ existing_invoice.issued or today_iso }}">
     </label>
+    {# Defaulted from the project's Rate in Notion, but editable: a discounted
+       month or a different scope is common enough that forcing an edit in
+       Notion first would just mean the rate gets left wrong. Blank bills hours
+       only — the PDF drops its money columns rather than printing 0.00. #}
+    <label><span>Rate <span class="subtle">— {{ billing.currency or 'USD' }} per hour</span></span>
+      <input type="number" id="rate" min="0" step="0.01" inputmode="decimal"
+             value="{{ '%g'|format(billing.rate) if billing.rate else '' }}"
+             placeholder="hours only" oninput="recalc()">
+    </label>
     {# caption and hint wrapped together: labels are column-flex app-wide, so a
        bare span alongside the text would drop onto its own line #}
     <label><span>Note <span class="subtle">— optional, internal</span></span>
       <input type="text" id="invnote" value="{{ existing_invoice.note or '' }}"
              placeholder="e.g. wrote off 3h of rework" maxlength="200">
+    </label>
+    {# the other note: this one is printed on the PDF the client opens, which
+       is exactly why it's a separate field from the internal one above #}
+    <label><span>Client note <span class="subtle">— printed on the invoice</span></span>
+      <input type="text" id="invclientnote" value="{{ existing_invoice.client_note or '' }}"
+             placeholder="e.g. PO 4417 · payable within 30 days" maxlength="200">
     </label>
   </div>
   <div class="sendbox-actions">
@@ -196,7 +212,42 @@ function recalc() {
   head.textContent = head.textContent.replace(/[\d.]+ h/, (Math.round(grand * 100) / 100) + ' h');
   const bill = document.querySelector('#invtotals .ibill');
   if (bill) bill.textContent = (Math.round(grand * 100) / 100).toString();
+  showAmount(grand);
 }
+
+{% if can_invoice %}
+const TAX_PCT = {{ tax.tax_pct or 0 }};
+const TAX_LABEL = {{ (tax.tax_label or 'VAT')|tojson }};
+const CURRENCY = {{ (billing.currency or 'USD')|tojson }};
+
+function invoiceRate() {
+  return Math.max(0, parseFloat(document.getElementById('rate').value) || 0);
+}
+
+/* The same arithmetic invoice_pdf.totals does, so what's previewed here and
+   what the PDF prints can't disagree — tax included, since a total that grows
+   on the document is not a nice surprise. */
+function showAmount(hours) {
+  const box = document.querySelector('#invtotals .iamount');
+  if (!box) return;
+  const rate = invoiceRate();
+  if (!rate) { box.textContent = ''; return; }
+  const sub = Math.round(hours * rate * 100) / 100;
+  const tax = Math.round(sub * TAX_PCT) / 100;
+  const fmt = v => {
+    try {
+      return new Intl.NumberFormat(undefined, {style: 'currency', currency: CURRENCY})
+               .format(v);
+    } catch (e) {
+      return CURRENCY + ' ' + v.toFixed(2);
+    }
+  };
+  box.textContent = ' · ' + fmt(sub + tax) + (TAX_PCT ? ' incl. ' + TAX_LABEL : '');
+}
+document.addEventListener('DOMContentLoaded', () => recalc());
+{% else %}
+function showAmount() {}
+{% endif %}
 
 function payload() {
   return JSON.stringify({
@@ -282,9 +333,11 @@ async function saveInvoice() {
   const btn = document.getElementById('invbtn');
   const box = document.getElementById('invresult');
   const billed = document.querySelector('#invtotals .ibill').textContent;
+  const amount = document.querySelector('#invtotals .iamount').textContent.replace(' · ', '');
+  const what = billed + ' h' + (amount ? ' (' + amount + ')' : '');
   const prompt = {{ 'true' if existing_invoice else 'false' }}
-    ? 'Replace the saved invoice for {{ label }}, {{ rng.label }} with ' + billed + ' h?'
-    : 'Record {{ label }}, {{ rng.label }} as invoiced for ' + billed + ' h?';
+    ? 'Replace the saved invoice for {{ label }}, {{ rng.label }} with ' + what + '?'
+    : 'Record {{ label }}, {{ rng.label }} as invoiced for ' + what + '?';
   if (!await zConfirm(prompt, {title: 'Record this invoice?', ok: 'Save invoice'})) return;
   btn.disabled = true;
   const original = btn.textContent;
@@ -295,6 +348,9 @@ async function saveInvoice() {
     body.month = {{ rng.from|tojson }};
     body.issued = document.getElementById('issued').value;
     body.note = document.getElementById('invnote').value;
+    body.client_note = document.getElementById('invclientnote').value;
+    body.rate = invoiceRate();
+    body.currency = CURRENCY;
     const res = await fetch('/api/invoice', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     });

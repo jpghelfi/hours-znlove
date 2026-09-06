@@ -22,6 +22,12 @@ from email.message import EmailMessage
 from . import gmail_api
 
 _XLSX_TYPE = ("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+_PDF_TYPE = ("application", "pdf")
+
+# Two callers now, two kinds of file, so the type follows the filename rather
+# than being hardcoded: a PDF sent as a spreadsheet is the sort of thing that
+# only shows up in the client's mail app, long after the send said "ok".
+_TYPES = {".xlsx": _XLSX_TYPE, ".pdf": _PDF_TYPE}
 _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 MAX_RECIPIENTS = 10
 
@@ -54,6 +60,35 @@ def budget_alerts_enabled() -> bool:
     emailing people every time a project nears its budget.
     """
     return os.environ.get("BUDGET_ALERTS_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def invoice_email_enabled() -> bool:
+    """Whether invoices may be emailed (INVOICE_EMAIL_ENABLED).
+
+    Its own switch again, and the one that most deserves one: everything else
+    this app can send goes to us, while an invoice goes to a *client*. Turning
+    on the internal report email must not also arm a button that mails a bill
+    outside the company.
+    """
+    return os.environ.get("INVOICE_EMAIL_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def invoice_transport() -> str:
+    """Same as transport(), for invoices, which ride their own switch."""
+    return _transport_for(invoice_email_enabled())
+
+
+def invoice_missing_vars() -> list[str]:
+    """What to set before an invoice can be emailed."""
+    return (([] if invoice_email_enabled() else ["INVOICE_EMAIL_ENABLED=1"])
+            + gmail_api.missing_vars())
+
+
+def invoice_cc() -> list[str]:
+    """Who gets a copy of every invoice sent. Defaults to nobody — a blind Cc
+    to the whole team on a client email is a surprise, so it's opt-in."""
+    return _split(os.environ.get("INVOICE_CC", ""))
 
 
 def budget_recipients() -> list[str]:
@@ -150,16 +185,26 @@ def explain(exc: BaseException) -> str:
     return detail
 
 
+def attachment_type(filename: str) -> tuple[str, str]:
+    for ext, mime in _TYPES.items():
+        if filename.lower().endswith(ext):
+            return mime
+    return ("application", "octet-stream")
+
+
 def build_message(to: list[str], subject: str, body: str,
-                  attachment: bytes, filename: str, from_addr: str = "") -> EmailMessage:
+                  attachment: bytes, filename: str, from_addr: str = "",
+                  cc: list[str] | None = None) -> EmailMessage:
     msg = EmailMessage()
     if from_addr:  # Gmail fills this in itself when it isn't set
         msg["From"] = from_addr
     msg["To"] = ", ".join(to)
     msg["Subject"] = subject
     msg.set_content(body)
-    msg.add_attachment(attachment, maintype=_XLSX_TYPE[0], subtype=_XLSX_TYPE[1],
-                       filename=filename)
+    maintype, subtype = attachment_type(filename)
+    msg.add_attachment(attachment, maintype=maintype, subtype=subtype, filename=filename)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
     return msg
 
 
@@ -186,16 +231,23 @@ def _deliver(msg: EmailMessage, via: str, from_addr: str) -> dict:
 
 
 def send_report(to: list[str], subject: str, body: str,
-                attachment: bytes, filename: str) -> dict:
-    """Send one message with the workbook attached, over whichever transport is
-    configured. Returns {"ok", "to", "from", "via"}."""
-    via = transport()
+                attachment: bytes, filename: str, cc: list[str] | None = None,
+                via: str = "") -> dict:
+    """Send one message with a file attached — the workbook, or an invoice PDF;
+    the content type follows the filename — over whichever transport is
+    configured. Returns {"ok", "to", "cc", "from", "via"}.
+
+    `via` lets a caller on a different switch (an invoice rides
+    INVOICE_EMAIL_ENABLED, not REPORT_EMAIL_ENABLED) reuse the same send.
+    """
+    via = via or transport()
     if not via:
         raise NotConfigured(", ".join(missing_vars()))
     from_addr = sender()
-    msg = build_message(to, subject, body, attachment, filename, from_addr)
+    msg = build_message(to, subject, body, attachment, filename, from_addr, cc)
     out = _deliver(msg, via, from_addr)
     out["to"] = to
+    out["cc"] = cc or []
     return out
 
 

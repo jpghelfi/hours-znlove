@@ -7,12 +7,22 @@
   <div>
     <h1>{{ invoice.project }} · {{ month_label }}</h1>
     <div class="subtle">
+      {%- if invoice.number %}<strong>{{ invoice.number }}</strong> · {% endif -%}
       Invoiced <strong>{{ '%g'|format(invoice.hours_billed) }}</strong> h of
       {{ '%g'|format(invoice.hours_tracked) }} h tracked
+      {%- if invoice.rate %} · {{ money(invoice.rate) }}/h ·
+      <strong>{{ money(sums.total) }}</strong>
+      {%- if sums.tax_pct %} incl. {{ sums.tax_label }}{% endif %}{% endif %}
       {%- if invoice.issued %} · issued {{ invoice.issued }}{% endif %}
       {%- if invoice.saved_by %} by {{ invoice.saved_by }}{% endif %}
       {%- if adjusted %} · {{ adjusted }} line{{ '' if adjusted == 1 else 's' }} adjusted{% endif %}
     </div>
+    {% if invoice.sent_at %}
+    {# said plainly, because "has this already gone out?" is the one question
+       worth answering before anyone presses Send a second time #}
+    <div class="subtle">✉ Sent {{ invoice.sent_at[:16]|replace('T', ' ') }}
+      {%- if invoice.sent_to %} to {{ invoice.sent_to }}{% endif %}</div>
+    {% endif %}
   </div>
   <div class="weeknav">
     <a class="btn" href="/invoices">← All invoices</a>
@@ -24,18 +34,65 @@
 {# both carry the **billed** hours, with unbilled lines left out — this is the
    copy that goes to the client, not the internal tracked/billed comparison #}
 <div class="card wide sendbox">
+  {# The To/Subject/Send controls exist only once a transport is configured and
+     the invoice switch is on — an inert field and a dead Send button are worse
+     than no email UI at all. Same rule as the export screen, different switch:
+     this one mails a bill to a client. #}
+  {% if mail_ready %}
+  <div class="sendbox-grid">
+    <label>To
+      <input type="text" id="to" value="{{ recipients }}" autocomplete="off"
+             placeholder="client@example.com" aria-label="Recipients, comma separated">
+    </label>
+    <label>Subject
+      <input type="text" id="subject" autocomplete="off"
+             value="{% if invoice.number %}Invoice {{ invoice.number }} — {% else %}Invoice — {% endif %}{{ invoice.project }} — {{ month_label }}">
+    </label>
+  </div>
+  <label class="sendbox-msg">Message
+    <textarea id="message" rows="3" placeholder="Leave blank for a short default note…"></textarea>
+  </label>
+  {% if not billing.client_email %}
+  <div class="notebar">
+    <strong>{{ invoice.project }} has no client email in Notion.</strong>
+    Type one above to send this once, or add <em>Client email</em> to the project
+    row so it's filled in every time.
+  </div>
+  {% endif %}
+  {% endif %}
   <div class="sendbox-actions">
     <div class="subtle">
       {{ sheet_rows|length }} billed line{{ '' if sheet_rows|length == 1 else 's' }} ·
       {{ '%g'|format(now_billed) }} h — the hours as invoiced, without the lines billed at nothing
+      {%- if mail_ready %}<br>Sends the PDF from {{ sender or 'your Google account' }}
+        {%- if mail_cc %} · copy to {{ mail_cc|join(', ') }}{% endif %}{% endif %}
     </div>
     <div class="sendbox-btns">
       <button type="button" class="btn" onclick="copyToSheets()">⧉ Copy &amp; open Google Sheets</button>
-      <a class="btn btn-primary" href="/invoices/{{ invoice.id }}.xlsx">⬇ Download Excel</a>
+      <a class="btn" href="/invoices/{{ invoice.id }}.xlsx">⬇ Download Excel</a>
+      <a class="btn {{ '' if mail_ready else 'btn-primary' }}"
+         href="/invoices/{{ invoice.id }}.pdf">⬇ Download PDF</a>
+      {% if mail_ready %}
+      <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendInvoice()">✉ Send to client</button>
+      {% endif %}
     </div>
   </div>
+  {% if not mail_ready and mail_missing %}
+  <div class="subtle">Emailing invoices is off — set {{ mail_missing|join(', ') }} to turn it on.</div>
+  {% endif %}
   <div class="sendresult" id="sendresult" hidden role="status"></div>
 </div>
+
+{% if not invoice.rate %}
+{# a PDF with no rate is a statement of hours, which is a real document but
+   probably not the one you meant to mail a client #}
+<div class="notebar">
+  <strong>No rate on this invoice.</strong> The PDF will show hours without money.
+  Set <em>Rate</em> on {{ invoice.project }} in Notion, then
+  <a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">re-invoice</a>
+  to price it.
+</div>
+{% endif %}
 
 {% if invoice.note %}<div class="notebar">{{ invoice.note }}</div>{% endif %}
 
@@ -175,6 +232,44 @@ function say(msg, ok) {
   box.className = 'sendresult ' + (ok ? 'is-ok' : 'is-err');
   box.textContent = msg;
 }
+
+{% if mail_ready %}
+/* Nothing is queued: the send either completes while this request is open or
+   it says why not, in Google's own words. */
+async function sendInvoice() {
+  const btn = document.getElementById('sendbtn');
+  const to = document.getElementById('to').value.trim();
+  if (!to) { say('Add an email address first.', false); return; }
+  if (!await zConfirm(to, {title: 'Email this invoice to:', ok: 'Send'})) return;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Sending…';
+  try {
+    const res = await fetch('/api/invoice/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        invoice_id: {{ invoice.id|tojson }},
+        to: to,
+        subject: document.getElementById('subject').value,
+        message: document.getElementById('message').value
+      })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      say('Sent ' + data.filename + ' to ' + data.to.join(', ')
+          + (data.cc && data.cc.length ? ' (cc ' + data.cc.join(', ') + ')' : '') + '.', true);
+      btn.textContent = 'Send again';
+    } else {
+      say('Not sent: ' + (data.error || 'unknown error'), false);
+      btn.textContent = original;
+    }
+  } catch (e) {
+    say('Not sent: network error', false);
+    btn.textContent = original;
+  }
+  btn.disabled = false;
+}
+{% endif %}
 
 function copyToSheets() {
   if (!SHEET_ROWS.length) { say('Nothing to copy — no line on this invoice was billed.', false); return; }
