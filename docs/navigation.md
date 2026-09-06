@@ -55,7 +55,7 @@ one) the tab bar.
 
 ## Period navigation
 
-Every page that moves through time uses the same trio: `←` · **[This week /
+Every page that moves through time — except Reports, which keeps its four named ranges (backlog item 1 in the review) — uses the same trio: `←` · **[This week /
 This month]** · `→` (`.weeknav.arrows`), with `aria-label`s on the arrows. It
 replaced five vocabularies (Prev/Next, Earlier/Later, Now, bare arrows). On a
 phone the trio lays out as narrow arrow, wide label, narrow arrow. The

@@ -67,7 +67,8 @@
        once-a-month action and doesn't earn a permanent spot in the bar. #}
     <details class="navmenu usermenu">
       <summary aria-label="Account menu" title="{{ user.name }}">
-        <span class="avatar" aria-hidden="true">{{ user.name.split()[0][:1] ~ (user.name.split()[-1][:1] if user.name.split()|length > 1 else '') }}</span>
+        {%- set _parts = (user.name or '').split() or ['?'] -%}
+        <span class="avatar" aria-hidden="true">{{ _parts[0][:1] ~ (_parts[-1][:1] if _parts|length > 1 else '') }}</span>
       </summary>
       <div class="menu-list menu-end">
         <div class="menu-who"><b>{{ user.name }}</b>{% if user.email %}<small>{{ user.email }}</small>{% endif %}</div>

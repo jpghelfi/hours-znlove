@@ -60,8 +60,8 @@ h1 { letter-spacing: -0.015em; }
 .navmenu { position: relative; }
 .navmenu > summary { list-style: none; }
 .navmenu > summary::-webkit-details-marker { display: none; }
-.navmenu .caret { font-size: 11px; color: var(--muted); transition: transform .15s; margin-left: 1px; }
-.navmenu[open] .caret { transform: rotate(180deg); }
+.navmenu .caret, .btnmenu .caret { font-size: 11px; color: var(--muted); transition: transform .15s; margin-left: 1px; }
+.navmenu[open] .caret, .btnmenu[open] .caret { transform: rotate(180deg); }
 .menu-list {
   position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; min-width: 240px;
   display: flex; flex-direction: column; padding: 6px;
@@ -315,7 +315,7 @@ table.plan { min-width: 720px; }
 .plan-scroll tfoot .col-project { z-index: 4; }
 /* the last body row's border disappears under the sticky footer otherwise */
 .plan-scroll tfoot td { box-shadow: 0 -1px 0 var(--line); }
-@media (max-width: 700px) { .plan-scroll { max-height: calc(100vh - 150px - var(--tabbar-h, 0px)); } }
+@media (max-width: 720px) { .plan-scroll { max-height: calc(100vh - 150px - var(--tabbar-h, 0px)); } }
 
 /* ---- dragging a booking ------------------------------------------------ */
 .plan .pill[draggable="true"] { cursor: grab; }
