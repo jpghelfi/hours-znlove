@@ -22,10 +22,10 @@
       {% endif %}
     </div>
   </div>
-  <div class="weeknav">
-    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}">←</a>
+  <div class="weeknav arrows">
+    <a class="btn" href="/budgets?start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}" aria-label="Earlier" title="Earlier">←</a>
     <a class="btn" href="/budgets?start={{ rng.now }}{{ qsp }}{{ qsr }}{{ qsn }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}">→</a>
+    <a class="btn" href="/budgets?start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}" aria-label="Later" title="Later">→</a>
   </div>
 </div>
 
