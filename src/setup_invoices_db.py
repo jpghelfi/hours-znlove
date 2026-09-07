@@ -37,6 +37,7 @@ def invoice_props(projects_ds_id: str) -> dict:
         "Amount": {"number": {"format": "number"}},
         "Currency": {"rich_text": {}},
         "Client note": {"rich_text": {}},   # printed on the PDF, unlike Note
+        "Lines": {"rich_text": {}},         # the bill's detail lines, one per line
         "Sent to": {"rich_text": {}},
         "Sent at": {"date": {}},
     }

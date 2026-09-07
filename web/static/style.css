@@ -898,12 +898,22 @@ dialog.sheet[open] { animation: sheet-in .18s ease-out; }
 .sendbox { margin-bottom: 16px; }
 .sendbox-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .sendbox label, .sendbox-msg { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.sendbox input[type=text], .sendbox textarea {
+.sendbox input[type=text], .sendbox input[type=number], .sendbox textarea {
   width: 100%; padding: 9px 10px; font: inherit; font-size: 14px; font-weight: 500;
   text-transform: none; letter-spacing: 0; color: var(--ink);
   background: var(--bg); border: 1px solid var(--line); border-radius: 9px;
 }
 .sendbox-msg { margin-top: 12px; }
+/* the bill editor: the lines first, then the two totals side by side, then
+   the arithmetic they add up to — above the To/Subject, since what the bill
+   says comes before whom it goes to */
+.sendbox .billlines { margin-top: 0; }
+.sendbox .billnums { margin-top: 12px; }
+.sendbox .billnums input[type=number] { font-variant-numeric: tabular-nums; }
+/* display: contents keeps the hint on the label's line — the label is a flex
+   column, and a span of its own would be dropped onto a second row */
+.sendbox .lbl-hint { display: contents; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.sendbox .billtotal { margin: 8px 0 14px; font-variant-numeric: tabular-nums; }
 .sendbox-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .sendbox-btns { display: flex; gap: 8px; }
 .sendresult { margin-top: 12px; padding: 10px 12px; border-radius: 9px; font-size: 13.5px; font-weight: 600; }
