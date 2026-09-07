@@ -115,7 +115,7 @@ cap teaches people to stop estimating.
 - **One project at a time.** The share link is per project, the PDF is per project, and
   a timeline across 35 projects is the `/schedule` Projects rollup, which exists. The
   project pick is the shared `_project_filter.html` in single mode; no pick lands on the
-  first active project the viewer is on (member), or the first active project (admin).
+  first active project.
 - **One period**, `_period_range` reused (week or month — the Mon–Fri week or the whole
   calendar month, with the `←` · label · `→` trio from `docs/navigation.md`). Columns are
   days. A month is 30 narrow columns, which is fine on a desktop and is why phones get the
@@ -130,7 +130,7 @@ cap teaches people to stop estimating.
   pattern as `/schedule`: the bar lands on the next frame, the write runs behind it, a
   refusal snaps it back and says why.
 - **Tickets view**: the same items as a list grouped by status, with an inline status
-  select on every row — the view the team uses on Monday morning and on a phone. Not a
+  select on every row — the view for Monday morning and for a phone. Not a
   kanban board: six columns don't fit a phone and drag-between-columns is the select with
   more steps.
 - **Header**: project name, the PM/AM chips `/project` already draws, the progress bar
@@ -142,17 +142,19 @@ cap teaches people to stop estimating.
 
 ### Who may do what
 
-| | read | change status / owner | create, date, estimate, delete | share |
-| --- | --- | --- | --- | --- |
-| member | own projects | items on own projects | — | — |
-| admin | all | all | all | all |
-| link holder | the shared project, non-internal items | — | — | — |
+| | read | change anything | share |
+| --- | --- | --- | --- |
+| member | — | — | — |
+| admin | all | all | all |
+| link holder | the shared project, non-internal items | — | — |
 
-Members changing status is deliberate: a tickets view nobody but admins can touch is a
-report, not a board. Everything else is planning, and planning is admin work, exactly as
-on `/schedule`.
+**Admins only, to see and to change** (JP, 2026-09-07). Members don't get a Plan link
+and `/plan` 303s them home, as `/budgets` and `/invoices` do. A plan is a promise made
+to a client; it belongs with the pages that make promises. If the team later wants a
+board of their own, the tickets view is the piece to open up — status changes on their
+own projects — and nothing in the model has to move.
 
-Write endpoints, all admin-gated except `status`, all `_same_origin`-checked:
+Write endpoints, all admin-gated, all `_same_origin`-checked:
 `POST /api/plan/item` (create/update by page id), `POST /api/plan/item/status`,
 `POST /api/plan/item/move` (dates, from a drag), `POST /api/plan/item/delete`,
 `POST /api/plan/share` (mint / revoke the token). Every item id comes from the browser, so
@@ -246,8 +248,7 @@ team lacks today, and the timeline lands on top of it.
 1. **One project at a time on `/plan`** — or should the timeline also roll up a partner
    (Bear's four projects on one grid)? Recommended: one project in v1, partner rollup
    read-only in v1.5 the way `/schedule` does it.
-2. **Members can change status** on their projects' items — or admins only? Recommended:
-   members can.
+2. ~~Members can change status~~ — **decided: admins only, to see and to change.**
 3. **Share defaults**: people and hours **off** unless the admin ticks them per project.
    Recommended as written.
 4. **Ticket boards stay pointed-at, not planned-in.** Recommended as written; the
