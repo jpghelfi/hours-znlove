@@ -286,9 +286,11 @@ has needed to make yet.
 - The PDF, end to end against real Notion: saving with a rate filed
   `2026-014` / rate 45 / amount 382.50; re-saving at a different rate **kept the
   number and the page**; the document rendered with the company block, bill-to,
-  line items, VAT and total, and a second page listing every billed entry; a
-  project with no rate produced the same document without money columns; a month
-  billed at nothing produced a valid one-page file rather than an error.
+  line items, VAT and total, and a second page listing every billed entry
+  (since replaced by the typed lines — see "What the bill says is typed on the
+  invoice page"); a project with no rate produced the same document without
+  money columns; a month billed at nothing produced a valid one-page file
+  rather than an error.
 - The guards: `/api/invoice/send` answers 403 while `INVOICE_EMAIL_ENABLED` is
   off, and the To/Subject/Send controls aren't rendered at all — the same rule
   the export screen follows. With the switch on, the send box appears, names the
