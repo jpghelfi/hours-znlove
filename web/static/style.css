@@ -1410,3 +1410,115 @@ td.desc .tlink { margin-left: 8px; }
 .plan-cell.is-today { background: color-mix(in srgb, var(--active-bg) 40%, transparent); }
 .plan-cell.is-today:hover { background: var(--active-bg); }
 .plan-cell.is-today.is-static:hover { background: color-mix(in srgb, var(--active-bg) 40%, transparent); }
+
+
+/* ---- planning: /plan and the public /p/<token> page --------------------
+   The timeline is a CSS grid, one row per item: a fixed name column, then
+   one column per weekday. A bar is absolutely positioned over the row's day
+   cells with --a/--b (1-based, inclusive) doing the arithmetic, so a drag
+   only ever changes two custom properties. Status colours reuse the pill
+   palette (--s0…) so the two planners read as one app. */
+.plan-tools { align-items: center; }
+.plan-tools label { font-size: 12px; }
+.plan-tools select { max-width: 240px; }
+.plan-actions { display: inline-flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.plan-card { padding: 0; overflow: hidden; }
+.tl { --name-w: 240px; font-size: 13px; overflow-x: auto; }
+.tl-head, .tl-row { display: grid; grid-template-columns: var(--name-w) 1fr; min-width: 560px; }
+.tl-head { position: sticky; top: 0; z-index: 3; background: var(--head); border-bottom: 1px solid var(--line); }
+.tl-head .tl-name { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
+.tl-name { padding: 8px 12px; border-right: 1px solid var(--line); min-width: 0; display: flex; flex-direction: column; gap: 2px; justify-content: center;
+  position: sticky; left: 0; background: var(--card); z-index: 2; }
+.tl-head .tl-name { background: var(--head); }
+.tl-days { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); position: relative; min-height: 40px; }
+.tl-day { text-align: center; padding: 6px 2px; font-size: 11px; color: var(--muted); font-weight: 600; position: relative; line-height: 1.2; }
+.tl-day .tl-dow { display: block; font-weight: 500; opacity: .8; }
+.tl-day .tl-dnum { display: block; font-size: 13px; color: var(--ink); }
+.tl-mon { position: absolute; top: -1px; left: 3px; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+.tl-month .tl-day .tl-dow { display: none; }
+.tl-day.is-mon, .tl-cell.is-mon { border-left: 1px solid var(--line); }
+.tl-day.is-today .tl-dnum { color: var(--over); }
+.tl-row { border-bottom: 1px solid var(--line); min-height: 44px; }
+.tl-row.is-sunk { opacity: .55; }
+.tl-cell { border-right: 1px dashed color-mix(in srgb, var(--line) 70%, transparent); min-height: 44px; }
+.tl-cell.is-today { background: color-mix(in srgb, var(--active-bg) 40%, transparent); }
+.tl-cell.is-over, .tl-day.is-over { background: var(--active-bg); outline: 2px dashed var(--ring); outline-offset: -2px; }
+.tl-edit .tl-cell { cursor: cell; }
+.tl-open { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--ink); text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.tl-open:hover { color: var(--accent); text-decoration: underline; }
+.tl-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.tl-tag { font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--head); padding: 1px 6px; border-radius: 999px; }
+.tl-int { color: var(--err-ink); background: var(--err); }
+/* the bar: --a/--b are 1-based column indexes; left/width in fractions of the row */
+.tl-bar {
+  position: absolute; top: 8px; height: 28px;
+  left: calc((var(--a) - 1) * 100% / var(--cols) + 2px);
+  width: calc((var(--b) - var(--a) + 1) * 100% / var(--cols) - 4px);
+  border-radius: 7px; overflow: hidden; display: flex; align-items: center;
+  font-size: 11.5px; font-weight: 700; padding: 0 8px; box-sizing: border-box;
+  background: var(--s0); color: var(--s0i); border: 1px solid transparent; user-select: none;
+}
+.tl-edit .tl-bar { cursor: grab; }
+.tl-bar.is-dragging { cursor: grabbing; opacity: .85; box-shadow: 0 6px 16px rgba(0,5,40,.25); z-index: 5; }
+.tl-row.is-pending .tl-bar, .tl-row.is-pending .tl-ms { outline: 2px dashed var(--ring); outline-offset: 1px; }
+.tl-bar .tl-fill { position: absolute; inset: 0 auto 0 0; background: currentColor; opacity: .18; pointer-events: none; }
+.tl-bar .tl-lbl { position: relative; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-bar.clip-l { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 4px solid currentColor; }
+.tl-bar.clip-r { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 4px solid currentColor; }
+.tl-grip { position: absolute; top: 0; right: 0; width: 12px; height: 100%; cursor: ew-resize; }
+.tl-grip::after { content: ""; position: absolute; top: 8px; bottom: 8px; right: 4px; width: 2px; background: currentColor; opacity: .5; border-radius: 1px; }
+.tl-ms { position: absolute; top: 6px; height: 32px; width: calc(100% / var(--cols)); left: calc((var(--a) - 1) * 100% / var(--cols));
+  display: flex; align-items: center; justify-content: center; font-size: 22px; line-height: 1; color: var(--s2i); }
+.tl-edit .tl-ms { cursor: grab; }
+.tl-empty { padding: 26px 16px; text-align: center; }
+/* status colours */
+.st-backlog { background: var(--head); color: var(--muted); }
+.st-planned { background: var(--s0); color: var(--s0i); }
+.st-in-progress { background: var(--s2); color: var(--s2i); }
+.st-blocked { background: var(--s4); color: var(--s4i); }
+.st-done { background: var(--s1); color: var(--s1i); }
+.st-dropped { background: var(--head); color: var(--muted); text-decoration: line-through; }
+.tl-ms.st-done { color: var(--s1i); } .tl-ms.st-blocked { color: var(--s4i); } .tl-ms.st-planned { color: var(--s0i); }
+.tl-ms.st-backlog, .tl-ms.st-dropped { color: var(--muted); }
+.tl-ms.st-in-progress { color: var(--s2i); }
+.tl-ms { background: transparent; }
+/* the tray of unscheduled items */
+.tray { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--bg); }
+.tray-title { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; margin-right: 6px; width: 100%; }
+.tray-item { display: inline-flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: 8px; font-size: 12.5px; max-width: 260px; }
+.tray-edit .tray-item { cursor: grab; }
+.tray-item .tl-open { font-size: 12.5px; color: inherit; }
+.tray-item .tl-meta { font-size: 11px; opacity: .8; }
+.tray-item.is-sunk { opacity: .55; }
+/* the tickets view */
+.tk-group { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
+.tk-group > summary { list-style: none; cursor: pointer; padding: 10px 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; background: var(--head); }
+.tk-group > summary::-webkit-details-marker { display: none; }
+.tk-group > summary::before { content: "▸"; color: var(--muted); font-size: 12px; }
+.tk-group[open] > summary::before { content: "▾"; }
+.tk-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid transparent; }
+.tk-count { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 2px; }
+.tk-table { min-width: 0; }
+.tk-table th, .tk-table td { font-size: 13.5px; padding: 8px 12px; }
+.tk-name { font-weight: 600; }
+.tk-status { padding: 5px 8px; font-size: 13px; }
+.tk-none { padding: 10px 14px; }
+.tk-link { font-size: 12px; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; text-align: left; }
+.linkish:hover { color: var(--accent); text-decoration: underline; }
+/* the dialogs */
+dialog.plan-pop { width: min(460px, calc(100vw - 32px)); }
+.pop-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pop-actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.pop-actions .grow { flex: 1; }
+dialog.pop label.pop-check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
+dialog.pop label.pop-check input { width: 16px; height: 16px; min-height: 0; margin: 0; accent-color: var(--accent); }
+.share-url { display: flex; gap: 8px; margin: 8px 0 12px; }
+.share-url input { flex: 1; min-width: 0; font-size: 12.5px; }
+.btn.is-shared { border-color: var(--ok); color: var(--ok); }
+@media (max-width: 720px) {
+  .tl { --name-w: 150px; }
+  .tl-bar { padding: 0 5px; font-size: 10.5px; }
+  .plan-actions { margin-left: 0; }
+}

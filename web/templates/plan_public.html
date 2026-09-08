@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}{% if missing %}Not found{% else %}{{ project.name }} · plan{% endif %}{% endblock %}
+{% block content %}
+{% if missing %}
+<div class="card wide"><h1>Not found</h1><p class="subtle">This link isn't live any more. Ask whoever sent it for a new one.</p></div>
+{% else %}
+{% set qs %}period={{ period }}&view={{ view }}{% endset %}
+<div class="week-head">
+  <div>
+    <h1>{{ project.name }} · plan</h1>
+    <div class="subtle">
+      {{ rng.label }} · <strong>{{ totals.done }}</strong> of {{ totals.count }} done
+      {%- if share.hours and totals.estimate %} · {{ '%g'|format(totals.tracked) }} h tracked of {{ '%g'|format(totals.estimate) }} h estimated{% endif %}
+      · live as of {{ today }}
+      {% if pm_name or am_name %}
+      <span class="rolechips">
+        {% if pm_name %}<span class="chip chip-role">PM · {{ pm_name }}</span>{% endif %}
+        {% if am_name %}<span class="chip chip-role">AM · {{ am_name }}</span>{% endif %}
+      </span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="weeknav arrows">
+    <a class="btn" href="/p/{{ token }}?{{ qs }}&start={{ rng.prev }}" aria-label="Earlier" title="Earlier">←</a>
+    <a class="btn" href="/p/{{ token }}?{{ qs }}&start={{ rng.now }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/p/{{ token }}?{{ qs }}&start={{ rng.next }}" aria-label="Later" title="Later">→</a>
+  </div>
+</div>
+
+<div class="range-form plan-tools">
+  <span class="seg" role="group" aria-label="Period">
+    <span class="seg-opts">
+      <a class="seg-opt {{ 'is-on' if period == 'weekly' }}" href="/p/{{ token }}?period=weekly&view={{ view }}&start={{ rng.from }}">Week</a>
+      <a class="seg-opt {{ 'is-on' if period == 'monthly' }}" href="/p/{{ token }}?period=monthly&view={{ view }}&start={{ rng.from }}">Month</a>
+    </span>
+  </span>
+  <span class="seg" role="group" aria-label="View">
+    <span class="seg-opts">
+      <a class="seg-opt {{ 'is-on' if view == 'timeline' }}" href="/p/{{ token }}?period={{ period }}&start={{ rng.value }}&view=timeline">Timeline</a>
+      <a class="seg-opt {{ 'is-on' if view == 'tickets' }}" href="/p/{{ token }}?period={{ period }}&start={{ rng.value }}&view=tickets">List</a>
+    </span>
+  </span>
+  <span class="plan-actions">
+    <a class="btn" href="/p/{{ token }}.pdf?period={{ period }}&start={{ rng.value }}" target="_blank" rel="noopener">⬇ PDF</a>
+  </span>
+</div>
+
+{% if view == 'timeline' %}
+<div class="card wide plan-card">
+  {% with rows = scheduled, editable = False %}{% include "_plan_timeline.html" %}{% endwith %}
+</div>
+{% else %}
+<div class="card wide">
+  {% with rows = scheduled + tray, editable = False, show_people = share.people, show_hours = share.hours %}{% include "_plan_tickets.html" %}{% endwith %}
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

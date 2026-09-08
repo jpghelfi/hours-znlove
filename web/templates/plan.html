@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+{% block title %}Plan{% if sel %} · {{ sel.name }}{% endif %} · Hours Tracker{% endblock %}
+{% block nav_plan %}active{% endblock %}
+{% block content %}
+{% set qs %}project={{ sel.id if sel else '' }}&period={{ period }}&view={{ view }}{% endset %}
+{% set qsv %}project={{ sel.id if sel else '' }}&period={{ period }}&start={{ rng.value }}{% endset %}
+
+<div class="week-head">
+  <div>
+    <h1>Plan{% if sel %} · {{ sel.name }}{% endif %}</h1>
+    <div class="subtle">
+      {{ rng.label }}
+      {%- if sel and enabled %} ·
+        <strong>{{ totals.done }}</strong> of {{ totals.count }} done
+        {%- if totals.estimate %} · {{ '%g'|format(totals.tracked) }} h tracked of {{ '%g'|format(totals.estimate) }} h estimated{% endif %}
+        {%- if totals.unscheduled %} · {{ totals.unscheduled }} unscheduled{% endif %}
+      {%- endif %}
+      {% if pm_name or am_name %}
+      <span class="rolechips">
+        {% if pm_name %}<span class="chip chip-role">PM · {{ pm_name }}</span>{% endif %}
+        {% if am_name %}<span class="chip chip-role">AM · {{ am_name }}</span>{% endif %}
+      </span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="weeknav arrows">
+    <a class="btn" href="/plan?{{ qs }}&start={{ rng.prev }}" aria-label="Earlier" title="Earlier">←</a>
+    <a class="btn" href="/plan?{{ qs }}&start={{ rng.now }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/plan?{{ qs }}&start={{ rng.next }}" aria-label="Later" title="Later">→</a>
+  </div>
+</div>
+
+{% if not enabled %}
+<div class="card wide"><p class="subtle">Planning isn't set up yet. Run <code>src/setup_plan_db.py</code> and set
+<code>PLAN_DB_ID</code> / <code>PLAN_DS_ID</code> on Render.</p></div>
+{% elif not sel %}
+<div class="card wide"><p class="subtle">No active projects to plan.</p></div>
+{% else %}
+
+<form class="range-form plan-tools" method="get" action="/plan">
+  <input type="hidden" name="period" value="{{ period }}">
+  <input type="hidden" name="view" value="{{ view }}">
+  <input type="hidden" name="start" value="{{ rng.value }}">
+  <label>Project
+    <select name="project" onchange="navStart(); this.form.submit()" aria-label="Project">
+      {% for p in projects %}<option value="{{ p.id }}" {{ 'selected' if p.id == sel.id }}>{{ p.name }}</option>{% endfor %}
+    </select>
+  </label>
+  <span class="seg" role="group" aria-label="Period">
+    <span class="seg-opts">
+      <a class="seg-opt {{ 'is-on' if period == 'weekly' }}" href="/plan?project={{ sel.id }}&period=weekly&view={{ view }}&start={{ rng.from }}">Week</a>
+      <a class="seg-opt {{ 'is-on' if period == 'monthly' }}" href="/plan?project={{ sel.id }}&period=monthly&view={{ view }}&start={{ rng.from }}">Month</a>
+    </span>
+  </span>
+  <span class="seg" role="group" aria-label="View">
+    <span class="seg-opts">
+      <a class="seg-opt {{ 'is-on' if view == 'timeline' }}" href="/plan?{{ qsv }}&view=timeline">Timeline</a>
+      <a class="seg-opt {{ 'is-on' if view == 'tickets' }}" href="/plan?{{ qsv }}&view=tickets">Tickets</a>
+    </span>
+  </span>
+  <span class="plan-actions">
+    <a class="btn" href="/plan.pdf?{{ qsv }}">⬇ PDF</a>
+    <button type="button" class="btn {{ 'is-shared' if share.token }}" onclick="openShare()">{{ '🔗 Shared' if share.token else '🔗 Share' }}</button>
+    <button type="button" class="btn btn-primary" onclick="newItem()">＋ Item</button>
+  </span>
+</form>
+
+{% if view == 'timeline' %}
+<div class="card wide plan-card">
+  {% with rows = scheduled, editable = True %}{% include "_plan_timeline.html" %}{% endwith %}
+</div>
+{% else %}
+<div class="card wide">
+  {% with rows = scheduled + tray, editable = True, show_people = True, show_hours = True %}{% include "_plan_tickets.html" %}{% endwith %}
+</div>
+{% endif %}
+
+<div class="card wide">
+  <div class="subtle small">
+    <p><strong>Drag a bar</strong> to move it, drag its right edge to change the end, drag an unscheduled item onto a day to schedule it. Click a name to edit everything else.</p>
+    <p><strong>Tracked hours</strong> come from the item's goal (all hours filed under it) or, failing that, from every entry logged with the same ticket link. An item with neither shows an estimate only.</p>
+    <p><strong>The share link</strong> shows this plan live to anyone who has it, minus internal items, notes and tickets — owners and hours only if you tick them. Revoke it here any time.</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block modals %}
+{% if enabled and sel %}
+<dialog class="pop plan-pop" id="itemDlg" aria-labelledby="itemDlg-title">
+  <div class="pop-head"><h3 id="itemDlg-title">Item</h3><button type="button" class="pop-x" aria-label="Close" onclick="document.getElementById('itemDlg').close()">×</button></div>
+  <form id="itemForm" onsubmit="return saveItem(event)">
+    <input type="hidden" name="item_id">
+    <label>Name <input name="name" required maxlength="200" autocomplete="off"></label>
+    <div class="pop-2">
+      <label>Type <select name="type">{% for t in types %}<option>{{ t }}</option>{% endfor %}</select></label>
+      <label>Status <select name="status">{% for s in statuses %}<option>{{ s }}</option>{% endfor %}</select></label>
+    </div>
+    <div class="pop-2">
+      <label>Start <input type="date" name="start"></label>
+      <label>End <input type="date" name="end"></label>
+    </div>
+    <div class="pop-2">
+      <label>Estimate <span class="subtle">hours, blank = none</span><input type="number" name="estimate" min="0" step="0.5" inputmode="decimal"></label>
+      <label>Owner <select name="owner_id"><option value="">—</option>{% for p in people %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></label>
+    </div>
+    {% if goals %}
+    <label>Goal <span class="subtle">tracked hours come from it</span>
+      <select name="goal_id"><option value="">—</option>{% for g in goals %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}</select>
+    </label>
+    {% endif %}
+    <label>Ticket <span class="subtle">paste a Notion page link</span><input name="ticket_url" placeholder="https://app.notion.com/…" autocomplete="off"></label>
+    <label>Note <span class="subtle">ours — never on the share link</span><textarea name="note" rows="2" maxlength="1900"></textarea></label>
+    <label class="pop-check"><input type="checkbox" name="internal"> Internal — keep off the share link and its PDF</label>
+    <div class="deny" id="itemErr" hidden></div>
+    <div class="pop-actions">
+      <button type="button" class="btn btn-danger" id="itemDel" onclick="deleteItem()">Delete</button>
+      <span class="grow"></span>
+      <button type="button" class="btn" onclick="document.getElementById('itemDlg').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary" data-busy="Saving…">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="pop plan-pop" id="shareDlg" aria-labelledby="shareDlg-title">
+  <div class="pop-head"><h3 id="shareDlg-title">Share {{ sel.name }}</h3><button type="button" class="pop-x" aria-label="Close" onclick="document.getElementById('shareDlg').close()">×</button></div>
+  <p class="subtle small">Anyone with the link sees this project's plan, live, without logging in. Internal items, notes and tickets never show.</p>
+  <label class="pop-check"><input type="checkbox" id="shOn" {{ 'checked' if share.token }} onchange="shareSave({on: this.checked})"> Link is on</label>
+  <div id="shBody" {{ '' if share.token else 'hidden' }}>
+    <div class="share-url">
+      <input type="text" id="shUrl" readonly value="{{ share_url }}" aria-label="Share link" onclick="this.select()">
+      <button type="button" class="btn" onclick="copyShare()">Copy</button>
+    </div>
+    <label class="pop-check"><input type="checkbox" id="shPeople" {{ 'checked' if share.people }} onchange="shareSave({on: true, people: this.checked})"> Show who owns each item</label>
+    <label class="pop-check"><input type="checkbox" id="shHours" {{ 'checked' if share.hours }} onchange="shareSave({on: true, hours: this.checked})"> Show estimates and tracked hours</label>
+    <div class="pop-actions">
+      <button type="button" class="btn" onclick="shareRotate()">New link</button>
+      <a class="btn" id="shOpen" href="{{ share_url }}" target="_blank" rel="noopener">Open ↗</a>
+    </div>
+  </div>
+  <div class="deny" id="shErr" hidden></div>
+</dialog>
+
+<script>
+const ITEMS = {{ (scheduled + tray)|tojson }};
+const BY_ID = Object.fromEntries(ITEMS.map(i => [i.id, i]));
+const COLS = {{ cols|map(attribute='date')|list|tojson }};
+const PROJECT_ID = {{ sel.id|tojson }};
+const RELOAD = () => { navStart(); location.reload(); };
+
+async function post(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+// ---- the item dialog ------------------------------------------------------
+const dlg = document.getElementById('itemDlg');
+const form = document.getElementById('itemForm');
+function fill(it) {
+  form.reset();
+  document.getElementById('itemErr').hidden = true;
+  form.item_id.value = it.id || '';
+  form.name.value = it.name || '';
+  form.type.value = it.type || 'Task';
+  form.status.value = it.status || 'Backlog';
+  form.start.value = it.start || '';
+  form.end.value = it.end || '';
+  form.estimate.value = it.estimate == null ? '' : it.estimate;
+  form.owner_id.value = it.owner_id || '';
+  if (form.goal_id) form.goal_id.value = it.goal_id || '';
+  form.ticket_url.value = it.ticket_url || '';
+  form.note.value = it.note || '';
+  form.internal.checked = !!it.internal;
+  document.getElementById('itemDel').hidden = !it.id;
+  document.getElementById('itemDlg-title').textContent = it.id ? 'Edit item' : 'New item';
+}
+window.openItem = id => { const it = BY_ID[id]; if (!it) return; fill(it); dlg.showModal(); form.name.focus(); };
+window.newItem = (start) => { fill({ start: start || '', end: start || '' }); dlg.showModal(); form.name.focus(); };
+// a milestone is a single day: the end follows the start
+form.type.addEventListener('change', () => { if (form.type.value === 'Milestone') form.end.value = form.start.value; });
+form.start.addEventListener('change', () => { if (!form.end.value || form.end.value < form.start.value || form.type.value === 'Milestone') form.end.value = form.start.value; });
+
+window.saveItem = async function (e) {
+  e.preventDefault();
+  const btn = form.querySelector('button[type=submit]');
+  const err = document.getElementById('itemErr');
+  err.hidden = true;
+  const body = {
+    item_id: form.item_id.value || null, project_id: PROJECT_ID,
+    name: form.name.value, type: form.type.value, status: form.status.value,
+    start: form.start.value || null, end: (form.end.value || form.start.value) || null,
+    estimate: form.estimate.value === '' ? null : parseFloat(form.estimate.value),
+    owner_id: form.owner_id.value || null, goal_id: form.goal_id ? (form.goal_id.value || null) : null,
+    ticket_url: form.ticket_url.value, note: form.note.value, internal: form.internal.checked,
+    fields: ['name', 'type', 'status', 'start', 'end', 'estimate', 'owner_id', 'ticket_url', 'note', 'internal'].concat(form.goal_id ? ['goal_id'] : []),
+  };
+  setBusy(btn, true);
+  try { await post('/api/plan/item', body); RELOAD(); }
+  catch (ex) { err.textContent = ex.message; err.hidden = false; setBusy(btn, false); }
+  return false;
+};
+
+window.deleteItem = async function () {
+  const it = BY_ID[form.item_id.value];
+  if (!it) return;
+  const ok = await zConfirm(`Delete "${it.name}"? This only removes it from the plan — no hours are touched.`, { title: 'Delete item', ok: 'Delete', danger: true });
+  if (!ok) return;
+  try { await post('/api/plan/item/delete', { item_id: it.id }); RELOAD(); }
+  catch (ex) { zAlert(ex.message, { title: 'Could not delete' }); }
+};
+
+// ---- the tickets view's status select --------------------------------------
+window.setStatus = async function (id, sel) {
+  const was = BY_ID[id] ? BY_ID[id].status : null;
+  sel.disabled = true;
+  try { await post('/api/plan/item', { item_id: id, status: sel.value, fields: ['status'] }); RELOAD(); }
+  catch (ex) { if (was) sel.value = was; sel.disabled = false; zAlert(ex.message, { title: 'Could not save' }); }
+};
+
+// ---- drag: move a bar, resize its end, drop a tray item on a day ---------
+(function () {
+  const tl = document.getElementById('tl');
+  if (!tl) return;
+  const N = COLS.length;
+  // the next weekday k steps from an ISO date (k may be negative)
+  function addWeekdays(iso, k) {
+    const d = new Date(iso + 'T00:00:00');
+    const step = k < 0 ? -1 : 1;
+    let n = Math.abs(k);
+    while (n > 0) { d.setDate(d.getDate() + step); const w = d.getDay(); if (w !== 0 && w !== 6) n--; }
+    return d.toISOString().slice(0, 10);
+  }
+  async function move(row, start, end, undo) {
+    row.classList.add('is-pending');
+    try {
+      const data = await post('/api/plan/item/move', { item_id: row.dataset.item, start, end });
+      row.dataset.start = data.item.start || ''; row.dataset.end = data.item.end || '';
+      RELOAD();
+    } catch (ex) {
+      undo && undo();
+      row.classList.remove('is-pending');
+      zAlert(ex.message, { title: 'Could not move that' });
+    }
+  }
+  let drag = null;
+  tl.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    const bar = e.target.closest('.tl-bar, .tl-ms');
+    if (!bar || window.innerWidth < 720) return;
+    const grip = e.target.closest('.tl-grip');
+    const row = bar.closest('.tl-row');
+    const days = row.querySelector('.tl-days');
+    const a = parseInt(bar.style.getPropertyValue('--a'), 10);
+    const b = bar.classList.contains('tl-ms') ? a : parseInt(bar.style.getPropertyValue('--b'), 10);
+    drag = { bar, row, a, b, x0: e.clientX, cw: days.getBoundingClientRect().width / N,
+             mode: grip ? 'resize' : 'move', k: 0, moved: false };
+    bar.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  tl.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const k = Math.round((e.clientX - drag.x0) / drag.cw);
+    if (k === drag.k) return;
+    drag.k = k; drag.moved = true;
+    drag.bar.classList.add('is-dragging');
+    if (drag.mode === 'move') {
+      const span = drag.b - drag.a;
+      let a = Math.max(1, Math.min(N - span, drag.a + k));
+      drag.bar.style.setProperty('--a', a);
+      if (!drag.bar.classList.contains('tl-ms')) drag.bar.style.setProperty('--b', a + span);
+    } else {
+      drag.bar.style.setProperty('--b', Math.max(drag.a, Math.min(N, drag.b + k)));
+    }
+  });
+  function endDrag(e) {
+    if (!drag) return;
+    const d = drag; drag = null;
+    d.bar.classList.remove('is-dragging');
+    if (!d.moved || d.k === 0) return;
+    const row = d.row;
+    const undo = () => { d.bar.style.setProperty('--a', d.a); if (!d.bar.classList.contains('tl-ms')) d.bar.style.setProperty('--b', d.b); };
+    if (d.mode === 'move') {
+      const na = parseInt(d.bar.style.getPropertyValue('--a'), 10);
+      const shift = na - d.a;
+      if (!shift) return;
+      // shift both real dates by that many weekdays, so a bar clipped at the
+      // edge keeps the days that are off screen
+      move(row, addWeekdays(row.dataset.start, shift), addWeekdays(row.dataset.end || row.dataset.start, shift), undo);
+    } else {
+      const nb = parseInt(d.bar.style.getPropertyValue('--b'), 10);
+      const end = COLS[nb - 1];
+      if (end === row.dataset.end) return;
+      move(row, row.dataset.start, end < row.dataset.start ? row.dataset.start : end, undo);
+    }
+  }
+  tl.addEventListener('pointerup', endDrag);
+  tl.addEventListener('pointercancel', endDrag);
+
+  // tray -> day: HTML5 drag/drop, the cells and the day headers are targets
+  const tray = document.getElementById('tray');
+  let dragId = null;
+  if (tray) tray.addEventListener('dragstart', e => {
+    const it = e.target.closest('.tray-item'); if (!it) return;
+    dragId = it.dataset.item; e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', dragId); } catch (x) {}
+  });
+  const targets = '.tl-cell, .tl-day';
+  tl.addEventListener('dragover', e => { const t = e.target.closest(targets); if (!t || !dragId) return; e.preventDefault(); t.classList.add('is-over'); });
+  tl.addEventListener('dragleave', e => { const t = e.target.closest(targets); if (t) t.classList.remove('is-over'); });
+  tl.addEventListener('drop', async e => {
+    const t = e.target.closest(targets); if (!t || !dragId) return;
+    e.preventDefault(); t.classList.remove('is-over');
+    const date = t.dataset.date || t.getAttribute('title');
+    const id = dragId; dragId = null;
+    const it = BY_ID[id];
+    try {
+      await post('/api/plan/item/move', { item_id: id, start: date, end: date });
+      RELOAD();
+    } catch (ex) { zAlert(ex.message, { title: 'Could not schedule ' + (it ? it.name : 'that') }); }
+  });
+  // a double-click on an empty cell starts a new item on that day
+  tl.addEventListener('dblclick', e => { const c = e.target.closest('.tl-cell'); if (c) newItem(c.dataset.date); });
+})();
+
+// ---- share -----------------------------------------------------------------
+const shDlg = document.getElementById('shareDlg');
+window.openShare = () => shDlg.showModal();
+function shApply(share, url) {
+  document.getElementById('shOn').checked = !!share.token;
+  document.getElementById('shBody').hidden = !share.token;
+  document.getElementById('shPeople').checked = !!share.people;
+  document.getElementById('shHours').checked = !!share.hours;
+  document.getElementById('shUrl').value = url || '';
+  document.getElementById('shOpen').href = url || '#';
+}
+window.shareSave = async function (patch) {
+  const err = document.getElementById('shErr'); err.hidden = true;
+  try { const d = await post('/api/plan/share', Object.assign({ project_id: PROJECT_ID }, patch)); shApply(d.share, d.url); }
+  catch (ex) { err.textContent = ex.message; err.hidden = false; }
+};
+window.shareRotate = async function () {
+  const ok = await zConfirm('Make a new link? The old one stops working within a minute.', { title: 'New link', ok: 'New link' });
+  if (ok) shareSave({ on: true, rotate: true });
+};
+window.copyShare = function () {
+  const inp = document.getElementById('shUrl');
+  inp.select();
+  let done = false;
+  try { done = document.execCommand('copy'); } catch (e) {}
+  if (!done && navigator.clipboard) navigator.clipboard.writeText(inp.value);
+};
+</script>
+{% endif %}
+{% endblock %}

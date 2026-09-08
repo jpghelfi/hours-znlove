@@ -1,0 +1,58 @@
+{# The tickets view: the same rows as a list grouped by status, in the
+   status vocabulary's order. Shared by /plan (editable: the status is a
+   <select>, the name opens the item) and the public page (plain text).
+   Context: rows (scheduled + tray), statuses, editable, show_people,
+   show_hours. #}
+<div class="tickets">
+  {% for s in statuses %}
+  {% set group = rows|selectattr('status', 'equalto', s)|list %}
+  {% if group or editable %}
+  <details class="tk-group" {{ 'open' if group and s not in ('Done', 'Dropped') }}>
+    <summary><span class="tk-dot st-{{ s|lower|replace(' ', '-') }}"></span>{{ s }} <span class="tk-count">{{ group|length }}</span></summary>
+    {% if group %}
+    <table class="grid flat tk-table">
+      <thead><tr>
+        <th class="left">Item</th><th class="left">Type</th><th class="left">Dates</th>
+        {% if show_people %}<th class="left">Owner</th>{% endif %}
+        {% if show_hours %}<th>Est.</th><th>Tracked</th>{% endif %}
+        {% if editable %}<th class="left">Status</th><th></th>{% endif %}
+      </tr></thead>
+      <tbody>
+      {% for r in group %}
+      <tr data-item="{{ r.id }}">
+        <td class="left tk-name">
+          {% if editable %}<button type="button" class="linkish" onclick="openItem('{{ r.id }}')">{{ r.name }}</button>
+          {% else %}{{ r.name }}{% endif %}
+          {% if r.internal %}<span class="tl-tag tl-int">internal</span>{% endif %}
+        </td>
+        <td class="left subtle">{{ '◆ ' if r.type == 'Milestone' }}{{ r.type }}</td>
+        <td class="left subtle nowrap">
+          {%- if not r.start %}unscheduled{% elif r.start == r.end %}{{ r.start }}{% else %}{{ r.start }} – {{ r.end }}{% endif -%}
+        </td>
+        {% if show_people %}<td class="left subtle">{{ r.owner or '—' }}</td>{% endif %}
+        {% if show_hours %}
+        <td>{{ '%g'|format(r.estimate) if r.estimate is not none else '—' }}</td>
+        <td>{{ '%g'|format(r.tracked) if r.tracked is not none else '—' }}</td>
+        {% endif %}
+        {% if editable %}
+        <td class="left">
+          <select class="tk-status" aria-label="Status of {{ r.name }}" onchange="setStatus('{{ r.id }}', this)">
+            {% for o in statuses %}<option {{ 'selected' if o == r.status }}>{{ o }}</option>{% endfor %}
+          </select>
+        </td>
+        <td class="left nowrap">
+          {% if r.ticket_url %}<a class="tk-link" href="{{ r.ticket_url }}" target="_blank" rel="noopener" title="{{ r.ticket }}">↗ ticket</a>{% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="subtle small tk-none">Nothing here.</div>
+    {% endif %}
+  </details>
+  {% endif %}
+  {% endfor %}
+  {% if not rows %}<div class="subtle">No items in this period.</div>{% endif %}
+</div>

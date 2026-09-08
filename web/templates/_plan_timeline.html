@@ -1,0 +1,70 @@
+{# The timeline: one row per scheduled item, a bar across its weekday
+   columns, the today rule, and (when editable) the tray of unscheduled items
+   under it. Shared by /plan and the public /p/<token> page — the public page
+   passes editable=False and rows that already went through the strip, so
+   nothing here decides what a link holder may see; it only draws what it is
+   handed. Read-only means the affordances are gone, not disabled: bars are
+   <div>s, not <button>s, and there are no drop targets. Context: cols, rows
+   (scheduled), tray, editable, today, statuses. #}
+{% set ncols = cols|length %}
+{% macro status_class(s) -%}
+  st-{{ s|lower|replace(' ', '-') }}
+{%- endmacro %}
+<div class="tl {{ 'tl-edit' if editable }} {{ 'tl-month' if ncols > 8 }}" id="tl" style="--cols: {{ ncols }}"
+     data-cols='{{ cols|map(attribute="date")|list|tojson }}'>
+  <div class="tl-head">
+    <div class="tl-name">Item</div>
+    <div class="tl-days">
+      {% for c in cols %}
+      <div class="tl-day {{ 'is-today' if c.today }} {{ 'is-mon' if c.monday }}" title="{{ c.date }}">
+        {% if c.month %}<b class="tl-mon">{{ c.month }}</b>{% endif %}
+        <span class="tl-dow">{{ c.dow }}</span><span class="tl-dnum">{{ c.day }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% for r in rows %}
+  <div class="tl-row {{ 'is-sunk' if r.status in sunk }}" data-item="{{ r.id }}" data-start="{{ r.start }}" data-end="{{ r.end }}">
+    <div class="tl-name">
+      {% if editable %}
+      <button type="button" class="tl-open" onclick="openItem('{{ r.id }}')" title="Edit">{{ r.name }}</button>
+      {% else %}<span class="tl-open">{{ r.name }}</span>{% endif %}
+      <span class="tl-meta">
+        {% if r.type == 'Milestone' %}<span class="tl-tag">◆ milestone</span>{% elif r.type != 'Task' %}<span class="tl-tag">{{ r.type|lower }}</span>{% endif %}
+        {% if r.owner %}<span class="tl-tag">{{ r.owner }}</span>{% endif %}
+        {% if r.internal %}<span class="tl-tag tl-int" title="Kept off the share link">internal</span>{% endif %}
+      </span>
+    </div>
+    <div class="tl-days">
+      {% for c in cols %}<div class="tl-cell {{ 'is-today' if c.today }} {{ 'is-mon' if c.monday }}" data-date="{{ c.date }}"></div>{% endfor %}
+      {% if r.type == 'Milestone' %}
+      <div class="tl-ms {{ status_class(r.status) }}" style="--a: {{ r.col_a }}" title="{{ r.name }} · {{ r.start }}"><i>◆</i></div>
+      {% else %}
+      <div class="tl-bar {{ status_class(r.status) }} {{ 'clip-l' if r.clip_l }} {{ 'clip-r' if r.clip_r }}"
+           style="--a: {{ r.col_a }}; --b: {{ r.col_b }}"
+           title="{{ r.name }} · {{ r.start }}{% if r.end != r.start %} – {{ r.end }}{% endif %}{% if r.estimate is not none %} · {% if r.tracked is not none %}{{ '%g'|format(r.tracked) }} h tracked of {% endif %}{{ '%g'|format(r.estimate) }} h{% endif %}">
+        {% if r.pct is not none %}<i class="tl-fill" style="width: {{ r.pct }}%"></i>{% endif %}
+        <span class="tl-lbl">{{ r.status }}{% if r.estimate is not none %} · {% if r.tracked is not none %}{{ '%g'|format(r.tracked) }}/{% endif %}{{ '%g'|format(r.estimate) }} h{% endif %}</span>
+        {% if editable %}<span class="tl-grip" title="Drag to change the end date"></span>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="tl-empty subtle">Nothing scheduled {{ 'this week' if ncols <= 8 else 'this month' }}{% if editable %} — click <b>＋ Item</b>, or drag one up from the tray{% endif %}.</div>
+  {% endfor %}
+</div>
+{% if tray or editable %}
+<div class="tray {{ 'tray-edit' if editable }}" id="tray">
+  <div class="tray-title">Unscheduled <span class="subtle">· {{ tray|length }}</span></div>
+  {% for r in tray %}
+  <div class="tray-item {{ status_class(r.status) }} {{ 'is-sunk' if r.status in sunk }}" data-item="{{ r.id }}" {% if editable %}draggable="true"{% endif %}>
+    {% if editable %}<button type="button" class="tl-open" onclick="openItem('{{ r.id }}')">{{ r.name }}</button>
+    {% else %}<span class="tl-open">{{ r.name }}</span>{% endif %}
+    <span class="tl-meta">{{ r.status }}{% if r.estimate is not none %} · {{ '%g'|format(r.estimate) }} h{% endif %}{% if r.owner %} · {{ r.owner }}{% endif %}</span>
+  </div>
+  {% else %}
+  <div class="subtle small">Nothing waiting for a date{% if editable %} — items saved without dates land here; drag one onto a day{% endif %}.</div>
+  {% endfor %}
+</div>
+{% endif %}

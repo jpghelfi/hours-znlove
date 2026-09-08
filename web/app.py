@@ -29,6 +29,7 @@ from . import google_auth
 from . import invoice_pdf
 from . import mailer
 from . import notion_ops as ops
+from . import plan_pdf
 from . import report_gsheet
 from . import report_xlsx
 
@@ -106,6 +107,7 @@ def _startup() -> None:
     ops.ensure_goal_property()
     ops.ensure_role_properties()
     ops.ensure_partner_properties()
+    ops.ensure_plan_properties()
 
 
 @app.get("/healthz")
@@ -3577,3 +3579,386 @@ def api_goals(request: Request, project_id: str = ""):
                   for g in ops.list_goals(project_id, open_only=True)],
         "elsewhere": ops.other_project_goal_names(project_id),
     })
+
+
+# ---- planning: one project's week or month as a timeline ---------------
+#
+# Admins only, to see and to change (docs/planning.md). One project, one
+# period, two views (timeline / tickets) over the same rows, and two ways
+# out: a PDF and a tokened, login-free link that shows the live plan with
+# the internal fields stripped.
+
+_PLAN_PERIODS = ("weekly", "monthly")
+_PLAN_VIEWS = ("timeline", "tickets")
+_PLAN_SUNK = ("Done", "Dropped")   # finished rows sink below the live ones
+
+
+def _plan_columns(rng: dict) -> list[dict]:
+    """Weekday columns for the period: the planner never books a weekend."""
+    today = dt.date.today().isoformat()
+    cols = []
+    for d in plan_pdf.weekday_columns(rng["from"], rng["to"]):
+        cols.append({"date": d.isoformat(), "dow": d.strftime("%a"), "day": d.day,
+                     "label": d.strftime("%a %d"), "short": d.strftime("%d"),
+                     "month": d.strftime("%b") if d.day == 1 or not cols else "",
+                     "monday": d.weekday() == 0, "today": d.isoformat() == today})
+    return cols
+
+
+def _plan_period_rows(items: list[dict], rng: dict, cols: list[dict]) -> list[dict]:
+    """The items that belong on this period's page, each with its bar
+    geometry: `col_a`/`col_b` (1-based, inclusive) among the weekday columns,
+    and whether it runs past either edge. Unscheduled items come too (they
+    live in the tray); items entirely outside the period don't."""
+    dates = [c["date"] for c in cols]
+    out = []
+    for r in items:
+        r = dict(r)
+        if not r["start"]:
+            r.update(col_a=None, col_b=None, clip_l=False, clip_r=False)
+            out.append(r)
+            continue
+        if r["end"] < rng["from"] or r["start"] > rng["to"]:
+            continue
+        a = next((i for i, d in enumerate(dates) if d >= r["start"]), None)
+        b = next((i for i in range(len(dates) - 1, -1, -1) if dates[i] <= r["end"]), None)
+        if a is None or b is None or a > b:
+            continue   # a weekend-only item has no weekday column to sit on
+        r.update(col_a=a + 1, col_b=b + 1,
+                 clip_l=r["start"] < dates[0], clip_r=r["end"] > dates[-1])
+        out.append(r)
+    out.sort(key=lambda r: (r["status"] in _PLAN_SUNK, r["start"] is None,
+                            r["start"] or "", r["order"], r["name"].lower()))
+    return out
+
+
+def _plan_public_rows(items: list[dict], share: dict) -> list[dict]:
+    """The strip: what a link holder gets to see of the plan.
+
+    One function, tested, rather than a set of {% if %}s in the template — a
+    bug here is a leak. Internal items are gone; notes, tickets and goals are
+    never shown; owners and hours only when the project's share flags say so.
+    """
+    out = []
+    for r in items:
+        if r.get("internal"):
+            continue
+        row = {k: r.get(k) for k in ("id", "name", "start", "end", "status", "type",
+                                     "col_a", "col_b", "clip_l", "clip_r")}
+        row["owner"] = r.get("owner") if share.get("people") else ""
+        row["owner_id"] = None
+        if share.get("hours"):
+            row["estimate"] = r.get("estimate")
+            row["tracked"] = r.get("tracked")
+            row["pct"] = r.get("pct")
+        else:
+            row["estimate"] = None
+            row["tracked"] = None
+            row["pct"] = None
+        out.append(row)
+    return out
+
+
+def _plan_totals(rows: list[dict]) -> dict:
+    live = [r for r in rows if r["status"] != "Dropped"]
+    est = round(sum(r.get("estimate") or 0 for r in live), 2)
+    trk = round(sum(r.get("tracked") or 0 for r in live if r.get("tracked") is not None), 2)
+    done = sum(1 for r in live if r["status"] == "Done")
+    return {"count": len(live), "done": done,
+            "pct": round(done / len(live) * 100) if live else 0,
+            "estimate": est, "tracked": trk,
+            "unscheduled": sum(1 for r in live if not r["start"])}
+
+
+def _plan_context(project: dict, period: str, start: Optional[str], full: bool,
+                  share: Optional[dict] = None) -> dict:
+    """Everything both the page and the PDF need for one project + period.
+    `full` = the admin's view; otherwise the rows go through the strip."""
+    rng = _period_range(period, _project_anchor(period, start))
+    cols = _plan_columns(rng)
+    items = ops.list_plan_items(project["id"])
+    rows = _plan_period_rows(items, rng, cols)
+    tracked = ops.plan_tracked(project["id"], rows, rng["from"], rng["to"])
+    for r in rows:
+        r["tracked"] = tracked.get(r["id"])
+        r["pct"] = (min(100, round(r["tracked"] / r["estimate"] * 100))
+                    if r.get("estimate") and r["tracked"] is not None else None)
+    if not full:
+        rows = _plan_public_rows(rows, share or {})
+    name_map = {p["id"]: p["name"] for p in ops.list_people()}
+    return {
+        "rng": rng, "cols": cols, "rows": rows,
+        "scheduled": [r for r in rows if r["start"]],
+        "tray": [r for r in rows if not r["start"]],
+        "totals": _plan_totals(rows),
+        "pm_name": name_map.get(project.get("pm_id")) if project.get("pm_id") else None,
+        "am_name": name_map.get(project.get("am_id")) if project.get("am_id") else None,
+        "today": dt.date.today().isoformat(),
+    }
+
+
+def _plan_pdf_bytes(project: dict, ctx: dict, show_people: bool, show_hours: bool) -> bytes:
+    return plan_pdf.build({
+        "project": project["name"], "period_label": ctx["rng"]["label"],
+        "date_from": ctx["rng"]["from"], "date_to": ctx["rng"]["to"],
+        "generated": ctx["today"], "show_people": show_people, "show_hours": show_hours,
+        "pm": ctx["pm_name"], "am": ctx["am_name"],
+        "company": invoice_pdf.company().get("name", ""),
+    }, ctx["rows"])
+
+
+def _plan_pick(projects: list, project: Optional[str]) -> Optional[dict]:
+    known = {p["id"]: p for p in projects}
+    if project and project in known:
+        return known[project]
+    return projects[0] if projects else None
+
+
+@app.get("/plan", response_class=HTMLResponse)
+def plan_page(request: Request, project: Optional[str] = None, period: str = "weekly",
+              start: Optional[str] = None, view: str = "timeline"):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    period = period if period in _PLAN_PERIODS else "weekly"
+    view = view if view in _PLAN_VIEWS else "timeline"
+    projects = ops.list_projects()
+    sel = _plan_pick(projects, project)
+    base_ctx = {"user": user, "is_admin": True, "enabled": ops.plan_enabled(),
+                "projects": projects, "sel": sel, "period": period, "view": view,
+                "statuses": ops.PLAN_STATUSES, "types": ops.PLAN_TYPES,
+                "sunk": list(_PLAN_SUNK)}
+    if not sel or not ops.plan_enabled():
+        rng = _period_range(period, _project_anchor(period, start))
+        return templates.TemplateResponse(request, "plan.html", dict(
+            base_ctx, rng=rng, cols=[], rows=[], scheduled=[], tray=[], totals=_plan_totals([]),
+            people=[], goals=[], share={"token": "", "people": False, "hours": False},
+            pm_name=None, am_name=None, today=dt.date.today().isoformat()))
+    ctx = _plan_context(sel, period, start, full=True)
+    people = ops.list_people()
+    goals = ops.list_goals(sel["id"], open_only=True) if ops.GOALS_DS else []
+    try:
+        share = ops.plan_share(sel["id"])
+    except Exception:
+        logging.exception("Could not read the share settings of %s", sel["name"])
+        share = {"token": "", "people": False, "hours": False}
+    return templates.TemplateResponse(request, "plan.html", dict(
+        base_ctx, **ctx, people=people, goals=goals, share=share,
+        share_url=str(request.base_url).rstrip("/") + "/p/" + share["token"] if share["token"] else "",
+    ))
+
+
+@app.get("/plan.pdf")
+def plan_pdf_download(request: Request, project: Optional[str] = None,
+                      period: str = "weekly", start: Optional[str] = None):
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    period = period if period in _PLAN_PERIODS else "weekly"
+    sel = _plan_pick(ops.list_projects(), project)
+    if not sel or not ops.plan_enabled():
+        return RedirectResponse(url="/plan", status_code=303)
+    ctx = _plan_context(sel, period, start, full=True)
+    pdf = _plan_pdf_bytes(sel, ctx, show_people=True, show_hours=True)
+    from fastapi.responses import Response
+    return Response(pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{plan_pdf.filename(sel["name"], ctx["rng"]["label"])}"'})
+
+
+class PlanItem(BaseModel):
+    item_id: Optional[str] = None
+    project_id: Optional[str] = None
+    name: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    status: Optional[str] = None
+    type: Optional[str] = None
+    estimate: Optional[float] = None
+    owner_id: Optional[str] = None
+    goal_id: Optional[str] = None
+    ticket_url: Optional[str] = None
+    ticket: Optional[str] = None
+    note: Optional[str] = None
+    internal: Optional[bool] = None
+    # which keys the browser meant to send — a status change must not blank
+    # the note, so only the named fields are written
+    fields: list[str] = Field(default_factory=list)
+
+
+def _plan_admin(request: Request):
+    user = _require_login(request)
+    if not user:
+        return None, JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return None, JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return None, JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not ops.plan_enabled():
+        return None, JSONResponse({"ok": False, "error": "Planning isn't set up yet."},
+                                  status_code=503)
+    return user, None
+
+
+_PLAN_FIELDS = ("name", "start", "end", "status", "type", "estimate", "owner_id",
+                "goal_id", "ticket_url", "ticket", "note", "internal")
+
+
+@app.post("/api/plan/item")
+def api_plan_item(request: Request, req: PlanItem):
+    """Create (no item_id) or patch one plan item."""
+    _, err = _plan_admin(request)
+    if err:
+        return err
+    sent = set(req.fields) & set(_PLAN_FIELDS)
+    if not sent:   # a create with no field list means "everything I typed"
+        sent = set(_PLAN_FIELDS) if not req.item_id else set()
+    fields = {k: getattr(req, k) for k in sent}
+    if "start" in fields or "end" in fields:
+        fields.setdefault("start", req.start)
+        fields.setdefault("end", req.end)
+        for k in ("start", "end"):
+            if fields[k] and not _parse_date(fields[k]):
+                return JSONResponse({"ok": False, "error": "That date didn't look like a date."},
+                                    status_code=400)
+    try:
+        if req.item_id:
+            row = ops.update_plan_item(req.item_id, fields)
+        else:
+            if not req.project_id:
+                return JSONResponse({"ok": False, "error": "Which project?"}, status_code=400)
+            row = ops.create_plan_item(req.project_id, fields)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Saving a plan item failed")
+        return JSONResponse({"ok": False, "error": "Notion refused that. Try again in a moment."},
+                            status_code=502)
+    return JSONResponse({"ok": True, "item": row})
+
+
+class PlanMove(BaseModel):
+    item_id: str
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+@app.post("/api/plan/item/move")
+def api_plan_move(request: Request, req: PlanMove):
+    """A drag: new dates for one item (both empty = back to the tray)."""
+    _, err = _plan_admin(request)
+    if err:
+        return err
+    for v in (req.start, req.end):
+        if v and not _parse_date(v):
+            return JSONResponse({"ok": False, "error": "bad date"}, status_code=400)
+    try:
+        row = ops.update_plan_item(req.item_id, {"start": req.start, "end": req.end or req.start})
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Moving a plan item failed")
+        return JSONResponse({"ok": False, "error": "Notion refused that move."}, status_code=502)
+    return JSONResponse({"ok": True, "item": row})
+
+
+class PlanDelete(BaseModel):
+    item_id: str
+
+
+@app.post("/api/plan/item/delete")
+def api_plan_delete(request: Request, req: PlanDelete):
+    _, err = _plan_admin(request)
+    if err:
+        return err
+    try:
+        row = ops.delete_plan_item(req.item_id)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Deleting a plan item failed")
+        return JSONResponse({"ok": False, "error": "Notion refused that delete."}, status_code=502)
+    return JSONResponse({"ok": True, "item": row})
+
+
+class PlanShare(BaseModel):
+    project_id: str
+    on: bool = True
+    people: Optional[bool] = None
+    hours: Optional[bool] = None
+    rotate: bool = False
+
+
+@app.post("/api/plan/share")
+def api_plan_share(request: Request, req: PlanShare):
+    """Mint, widen, rotate or revoke a project's share link."""
+    _, err = _plan_admin(request)
+    if err:
+        return err
+    try:
+        share = ops.set_plan_share(req.project_id, req.on, req.people, req.hours, req.rotate)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Changing the share link failed")
+        return JSONResponse({"ok": False, "error": "Notion refused that."}, status_code=502)
+    url = str(request.base_url).rstrip("/") + "/p/" + share["token"] if share["token"] else ""
+    return JSONResponse({"ok": True, "share": share, "url": url})
+
+
+# ---- the public link: no login, the strip decides what shows ------------
+
+_PUBLIC_HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow",
+                   "Referrer-Policy": "no-referrer"}
+
+
+def _public_project(token: str) -> Optional[dict]:
+    try:
+        project = ops.project_by_share_token(token)
+    except Exception:
+        logging.exception("Share-token lookup failed")
+        return None
+    return project if project and project.get("active", True) else None
+
+
+@app.get("/p/{token}.pdf")
+def public_plan_pdf(token: str, period: str = "weekly", start: Optional[str] = None):
+    """Declared before /p/{token}: a path parameter swallows the suffix."""
+    project = _public_project(token)
+    if not project:
+        return HTMLResponse("<h1>Not found</h1>", status_code=404, headers=_PUBLIC_HEADERS)
+    period = period if period in _PLAN_PERIODS else "weekly"
+    share = project["share"]
+    ctx = _plan_context(project, period, start, full=False, share=share)
+    if not share["people"]:   # the same rule the HTML route applies, enforced here too
+        ctx["pm_name"] = ctx["am_name"] = None
+    pdf = _plan_pdf_bytes(project, ctx, show_people=share["people"], show_hours=share["hours"])
+    from fastapi.responses import Response
+    return Response(pdf, media_type="application/pdf", headers=dict(_PUBLIC_HEADERS, **{
+        "Content-Disposition": f'inline; filename="{plan_pdf.filename(project["name"], ctx["rng"]["label"])}"'}))
+
+
+@app.get("/p/{token}", response_class=HTMLResponse)
+def public_plan(request: Request, token: str, period: str = "weekly",
+                start: Optional[str] = None, view: str = "timeline"):
+    """The live plan for whoever holds the link. Read-only: no click targets,
+    no popover script, and nothing on the page links into the app."""
+    project = _public_project(token)
+    if not project:
+        return templates.TemplateResponse(request, "plan_public.html",
+                                          {"public": True, "missing": True},
+                                          status_code=404, headers=_PUBLIC_HEADERS)
+    period = period if period in _PLAN_PERIODS else "weekly"
+    view = view if view in _PLAN_VIEWS else "timeline"
+    share = project["share"]
+    ctx = _plan_context(project, period, start, full=False, share=share)
+    if not share["people"]:
+        ctx["pm_name"] = ctx["am_name"] = None
+    return templates.TemplateResponse(request, "plan_public.html", dict(
+        ctx, public=True, missing=False, project=project, token=token,
+        period=period, view=view, share=share, statuses=ops.PLAN_STATUSES,
+        sunk=list(_PLAN_SUNK), editable=False,
+    ), headers=_PUBLIC_HEADERS)
