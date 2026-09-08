@@ -55,6 +55,8 @@ _ENV_ID_KEYS = {
     "absences_ds_id": "ABSENCES_DS_ID",
     "goals_db_id": "GOALS_DB_ID",
     "goals_ds_id": "GOALS_DS_ID",
+    "plan_db_id": "PLAN_DB_ID",
+    "plan_ds_id": "PLAN_DS_ID",
 }
 
 

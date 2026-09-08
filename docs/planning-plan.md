@@ -1,8 +1,8 @@
 # Planning: a project's week or month as a timeline — analysis
 
-**Status: analysis only. Nothing built.** Written the way `docs/goals-plan.md` and
-`docs/budgets-plan.md` were — the reference design and the decisions behind it, before
-any code.
+**Status: built (v1, 2026-09-07) — see `docs/planning.md` for how it works.** This is the
+analysis it was built from, kept the way `docs/goals-plan.md` and `docs/budgets-plan.md`
+are: the reference design and the decisions behind it. v1.5/v2 rows below are still open.
 
 ## The ask
 

@@ -3122,3 +3122,380 @@ def goal_totals(project_id: str) -> dict:
     totals = {k: round(v, 2) for k, v in totals.items()}
     _goal_totals_cache[project_id] = (now, totals)
     return totals
+
+
+# ---- planning ----------------------------------------------------------
+#
+# A plan item is one thing a project intends to do — a feature, a task, a
+# bug, a milestone — with dates, an estimate, a status and an owner. /plan
+# draws one project's items as a timeline and as a tickets list, and the
+# same rows go out as a PDF or through a login-free share link
+# (docs/planning.md). Its own database (src/setup_plan_db.py), related to
+# Projects and optionally to Goals; everything is read through .get() so a
+# renamed column reads as empty rather than 500ing (the alloc_person_prop
+# lesson).
+
+PLAN_DS = _ids.get("plan_ds_id")   # optional: unset until set up
+
+PLAN_STATUSES = ["Backlog", "Planned", "In progress", "Blocked", "Done", "Dropped"]
+PLAN_TYPES = ["Feature", "Task", "Bug", "Milestone"]
+MAX_PLAN_TITLE = 200
+MAX_PLAN_NOTE = 1900
+_MAX_PLAN_DAYS = 366   # an item longer than a year is a project, not an item
+
+# Share settings live on the *Projects* row: one link per project, revocable
+# by blanking the token. The two flags widen what the link shows.
+SHARE_TOKEN_PROP = "Plan share token"
+SHARE_PEOPLE_PROP = "Plan share shows people"
+SHARE_HOURS_PROP = "Plan share shows hours"
+
+
+def plan_enabled() -> bool:
+    return bool(PLAN_DS)
+
+
+def ensure_plan_properties() -> None:
+    """Add the share columns to the Projects db if missing. Safe on every boot."""
+    if not PLAN_DS:
+        return
+    try:
+        ds = _notion.data_sources.retrieve(PROJECTS_DS)
+    except Exception:
+        logging.warning("Could not read the Projects schema to add plan share columns")
+        return
+    have = ds["properties"]
+    missing = {}
+    if SHARE_TOKEN_PROP not in have:
+        missing[SHARE_TOKEN_PROP] = {"rich_text": {}}
+    if SHARE_PEOPLE_PROP not in have:
+        missing[SHARE_PEOPLE_PROP] = {"checkbox": {}}
+    if SHARE_HOURS_PROP not in have:
+        missing[SHARE_HOURS_PROP] = {"checkbox": {}}
+    if missing:
+        _notion.data_sources.update(PROJECTS_DS, properties=missing)
+
+
+def _rt_text(rt: list | None) -> str:
+    return "".join(t.get("plain_text", "") for t in (rt or [])).strip()
+
+
+def _plan_row(page: dict, pname: dict, people: dict, goals: dict) -> dict:
+    props = page["properties"]
+    rel = props.get("Project", {}).get("relation") or []
+    pid = rel[0]["id"] if rel else None
+    d = props.get("Dates", {}).get("date") or {}
+    start = (d.get("start") or "")[:10] or None
+    end = (d.get("end") or "")[:10] or start
+    status = (props.get("Status", {}).get("select") or {}).get("name") or "Backlog"
+    kind = (props.get("Type", {}).get("select") or {}).get("name") or "Task"
+    owner = props.get("Owner", {}).get("people") or []
+    owner_id = owner[0]["id"] if owner else None
+    grel = props.get("Goal", {}).get("relation") or []
+    goal_id = grel[0]["id"] if grel else None
+    url = props.get("Ticket URL", {}).get("url") or ""
+    return {
+        "id": page["id"],
+        "name": _rt_text(props.get("Item", {}).get("title")) or "(untitled)",
+        "project_id": pid,
+        "project": pname.get(pid, "(none)") if pid else "(none)",
+        "start": start, "end": end,
+        "status": status if status in PLAN_STATUSES else "Backlog",
+        "type": kind if kind in PLAN_TYPES else "Task",
+        "estimate": props.get("Estimate", {}).get("number"),
+        "owner_id": owner_id,
+        "owner": people.get(owner_id, "") if owner_id else "",
+        "goal_id": goal_id,
+        "goal": goals.get(goal_id, {}).get("name", "") if goal_id else "",
+        "ticket_url": url,
+        "ticket": _rt_text(props.get("Ticket", {}).get("rich_text")) or ("Notion ticket" if url else ""),
+        "note": _rt_text(props.get("Note", {}).get("rich_text")),
+        "internal": bool(props.get("Internal", {}).get("checkbox")),
+        "order": props.get("Order", {}).get("number") or 0,
+    }
+
+
+def list_plan_items(project_id: str) -> list[dict]:
+    """Every plan item of one project — scheduled or not — earliest first.
+
+    One query on the Project relation and the rest in Python: a project's
+    whole plan is a few hundred rows at most, and the page needs the
+    unscheduled ones (empty Dates) as much as the ones overlapping the period,
+    which Notion's two-level filter nesting can't express in one go.
+    """
+    if not PLAN_DS:
+        return []
+    pages = _query_all({
+        "data_source_id": PLAN_DS, "page_size": 100,
+        "filter": {"property": "Project", "relation": {"contains": project_id}},
+        "sorts": [{"property": "Dates", "direction": "ascending"}],
+    })
+    pname = _project_name_map()
+    people = _person_name_map()
+    goals = goal_map() if GOALS_DS else {}
+    rows = [_plan_row(p, pname, people, goals) for p in pages]
+    rows.sort(key=lambda r: (r["start"] is None, r["start"] or "", r["order"], r["name"].lower()))
+    return rows
+
+
+def _own_plan_item(item_id: str) -> dict:
+    """A plan item page by id, refusing anything that isn't one of ours —
+    the id comes from the browser (the get_invoice / delete_absence rule)."""
+    page = _notion.pages.retrieve(item_id)
+    parent = page.get("parent") or {}
+    if _bare(parent.get("data_source_id")) != _bare(PLAN_DS):
+        raise ValueError("not a plan item")
+    return page
+
+
+def _plan_dates(start: str | None, end: str | None) -> dict:
+    """Validated Dates property value, or an empty date for "unscheduled"."""
+    if not start:
+        return {"date": None}
+    first = dt.date.fromisoformat(start[:10])
+    last = dt.date.fromisoformat(end[:10]) if end else first
+    if last < first:
+        raise ValueError("The end date is before the start date.")
+    if (last - first).days > _MAX_PLAN_DAYS:
+        raise ValueError("That item is longer than a year — split it.")
+    # plain dates, never datetimes: an item ending "Friday" must not become
+    # Thursday 23:00 for someone in another timezone
+    return {"date": {"start": first.isoformat(),
+                     "end": last.isoformat() if last != first else None}}
+
+
+def _plan_props(fields: dict, people_ids: set | None = None) -> dict:
+    """Turn a browser payload into Notion properties. Only keys present are
+    written, so a status change doesn't blank the note."""
+    props: dict = {}
+    if "name" in fields:
+        name = (fields.get("name") or "").strip()[:MAX_PLAN_TITLE]
+        if not name:
+            raise ValueError("An item needs a name.")
+        props["Item"] = {"title": [{"text": {"content": name}}]}
+    if "start" in fields or "end" in fields:
+        props["Dates"] = _plan_dates(fields.get("start"), fields.get("end"))
+    if "status" in fields:
+        status = fields.get("status") or "Backlog"
+        if status not in PLAN_STATUSES:
+            raise ValueError("Unknown status.")
+        props["Status"] = {"select": {"name": status}}
+    if "type" in fields:
+        kind = fields.get("type") or "Task"
+        if kind not in PLAN_TYPES:
+            raise ValueError("Unknown type.")
+        props["Type"] = {"select": {"name": kind}}
+    if "estimate" in fields:
+        est = fields.get("estimate")
+        if est is None or est == "":
+            props["Estimate"] = {"number": None}
+        else:
+            est = float(est)
+            if est < 0 or est > 10000:
+                raise ValueError("That estimate doesn't look like hours.")
+            props["Estimate"] = {"number": est}
+    if "owner_id" in fields:
+        oid = fields.get("owner_id") or None
+        if oid and people_ids is not None and oid not in people_ids:
+            raise ValueError("That person isn't on the roster.")
+        props["Owner"] = {"people": [{"id": oid}] if oid else []}
+    if "goal_id" in fields:
+        gid = fields.get("goal_id") or None
+        props["Goal"] = {"relation": [{"id": gid}] if gid else []}
+    if "ticket_url" in fields:
+        url = (fields.get("ticket_url") or "").strip()
+        parsed = parse_task_url(url) if url else None
+        if url and not parsed:
+            raise ValueError("That isn't a link to a Notion page.")
+        props["Ticket URL"] = {"url": parsed["url"] if parsed else None}
+        label = (fields.get("ticket") or (parsed or {}).get("label") or "").strip()[:200]
+        props["Ticket"] = {"rich_text": [{"text": {"content": label}}] if label else []}
+    if "note" in fields:
+        note = (fields.get("note") or "").strip()[:MAX_PLAN_NOTE]
+        props["Note"] = {"rich_text": [{"text": {"content": note}}] if note else []}
+    if "internal" in fields:
+        props["Internal"] = {"checkbox": bool(fields.get("internal"))}
+    if "order" in fields and fields.get("order") is not None:
+        props["Order"] = {"number": float(fields["order"])}
+    return props
+
+
+def _plan_ctx() -> tuple[dict, dict, dict]:
+    return (_project_name_map(), _person_name_map(), goal_map() if GOALS_DS else {})
+
+
+def create_plan_item(project_id: str, fields: dict) -> dict:
+    if not PLAN_DS:
+        raise ValueError("Planning isn't set up yet.")
+    if project_id not in _project_name_map():
+        raise ValueError("Unknown project.")
+    fields = dict(fields)
+    fields.setdefault("status", "Backlog")
+    fields.setdefault("type", "Task")
+    if "name" not in fields:
+        raise ValueError("An item needs a name.")
+    props = _plan_props(fields, set(_person_name_map()))
+    props["Project"] = {"relation": [{"id": project_id}]}
+    with _write_lock:
+        page = _notion.pages.create(
+            parent={"type": "data_source_id", "data_source_id": PLAN_DS}, properties=props)
+    return _plan_row(page, *_plan_ctx())
+
+
+def update_plan_item(item_id: str, fields: dict) -> dict:
+    """Patch one item by page id; only the keys sent are written."""
+    if not PLAN_DS:
+        raise ValueError("Planning isn't set up yet.")
+    props = _plan_props(fields, set(_person_name_map()))
+    if not props:
+        raise ValueError("Nothing to change.")
+    with _write_lock:
+        _own_plan_item(item_id)
+        page = _notion.pages.update(item_id, properties=props)
+    return _plan_row(page, *_plan_ctx())
+
+
+def delete_plan_item(item_id: str) -> dict:
+    if not PLAN_DS:
+        raise ValueError("Planning isn't set up yet.")
+    with _write_lock:
+        page = _own_plan_item(item_id)
+        row = _plan_row(page, {}, {}, {})
+        _notion.pages.update(item_id, archived=True)
+    return row
+
+
+def plan_tracked(project_id: str, items: list[dict], date_from: str, date_to: str) -> dict:
+    """{item id: hours logged} for the items that can be measured.
+
+    A Goal wins (lifetime hours under it, one cached read); otherwise a ticket
+    matches every entry filed with that ticket's URL, read over one window
+    that covers the period and every shown item's own dates — one query for
+    the page, never one per item. Items with neither aren't in the result.
+    """
+    out: dict = {}
+    if not items:
+        return out
+    totals = goal_totals(project_id) if GOALS_DS and any(i["goal_id"] for i in items) else {}
+    need_tickets: dict = {}
+    lo, hi = date_from, date_to
+    for it in items:
+        if it["goal_id"]:
+            out[it["id"]] = totals.get(it["goal_id"], 0.0)
+            continue
+        if it["ticket_url"]:
+            parsed = parse_task_url(it["ticket_url"])
+            if parsed:
+                need_tickets.setdefault(_bare(parsed["id"]), []).append(it["id"])
+                if it["start"] and it["start"] < lo:
+                    lo = it["start"]
+                if it["end"] and it["end"] > hi:
+                    hi = it["end"]
+    if not need_tickets:
+        return out
+    # bound the reach: an unscheduled ticket still counts what was logged
+    # against it around the period, not the whole history of the project
+    floor = (dt.date.fromisoformat(date_from) - dt.timedelta(days=_MAX_PLAN_DAYS)).isoformat()
+    lo = max(lo, floor)
+    sums: dict = {}
+    try:
+        for e in project_entries(project_id, lo, hi):
+            if not e.get("task_url"):
+                continue
+            p = parse_task_url(e["task_url"])
+            if p and _bare(p["id"]) in need_tickets:
+                sums[_bare(p["id"])] = sums.get(_bare(p["id"]), 0.0) + (e["hours"] or 0)
+    except Exception:
+        logging.warning("Could not read tracked hours for the plan of %s", project_id)
+        return out
+    for key, ids in need_tickets.items():
+        for iid in ids:
+            out[iid] = round(sums.get(key, 0.0), 2)
+    return out
+
+
+# ---- the share link -----------------------------------------------------
+
+def _share_from_props(props: dict) -> dict:
+    return {
+        "token": _rt_text(props.get(SHARE_TOKEN_PROP, {}).get("rich_text")),
+        "people": bool(props.get(SHARE_PEOPLE_PROP, {}).get("checkbox")),
+        "hours": bool(props.get(SHARE_HOURS_PROP, {}).get("checkbox")),
+    }
+
+
+def plan_share(project_id: str) -> dict:
+    """The share settings on one project's row (token "" = not shared)."""
+    if not PLAN_DS:
+        return {"token": "", "people": False, "hours": False}
+    page = _notion.pages.retrieve(project_id)
+    return _share_from_props(page.get("properties") or {})
+
+
+def set_plan_share(project_id: str, on: bool, people: bool | None = None,
+                   hours: bool | None = None, rotate: bool = False) -> dict:
+    """Mint, keep, widen or revoke a project's share link.
+
+    `on=False` blanks the token — the old link stops resolving within the
+    cache TTL. `rotate` mints a new one while keeping the flags. The token is
+    32 random bytes, url-safe; nothing about it derives from the project.
+    """
+    import secrets
+    if not PLAN_DS:
+        raise ValueError("Planning isn't set up yet.")
+    if project_id not in _project_name_map():
+        raise ValueError("Unknown project.")
+    current = plan_share(project_id)
+    token = current["token"]
+    if not on:
+        token = ""
+    elif rotate or not token:
+        token = secrets.token_urlsafe(32)
+    props = {SHARE_TOKEN_PROP: {"rich_text": [{"text": {"content": token}}] if token else []}}
+    if people is not None:
+        props[SHARE_PEOPLE_PROP] = {"checkbox": bool(people)}
+    if hours is not None:
+        props[SHARE_HOURS_PROP] = {"checkbox": bool(hours)}
+    with _write_lock:
+        page = _notion.pages.update(project_id, properties=props)
+    _share_cache.clear()
+    return _share_from_props(page.get("properties") or {})
+
+
+_share_cache: dict = {}   # token -> (fetched_at, project dict | None)
+_SHARE_TTL = 60.0
+
+
+def project_by_share_token(token: str) -> dict | None:
+    """The project whose share token this is, or None. One Notion query with
+    the token in the filter — no list of tokens is ever held here — cached
+    ~60 s so a revoke lands within a minute and a client refreshing the page
+    doesn't cost a query each time."""
+    if not PLAN_DS or not token or len(token) < 20 or len(token) > 64:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        return None
+    now = time.time()
+    hit = _share_cache.get(token)
+    if hit and now - hit[0] < _SHARE_TTL:
+        return hit[1]
+    try:
+        res = _notion.data_sources.query(
+            data_source_id=PROJECTS_DS, page_size=2,
+            filter={"property": SHARE_TOKEN_PROP, "rich_text": {"equals": token}})
+        rows = res.get("results") or []
+    except Exception:
+        logging.warning("Share-token lookup failed")
+        return hit[1] if hit else None
+    found = None
+    if len(rows) == 1:
+        props = rows[0]["properties"]
+        title = props.get("Name", {}).get("title") or []
+        share = _share_from_props(props)
+        if share["token"] == token:   # Notion's `equals` is exact, but be sure
+            found = {"id": rows[0]["id"], "name": _rt_text(title) or "(untitled)",
+                     "active": props.get("Active", {}).get("checkbox", True),
+                     "pm_id": _role_from_props(props, "pm"),
+                     "am_id": _role_from_props(props, "am"),
+                     "share": share}
+    _share_cache[token] = (now, found)
+    return found
