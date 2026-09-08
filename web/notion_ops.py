@@ -69,6 +69,27 @@ def ensure_admin_property() -> None:
         _notion.data_sources.update(PEOPLE_DS, properties={"Admin": {"checkbox": {}}})
 
 
+# Who may sign off an absence. Deliberately its own checkbox rather than the
+# Admin one: there are six admins in the People db and exactly two people who
+# approve time off, so "can see team-wide reports" and "can approve a holiday"
+# are different questions and get different columns.
+APPROVER_PROP = "Approves absences"
+
+
+def ensure_approver_property() -> None:
+    """Make sure the People db has an `Approves absences` checkbox; add if missing.
+
+    Same shape as ensure_admin_property — read the schema, add only what isn't
+    there — so a People db created before approvals existed catches up on boot
+    rather than needing the setup script re-run.
+    """
+    if not PEOPLE_DS:
+        return
+    ds = _notion.data_sources.retrieve(PEOPLE_DS)
+    if APPROVER_PROP not in ds["properties"]:
+        _notion.data_sources.update(PEOPLE_DS, properties={APPROVER_PROP: {"checkbox": {}}})
+
+
 # ---- reads -------------------------------------------------------------
 
 
@@ -148,19 +169,21 @@ def _people_from_workspace() -> list[dict]:
 # cached briefly rather than re-queried each call; Notion edits take effect
 # within _ACCESS_TTL seconds.
 _ACCESS_TTL = 60.0
-_access_cache: dict = {"at": 0.0, "allowed": None, "admins": None}
+_access_cache: dict = {"at": 0.0, "allowed": None, "admins": None, "approvers": None}
 _access_lock = threading.Lock()
 
 
-def _access_from_db() -> tuple[set, set]:
-    """Return (allowed_ids, admin_ids) from the People db.
+def _access_from_db() -> tuple[set, set, set]:
+    """Return (allowed_ids, admin_ids, approver_ids) from the People db.
 
     allowed = every Active row's linked Notion user; admins = those also ticked
-    Admin (an inactive row grants nothing). Rows with no linked Person can't map
-    to a login, so they're skipped.
+    Admin; approvers = those also ticked `Approves absences` (an inactive row
+    grants nothing, in either column). Rows with no linked Person can't map to
+    a login, so they're skipped.
     """
     allowed: set = set()
     admins: set = set()
+    approvers: set = set()
     kwargs = {
         "data_source_id": PEOPLE_DS, "page_size": 100,
         "filter": {"property": "Active", "checkbox": {"equals": True}},
@@ -176,35 +199,40 @@ def _access_from_db() -> tuple[set, set]:
             allowed.add(uid)
             if props.get("Admin", {}).get("checkbox", False):
                 admins.add(uid)
+            if props.get(APPROVER_PROP, {}).get("checkbox", False):
+                approvers.add(uid)
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
-    return allowed, admins
+    return allowed, admins, approvers
 
 
 def access_ids() -> dict:
-    """Cached {"allowed": set, "admins": set} of Notion user ids from the People
-    db. Returns empty sets (so callers fall back to the env allowlists) when the
-    People db isn't configured or the query fails, rather than 500ing a login."""
+    """Cached {"allowed": set, "admins": set, "approvers": set} of Notion user
+    ids from the People db. Returns empty sets (so callers fall back to the env
+    allowlists) when the People db isn't configured or the query fails, rather
+    than 500ing a login."""
     if not PEOPLE_DS:
-        return {"allowed": set(), "admins": set()}
+        return {"allowed": set(), "admins": set(), "approvers": set()}
     now = time.monotonic()
     with _access_lock:
         if _access_cache["allowed"] is not None and now - _access_cache["at"] < _ACCESS_TTL:
-            return {"allowed": _access_cache["allowed"], "admins": _access_cache["admins"]}
+            return {"allowed": _access_cache["allowed"], "admins": _access_cache["admins"],
+                    "approvers": _access_cache["approvers"]}
     try:
-        allowed, admins = _access_from_db()
+        allowed, admins, approvers = _access_from_db()
     except Exception:
         logging.exception(
             "People access query failed — check PEOPLE_DS_ID. Falling back to the "
-            "env allowlists (ALLOWED_EMAILS / ADMIN_EMAILS) for this check."
+            "env allowlists (ALLOWED_EMAILS / ADMIN_EMAILS / ABSENCE_APPROVER_EMAILS) "
+            "for this check."
         )
         # Cache the empty result too: a persistent misconfig would otherwise
         # re-query Notion on every is_admin call. Env admins still get through.
-        allowed, admins = set(), set()
+        allowed, admins, approvers = set(), set(), set()
     with _access_lock:
-        _access_cache.update(at=now, allowed=allowed, admins=admins)
-    return {"allowed": allowed, "admins": admins}
+        _access_cache.update(at=now, allowed=allowed, admins=admins, approvers=approvers)
+    return {"allowed": allowed, "admins": admins, "approvers": approvers}
 
 
 def get_user(user_id: str) -> dict:
@@ -1932,10 +1960,54 @@ ABSENCES_DS = _ids.get("absences_ds_id")   # optional: unset until set up
 # an absence longer than this, and the bound keeps the read small.
 _MAX_ABSENCE_DAYS = 366
 MAX_ABSENCE_REASON = 400
+MAX_ABSENCE_NOTE = 400
+
+# Every absence is filed Pending and needs one approver's word. Three fixed
+# statuses; the app never writes another name, because a Notion select invents
+# an option for anything it's handed (the trap create_ticket documents) and a
+# fourth spelling of "Approved" would quietly stop counting as a day off.
+ABSENCE_STATUS_PROP = "Status"
+ABSENCE_DECIDER_PROP = "Decided by"
+ABSENCE_DECIDED_PROP = "Decided at"
+ABSENCE_NOTE_PROP = "Decision note"
+
+STATUS_PENDING = "Pending"
+STATUS_APPROVED = "Approved"
+STATUS_DECLINED = "Declined"
+ABSENCE_STATUSES = (STATUS_PENDING, STATUS_APPROVED, STATUS_DECLINED)
+_DECISIONS = ("approved", "declined")
 
 
 def absences_enabled() -> bool:
     return bool(ABSENCES_DS)
+
+
+def ensure_absence_properties() -> None:
+    """Add the approval properties to the Absences db if they're missing.
+
+    The ensure_budget_properties shape — read the schema, add only what isn't
+    there, one update — guarded on ABSENCES_DS so a deploy without the database
+    boots exactly as before. Safe to run on every boot.
+    """
+    if not ABSENCES_DS:
+        return
+    ds = _notion.data_sources.retrieve(ABSENCES_DS)
+    have = ds["properties"]
+    missing = {}
+    if ABSENCE_STATUS_PROP not in have:
+        missing[ABSENCE_STATUS_PROP] = {"select": {"options": [
+            {"name": STATUS_PENDING, "color": "yellow"},
+            {"name": STATUS_APPROVED, "color": "green"},
+            {"name": STATUS_DECLINED, "color": "red"},
+        ]}}
+    if ABSENCE_DECIDER_PROP not in have:
+        missing[ABSENCE_DECIDER_PROP] = {"people": {}}
+    if ABSENCE_DECIDED_PROP not in have:
+        missing[ABSENCE_DECIDED_PROP] = {"date": {}}
+    if ABSENCE_NOTE_PROP not in have:
+        missing[ABSENCE_NOTE_PROP] = {"rich_text": {}}
+    if missing:
+        _notion.data_sources.update(ABSENCES_DS, properties=missing)
 
 
 def weekdays_between(start: dt.date, end: dt.date) -> list[dt.date]:
@@ -1960,6 +2032,20 @@ def _absence_row(page: dict, people: dict) -> dict:
     who = props.get("Person", {}).get("people") or []
     pid = who[0]["id"] if who else None
     reason = props.get("Reason", {}).get("rich_text") or []
+    note = props.get(ABSENCE_NOTE_PROP, {}).get("rich_text") or []
+    # Every approval read goes through .get(): these columns are addressed by
+    # name and this app has been taken down by a renamed Notion column before
+    # (alloc_person_prop). A renamed Status must read as approved — the rows go
+    # back to the old "you log it, nobody signs it" rule — never as a 500.
+    sel = props.get(ABSENCE_STATUS_PROP, {}).get("select") or {}
+    name = sel.get("name")
+    # No Status at all is a row filed before approvals existed: it was logged
+    # under the old rule, so it counts as a day off rather than sitting in a
+    # queue nobody knew they were joining.
+    status = name.lower() if name in ABSENCE_STATUSES else STATUS_APPROVED.lower()
+    decided = props.get(ABSENCE_DECIDER_PROP, {}).get("people") or []
+    did = decided[0]["id"] if decided else None
+    when = props.get(ABSENCE_DECIDED_PROP, {}).get("date") or {}
     return {
         "id": page["id"],
         "person_id": pid,
@@ -1969,6 +2055,11 @@ def _absence_row(page: dict, people: dict) -> dict:
         "end": end,
         "days": props.get("Days", {}).get("number") or 0,
         "reason": "".join(t.get("plain_text", "") for t in reason),
+        "status": status,
+        "decided_by": did,
+        "decided_by_name": people.get(did, "(unknown)") if did else "",
+        "decided_at": (when.get("start") or "")[:10],
+        "note": "".join(t.get("plain_text", "") for t in note),
         "url": page.get("url", ""),
     }
 
@@ -2001,7 +2092,7 @@ def list_absences(date_from: str, date_to: str, person_id: str | None = None) ->
 
 def add_absence(person_id: str | None, person_name: str, start: str, end: str,
                 reason: str = "") -> dict:
-    """File one absence. `end` may equal `start` for a single day."""
+    """File one absence, Pending. `end` may equal `start` for a single day."""
     if not ABSENCES_DS:
         raise ValueError("The Absences database isn't set up yet.")
     first, last = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
@@ -2018,6 +2109,10 @@ def add_absence(person_id: str | None, person_name: str, start: str, end: str,
         "Dates": {"date": {"start": start, "end": end if end != start else None}},
         "Days": {"number": days},
         "Reason": {"rich_text": [{"text": {"content": reason[:MAX_ABSENCE_REASON]}}]},
+        # Always Pending, even when an approver files their own: everything
+        # goes to the approvers, and an approver signing their own off is a
+        # click rather than an exception in the code.
+        ABSENCE_STATUS_PROP: {"select": {"name": STATUS_PENDING}},
     }
     if person_id:
         props["Person"] = {"people": [{"id": person_id}]}
@@ -2026,6 +2121,64 @@ def add_absence(person_id: str | None, person_name: str, start: str, end: str,
             parent={"type": "data_source_id", "data_source_id": ABSENCES_DS},
             properties=props)
     return _absence_row(page, _person_name_map())
+
+
+def list_pending_absences() -> list[dict]:
+    """Every absence still waiting on an approver, earliest first.
+
+    Deliberately unbounded in time, unlike list_absences: a December request
+    filed in September has to be visible in September or it can't be answered,
+    and a request left over from last month is still something to clear. The
+    filter is on Status alone, so the read stays small — the queue is the rows
+    nobody has looked at yet, which is a handful.
+    """
+    if not ABSENCES_DS:
+        return []
+    kwargs = {"data_source_id": ABSENCES_DS, "page_size": 100,
+              "filter": {"property": ABSENCE_STATUS_PROP,
+                         "select": {"equals": STATUS_PENDING}},
+              "sorts": [{"property": "Dates", "direction": "ascending"}]}
+    people = _person_name_map()
+    return [_absence_row(page, people) for page in _query_all(kwargs)]
+
+
+def decide_absence(absence_id: str, decision: str, decider_id: str | None = None,
+                   note: str = "") -> dict:
+    """Approve or decline one absence, by page id.
+
+    A decision can be changed later — approved to declined and back. That's a
+    correction of the same decision, not a second flow: the row keeps one
+    Status, and the last person to touch it is the one it names.
+
+    The id arrives from the browser, so the page's parent is checked before the
+    write, inside the lock, exactly as delete_absence does it.
+    """
+    if not ABSENCES_DS:
+        raise ValueError("The Absences database isn't set up yet.")
+    if decision not in _DECISIONS:
+        raise ValueError("A decision is either approved or declined.")
+    status = STATUS_APPROVED if decision == "approved" else STATUS_DECLINED
+    props = {
+        ABSENCE_STATUS_PROP: {"select": {"name": status}},
+        ABSENCE_DECIDED_PROP: {"date": {"start": dt.date.today().isoformat()}},
+        ABSENCE_NOTE_PROP: {"rich_text": [{"text": {"content": note[:MAX_ABSENCE_NOTE]}}]},
+    }
+    props[ABSENCE_DECIDER_PROP] = ({"people": [{"id": decider_id}]} if decider_id
+                                   else {"people": []})
+    with _write_lock:
+        page = _notion.pages.retrieve(absence_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(ABSENCES_DS):
+            raise ValueError("not an absence")
+        _notion.pages.update(absence_id, properties=props)
+    people = _person_name_map()
+    row = _absence_row(page, people)
+    # the retrieve above predates the write, so report what was just written
+    row.update(status=decision, decided_by=decider_id,
+               decided_by_name=people.get(decider_id, "") if decider_id else "",
+               decided_at=dt.date.today().isoformat(),
+               note=note[:MAX_ABSENCE_NOTE])
+    return row
 
 
 def delete_absence(absence_id: str, requester_id: str | None = None,

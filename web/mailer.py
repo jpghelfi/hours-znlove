@@ -74,6 +74,31 @@ def invoice_email_enabled() -> bool:
         "1", "true", "yes", "on")
 
 
+def absence_email_enabled() -> bool:
+    """Whether absence request/decision emails are switched on
+    (ABSENCE_EMAIL_ENABLED).
+
+    Its own switch, for the same reason budget_alerts_enabled has one: the
+    GOOGLE_* credentials are shared by every send this app makes, so turning on
+    the Sheets export or the budget alerts must not silently start mailing two
+    people every time somebody books a Friday off. The approval flow itself —
+    the queue, the buttons, the statuses — works with this off.
+    """
+    return os.environ.get("ABSENCE_EMAIL_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def absence_transport() -> str:
+    """Same as transport(), for absences, which ride their own switch."""
+    return _transport_for(absence_email_enabled())
+
+
+def absence_approvers() -> list[str]:
+    """Who a new absence request is mailed to — the approvers, by address."""
+    return _split(os.environ.get("ABSENCE_APPROVER_TO",
+                                 "zarco@znlove.xyz,jp.ghelfi@znlove.xyz"))
+
+
 def invoice_transport() -> str:
     """Same as transport(), for invoices, which ride their own switch."""
     return _transport_for(invoice_email_enabled())
@@ -251,20 +276,31 @@ def send_report(to: list[str], subject: str, body: str,
     return out
 
 
-def send_plain(to: list[str], subject: str, body: str) -> dict:
-    """Send a body-only message — no attachment — over the budget-alert switch.
+# The body-only senders, each with its own switch. Keyed so send_plain can name
+# the right variable when it refuses — "set BUDGET_ALERTS_ENABLED=1" is useless
+# advice to someone waiting on an absence email.
+_PLAIN_CHANNELS = {
+    "budget": ("BUDGET_ALERTS_ENABLED", budget_alerts_enabled, budget_transport),
+    "absence": ("ABSENCE_EMAIL_ENABLED", absence_email_enabled, absence_transport),
+}
 
-    send_report requires a workbook; a budget alert is three lines of text.
-    Same transports, same credentials, different switch: BUDGET_ALERTS_ENABLED
-    rather than REPORT_EMAIL_ENABLED.
+
+def send_plain(to: list[str], subject: str, body: str, channel: str = "budget") -> dict:
+    """Send a body-only message — no attachment — over one channel's switch.
+
+    send_report requires a workbook; a budget alert or an absence notice is
+    three lines of text. Same transports, same credentials, a different switch
+    per channel: BUDGET_ALERTS_ENABLED or ABSENCE_EMAIL_ENABLED rather than
+    REPORT_EMAIL_ENABLED.
     """
-    via = budget_transport()
+    var, is_on, transport_for = _PLAIN_CHANNELS.get(channel, _PLAIN_CHANNELS["budget"])
+    via = transport_for()
     if not via:
         # Name the switch first, then the credentials — the Gmail ones, since
         # that's the path that works on Render (its free tier blocks the SMTP
         # ports). If SMTP creds are already present, the switch is the only
         # thing missing and listing Gmail vars would send someone the wrong way.
-        need = [] if budget_alerts_enabled() else ["BUDGET_ALERTS_ENABLED=1"]
+        need = [] if is_on() else [var + "=1"]
         has_smtp = os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD")
         if not (gmail_api.configured() or has_smtp):
             need += gmail_api.missing_vars()

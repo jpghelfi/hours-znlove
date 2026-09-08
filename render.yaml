@@ -81,6 +81,22 @@ services:
       # monthly allowance better.
       - key: BUDGET_WARN_PCT
         value: "95"
+      # Absence request / decision emails, on their own switch for the same
+      # reason BUDGET_ALERTS_ENABLED has one: the GOOGLE_* values above are
+      # shared by every send, and connecting Google must not start mailing two
+      # people every time somebody books a Friday off. The approval flow — the
+      # queue, the buttons, the statuses — works with this off.
+      - key: ABSENCE_EMAIL_ENABLED
+        value: "0"
+      # Who a new absence request is mailed to. The People-db `Approves
+      # absences` tick is what actually grants the queue; this is the address
+      # list for the notification.
+      - key: ABSENCE_APPROVER_TO
+        value: zarco@znlove.xyz,jp.ghelfi@znlove.xyz
+      # Fallback approvers, the way ADMIN_EMAILS backs up the Admin tick, so a
+      # People-db misconfig can't leave a queue nobody can answer.
+      - key: ABSENCE_APPROVER_EMAILS
+        value: zarco@znlove.xyz,jp.ghelfi@znlove.xyz
       # Invoices (src/setup_invoices_db.py). Unset hides invoicing entirely —
       # no Invoice button, and /invoices explains what to run.
       - key: INVOICES_DS_ID

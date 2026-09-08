@@ -13,6 +13,7 @@
       {% if days_off %}<strong>{{ days_off }}</strong> day{{ '' if days_off == 1 else 's' }} off
         across {{ people_off }} {{ 'person' if people_off == 1 else 'people' }}
       {% else %}nobody away{% endif %}
+      {%- if pending_count %} · <strong>{{ pending_count }}</strong> pending{% endif %}
       {%- if not is_admin %} · your own absences{% endif %}
     </div>
   </div>
@@ -29,6 +30,49 @@
     The Absences database isn't set up yet. Run <code>src/setup_absences_db.py</code>, then set
     <code>ABSENCES_DB_ID</code> and <code>ABSENCES_DS_ID</code> on the deploy host.
   </div>
+</div>
+{% endif %}
+
+{# ---- the approver's queue --------------------------------------------
+   Approvers only, above everything else: it's the one thing on this page that
+   somebody else is waiting on. Every pending request across all time, not just
+   this period — a December request filed today has to be answerable today.
+   Drawn even when empty, so an approver learns the queue is here before the
+   first request lands in it. #}
+{% if is_approver %}
+<div class="card wide">
+  <h3 class="card-title">Awaiting approval · {{ pending|length }}</h3>
+  {% if pending %}
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Person</th>
+        <th class="left">Dates</th>
+        <th>Days</th>
+        <th class="left">Reason</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in pending %}
+      <tr data-id="{{ r.id }}">
+        <td class="left">{{ r.person }}</td>
+        <td class="left nowrap">{{ r.label }}</td>
+        <td>{{ r.days }}</td>
+        <td class="left desc">{{ r.reason }}</td>
+        <td class="nowrap decide-cell">
+          <button type="button" class="btn btn-sm" data-busy="Saving…"
+                  onclick="decideAbsence(this, '{{ r.id }}', 'approved')">Approve</button>
+          <button type="button" class="btn btn-sm btn-danger" data-busy="Saving…"
+                  onclick="declineAbsence(this, '{{ r.id }}')">Decline</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="subtle">Nothing waiting. Every absence lands here when it's filed.</p>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -61,7 +105,9 @@
              placeholder="Holiday, sick, public holiday, appointment…">
     </label>
     <button type="submit" data-busy="Saving to Notion…" {{ 'disabled' if not enabled }}>
-      Save absence</button>
+      Send for approval</button>
+    <p class="subtle">Every absence needs one approver's OK — it's saved as
+      <strong>pending</strong> until then, and the approvers are told about it.</p>
   </form>
 </details>
 
@@ -108,8 +154,8 @@
         <tr>
           <td class="col-project col-person left">{{ r.person }}</td>
           {% for c in r.cells %}
-          <td class="{{ 'off' if c.n else 'zero' }}"{% if c.why %} title="{{ c.why }}"{% endif %}>
-            {{ c.label or '·' }}</td>
+          <td class="{{ 'off' if c.n else ('pend' if c.p else 'zero') }}"{% if c.why %} title="{{ c.why }}"{% endif %}>
+            {{ c.label }}{% if c.p %}<span class="pmark">{{ c.plabel }}</span>{% endif %}{% if not c.n and not c.p %}·{% endif %}</td>
           {% endfor %}
           <td><strong>{{ r.days }}</strong></td>
         </tr>
@@ -130,7 +176,8 @@
     </table>
   </div>
   <p class="subtle plan-hint">
-    Weekdays only — a Friday-to-Monday absence costs two days, not four ·
+    ● approved · ○ awaiting approval — only approved days count in the totals ·
+    weekdays only, so a Friday-to-Monday absence costs two days, not four ·
     an absence that straddles the edge of {{ rng.label }} counts only the days inside it.
   </p>
 </div>
@@ -144,6 +191,7 @@
         <th class="left">Dates</th>
         <th>Days</th>
         <th class="left">Reason</th>
+        <th class="left">Status</th>
         <th></th>
       </tr>
     </thead>
@@ -153,8 +201,28 @@
         <td class="left">{{ r.person }}</td>
         <td class="left nowrap">{{ r.label }}</td>
         <td>{{ r.days }}</td>
-        <td class="left desc">{{ r.reason }}</td>
-        <td class="nowrap">
+        <td class="left desc">{{ r.reason }}
+          {%- if r.status == 'declined' and r.note %}
+          <div class="subtle">{{ r.note }}</div>
+          {%- endif %}</td>
+        <td class="left">
+          <span class="status-chip is-{{ r.status }}"
+                {% if r.decided_by_name %}title="by {{ r.decided_by_name }}{% if r.decided_at %} · {{ r.decided_at }}{% endif %}"{% endif %}>
+            {{ r.status }}</span>
+        </td>
+        <td class="nowrap decide-cell">
+          {% if is_approver %}
+            {# decisions are correctable, so the button offered is always the
+               other answer — an approved row can still be declined #}
+            {% if r.status != 'approved' %}
+            <button type="button" class="btn btn-sm" data-busy="Saving…"
+                    onclick="decideAbsence(this, '{{ r.id }}', 'approved')">Approve</button>
+            {% endif %}
+            {% if r.status != 'declined' %}
+            <button type="button" class="btn btn-sm btn-danger" data-busy="Saving…"
+                    onclick="declineAbsence(this, '{{ r.id }}')">Decline</button>
+            {% endif %}
+          {% endif %}
           {% if r.mine or is_admin %}
           <button type="button" class="btn btn-sm btn-danger" data-busy="Removing…"
                   onclick="dropAbsence(this, '{{ r.id }}')"
@@ -163,7 +231,7 @@
         </td>
       </tr>
       {% else %}
-      <tr class="empty"><td colspan="5">Nothing logged for this period.</td></tr>
+      <tr class="empty"><td colspan="6">Nothing logged for this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -179,6 +247,68 @@ function absSyncEnd() {
   if (e.value && e.value < s.value) e.value = s.value;
 }
 absSyncEnd();
+
+{% if is_approver %}
+// Approve asks the app's own confirm; Decline asks for an optional note, so it
+// needs a dialog of its own (below, in the modals block) — built like zConfirm:
+// plain buttons that call back directly, the `cancel` event covering Esc.
+function askDeclineNote() {
+  const dlg = document.getElementById('declineDlg');
+  const box = document.getElementById('declineNote');
+  box.value = '';
+  return new Promise(function (resolve) {
+    function settle(answer) {
+      if (settle.done) return;
+      settle.done = true;
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      dlg.removeEventListener('cancel', onCancel);
+      dlg.removeEventListener('click', onBackdrop);
+      if (dlg.open) dlg.close();
+      resolve(answer);
+    }
+    function onOk() { settle(box.value.trim()); }
+    function onCancel() { settle(null); }      // null = cancelled, '' = no note
+    function onBackdrop(e) { if (e.target === dlg) settle(null); }
+    const ok = document.getElementById('declineOk');
+    const cancel = document.getElementById('declineCancel');
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    dlg.addEventListener('cancel', onCancel);
+    dlg.addEventListener('click', onBackdrop);
+    dlg.showModal();
+    box.focus();
+  });
+}
+
+async function declineAbsence(btn, id) {
+  const note = await askDeclineNote();
+  if (note === null) return;
+  decideAbsence(btn, id, 'declined', note);
+}
+
+async function decideAbsence(btn, id, decision, note) {
+  if (decision === 'approved' &&
+      !await zConfirm('The days count as time off from then on.',
+                      {title: 'Approve this absence?', ok: 'Approve'})) return;
+  setBusy(btn, true);
+  try {
+    const res = await fetch('/api/absence/decide', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({absence_id: id, decision: decision, note: note || ''}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || 'could not save that decision');
+    // the queue, the board and the totals are all server-rendered — reload
+    // rather than leave three of them disagreeing with the chip
+    navStart();
+    location.reload();
+  } catch (e) {
+    setBusy(btn, false);
+    zAlert(e.message, {title: 'Decision failed'});
+  }
+}
+{% endif %}
 
 async function dropAbsence(btn, id) {
   if (!await zConfirm('This deletes the absence and the days it covers.',
@@ -201,4 +331,28 @@ async function dropAbsence(btn, id) {
   }
 }
 </script>
+{% endblock %}
+
+{% block modals %}
+{% if is_approver %}
+{# Rendered outside the page's forms, from base.html's `modals` block: a
+   control inside a form is validated on submit even while its dialog is
+   closed, and a closed dialog can't be focused to explain itself — which is
+   how "Save entry" once silently stopped working (see _task_dialog.html).
+   No <form method="dialog"> either: that sets returnValue but the `close`
+   event a promise waits on doesn't reliably follow it. #}
+<dialog class="zdlg" id="declineDlg" aria-labelledby="declineDlgTitle">
+  <h2 class="zdlg-title" id="declineDlgTitle">Decline this absence?</h2>
+  <p class="zdlg-body">They'll be told. A note is optional, but it's the only
+    thing that says why.</p>
+  <label class="decline-note">Note <span class="subtle">— optional</span>
+    <textarea id="declineNote" rows="3" maxlength="{{ max_note }}"
+              placeholder="Two of you are out that week…"></textarea>
+  </label>
+  <div class="zdlg-actions">
+    <button type="button" class="btn" id="declineCancel">Cancel</button>
+    <button type="button" class="btn danger" id="declineOk">Decline</button>
+  </div>
+</dialog>
+{% endif %}
 {% endblock %}

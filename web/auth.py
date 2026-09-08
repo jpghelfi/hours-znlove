@@ -3,8 +3,10 @@
 Flow: /login -> Notion consent -> /auth/callback -> exchange code -> read the
 authorizing user's identity -> check it against the roster. Access is curated
 in Notion: an Active People row grants login, an Admin tick grants team-wide
-reports (matched by the linked Notion user id). ALLOWED_EMAILS / ADMIN_EMAILS
-remain as a fallback so a People-db misconfig can't lock everyone out. OAuth is
+reports, an `Approves absences` tick grants the absence queue (all matched by
+the linked Notion user id). ALLOWED_EMAILS / ADMIN_EMAILS /
+ABSENCE_APPROVER_EMAILS remain a fallback so a People-db misconfig can't lock
+everyone out — or leave an absence queue nobody can answer. OAuth is
 used only to authenticate the person; all Notion data access still uses the
 integration token (NOTION_TOKEN).
 """
@@ -59,6 +61,27 @@ def is_admin(user: dict | None) -> bool:
     if uid and uid in ops.access_ids()["admins"]:
         return True
     return bool(email) and email.strip().lower() in _admin_emails()
+
+
+def _approver_emails() -> set[str]:
+    return {e.strip().lower()
+            for e in os.environ.get("ABSENCE_APPROVER_EMAILS",
+                                    "zarco@znlove.xyz,jp.ghelfi@znlove.xyz").split(",")
+            if e.strip()}
+
+
+def is_approver(user: dict | None) -> bool:
+    """May this person sign off an absence? Its own People-db checkbox
+    (`Approves absences`), not the Admin one: there are six admins and two
+    approvers, so an approver need not be an admin and an admin doesn't
+    approve. ABSENCE_APPROVER_EMAILS is the fallback, the same shape as
+    ADMIN_EMAILS, so a People-db misconfig can't leave the queue unanswerable."""
+    if not user:
+        return False
+    uid, email = user.get("id"), user.get("email")
+    if uid and uid in ops.access_ids()["approvers"]:
+        return True
+    return bool(email) and email.strip().lower() in _approver_emails()
 
 
 def _cfg(key: str) -> str:
