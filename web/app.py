@@ -3650,9 +3650,11 @@ def _plan_public_rows(items: list[dict], share: dict) -> list[dict]:
         if share.get("hours"):
             row["estimate"] = r.get("estimate")
             row["tracked"] = r.get("tracked")
+            row["pct"] = r.get("pct")
         else:
             row["estimate"] = None
             row["tracked"] = None
+            row["pct"] = None
         out.append(row)
     return out
 
@@ -3931,6 +3933,8 @@ def public_plan_pdf(token: str, period: str = "weekly", start: Optional[str] = N
     period = period if period in _PLAN_PERIODS else "weekly"
     share = project["share"]
     ctx = _plan_context(project, period, start, full=False, share=share)
+    if not share["people"]:   # the same rule the HTML route applies, enforced here too
+        ctx["pm_name"] = ctx["am_name"] = None
     pdf = _plan_pdf_bytes(project, ctx, show_people=share["people"], show_hours=share["hours"])
     from fastapi.responses import Response
     return Response(pdf, media_type="application/pdf", headers=dict(_PUBLIC_HEADERS, **{

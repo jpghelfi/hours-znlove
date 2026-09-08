@@ -128,11 +128,12 @@ def _():
 
 @check("the strip shows owners and hours only when the flags say so")
 def _():
-    src = [dict(item(), tracked=4.0)]
+    src = [dict(item(), tracked=4.0, pct=40)]
     r = webapp._plan_public_rows(src, {"people": True, "hours": True})[0]
     assert r["owner"] == "Ana" and r["estimate"] == 10.0 and r["tracked"] == 4.0
+    assert r["pct"] == 40                    # the bar's fill rides with the hours
     r = webapp._plan_public_rows(src, {"people": True, "hours": False})[0]
-    assert r["owner"] == "Ana" and r["estimate"] is None
+    assert r["owner"] == "Ana" and r["estimate"] is None and r["pct"] is None
 
 
 @check("the strip keeps the geometry the timeline needs")

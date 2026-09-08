@@ -3320,7 +3320,11 @@ def _plan_props(fields: dict, people_ids: set | None = None) -> dict:
 
 
 def _plan_ctx() -> tuple[dict, dict, dict]:
-    return (_project_name_map(), _person_name_map(), goal_map() if GOALS_DS else {})
+    """Empty name maps for the row a write hands back. Every caller reloads
+    the page right after, so resolving project/owner/goal *names* here would
+    be three full-table reads per drag-end for a payload nobody displays;
+    the ids are all the browser reads from it."""
+    return ({}, {}, {})
 
 
 def create_plan_item(project_id: str, fields: dict) -> dict:
@@ -3463,6 +3467,7 @@ def set_plan_share(project_id: str, on: bool, people: bool | None = None,
 
 _share_cache: dict = {}   # token -> (fetched_at, project dict | None)
 _SHARE_TTL = 60.0
+_SHARE_CACHE_MAX = 256
 
 
 def project_by_share_token(token: str) -> dict | None:
@@ -3497,5 +3502,9 @@ def project_by_share_token(token: str) -> dict | None:
                      "pm_id": _role_from_props(props, "pm"),
                      "am_id": _role_from_props(props, "am"),
                      "share": share}
+    # keyed by whatever a stranger typed into the URL, so it can't be allowed
+    # to grow without bound: past a modest size, start over
+    if len(_share_cache) >= _SHARE_CACHE_MAX:
+        _share_cache.clear()
     _share_cache[token] = (now, found)
     return found
