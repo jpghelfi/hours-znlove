@@ -100,6 +100,8 @@ async def _static_cache_headers(request: Request, call_next):
 def _startup() -> None:
     ops.ensure_person_property()
     ops.ensure_admin_property()
+    ops.ensure_approver_property()
+    ops.ensure_absence_properties()
     ops.ensure_task_properties()
     ops.ensure_invoice_properties()
     ops.ensure_billing_properties()
@@ -2819,16 +2821,22 @@ def _absence_columns(period: str, rng: dict) -> list[dict]:
             for mon, ds in sorted(weeks.items())]
 
 
-def _absence_days(rows: list[dict], rng: dict) -> dict:
+def _absence_days(rows: list[dict], rng: dict, status: str = "approved") -> dict:
     """(person id) -> {date: reason} for every weekday off *inside* the period.
 
     An absence that straddles the period edge is clipped here rather than in
     the query, so a fortnight off still counts only the days it costs this
     week — while the row itself stays whole in the list underneath.
+
+    One status at a time, because the board says two different things: an
+    approved day is a day off, a pending one is a day somebody has *asked* for
+    and nobody has answered. A declined row is neither and is never passed in.
     """
     lo, hi = dt.date.fromisoformat(rng["from"]), dt.date.fromisoformat(rng["to"])
     out: dict[str, dict] = {}
     for r in rows:
+        if r.get("status", "approved") != status:
+            continue
         start = _parse_date(r["start"])
         end = _parse_date(r["end"]) or start
         if not start:
@@ -2840,25 +2848,40 @@ def _absence_days(rows: list[dict], rng: dict) -> dict:
 
 def _absence_board(rows: list[dict], cols: list[dict], rng: dict,
                    people: list[dict]) -> tuple[list[dict], list[float]]:
-    """One row per person who is off in the period, and the column totals."""
-    by_person = _absence_days(rows, rng)
+    """One row per person who is off (or has asked to be) in the period, and
+    the column totals.
+
+    Only **approved** days count: the totals are a statement about who won't be
+    at their desk, and a request nobody has answered isn't that yet. A pending
+    day is still drawn — hollow — because the person waiting on it and the
+    approver looking at the week both need to see it coming.
+    """
+    approved = _absence_days(rows, rng, "approved")
+    pending = _absence_days(rows, rng, "pending")
     names = {p["id"]: p["name"] for p in people}
     board = []
-    for pid, days in by_person.items():
+    for pid in dict.fromkeys(list(approved) + list(pending)):
+        days, asked = approved.get(pid, {}), pending.get(pid, {})
         cells = []
         for c in cols:
             hit = [d for d in c["days"] if d in days]
+            wait = [d for d in c["days"] if d in asked]
+            single = len(c["days"]) == 1
             cells.append({
                 "n": len(hit),
+                "p": len(wait),
                 # the reason belongs on the cell that shows the day off, not
                 # only in the list below — hovering a mark should answer "why"
-                "why": " · ".join(sorted({days[d] for d in hit if days[d]})),
-                "label": ("●" if len(c["days"]) == 1 else str(len(hit))) if hit else "",
+                "why": " · ".join(sorted({days[d] for d in hit if days[d]})
+                                  + [f"pending: {r}" for r in
+                                     sorted({asked[d] for d in wait if asked[d]})]),
+                "label": ("●" if single else str(len(hit))) if hit else "",
+                "plabel": ("○" if single else f"{len(wait)}?") if wait else "",
             })
         name = next((r["person"] for r in rows if (r["person_id"] or "") == pid), None)
         board.append({"person_id": pid, "person": names.get(pid) or name or "(unassigned)",
-                      "cells": cells, "days": len(days)})
-    board.sort(key=lambda r: (-r["days"], r["person"].lower()))
+                      "cells": cells, "days": len(days), "pending": len(asked)})
+    board.sort(key=lambda r: (-r["days"], -r["pending"], r["person"].lower()))
     totals = [sum(r["cells"][i]["n"] for r in board) for i in range(len(cols))]
     return board, totals
 
@@ -2868,6 +2891,70 @@ def _absence_qs(period: str, anchor: str, person_ids: list[str]) -> str:
     return qs + "".join(f"&person={pid}" for pid in person_ids)
 
 
+def _absence_label(row: dict) -> str:
+    """The dates as a person reads them: 10 Aug – 14 Aug 2026, or one date for
+    a single day. One function, because the list, the queue and both emails all
+    have to name the same absence the same way."""
+    s, e = _parse_date(row.get("start", "")), _parse_date(row.get("end", ""))
+    if not s:
+        return row.get("start", "")
+    if not e or s == e:
+        return f"{s:%d %b %Y}"
+    return f"{s:%d %b} – {e:%d %b %Y}"
+
+
+def _notify_absence_requested(row: dict, user: dict, base: str) -> None:
+    """Tell the approvers something is waiting, if the switch is on.
+
+    A courtesy, exactly like _maybe_alert_budget: the absence is already filed
+    and the queue on /absences is the real notification, so every failure — no
+    transport, Google down, a bad address — is logged and swallowed rather than
+    turned into an error on a save that worked.
+    """
+    if not mailer.absence_email_enabled():
+        return
+    try:
+        label = _absence_label(row)
+        who = row.get("person") or user.get("name") or "Someone"
+        days = row.get("days") or 0
+        body = (
+            f"{who} has asked for time off.\n\n"
+            f"Dates:  {label}\n"
+            f"Days:   {days:g} working day{'' if days == 1 else 's'}\n"
+            f"Reason: {row.get('reason') or '—'}\n\n"
+            f"Approve or decline it here: {base}/absences\n"
+        )
+        mailer.send_plain(mailer.absence_approvers(),
+                          f"Absence request: {who} · {label} ({days:g} days)",
+                          body, channel="absence")
+    except Exception as exc:  # noqa: BLE001 — a courtesy must not fail a save
+        logging.warning("absence request not mailed: %s", mailer.explain(exc))
+
+
+def _notify_absence_decided(row: dict, base: str) -> None:
+    """Tell the person who asked what was decided. Same courtesy rules."""
+    if not mailer.absence_email_enabled():
+        return
+    try:
+        who = ops.get_user(row["person_id"]) if row.get("person_id") else {}
+        to = who.get("email")
+        if not to:   # no address on the Notion profile — nothing to send to
+            return
+        label = _absence_label(row)
+        verdict = "approved" if row["status"] == "approved" else "declined"
+        decider = row.get("decided_by_name") or "an approver"
+        body = (
+            f"Your absence {label} was {verdict} by {decider}.\n\n"
+            f"Reason given when filed: {row.get('reason') or '—'}\n"
+            + (f"Note from {decider}: {row['note']}\n" if row.get("note") else "")
+            + f"\nSee it here: {base}/absences\n"
+        )
+        mailer.send_plain([to], f"Your absence {label} was {verdict}", body,
+                          channel="absence")
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("absence decision not mailed: %s", mailer.explain(exc))
+
+
 @app.get("/absences", response_class=HTMLResponse)
 def absences_page(request: Request, period: str = "weekly", start: Optional[str] = None,
                   person: list[str] = Query(default=[]),
@@ -2875,12 +2962,16 @@ def absences_page(request: Request, period: str = "weekly", start: Optional[str]
     """Log an absence, and see who's off — a week or a month at a time.
 
     Everyone sees (and can only remove) their own absences; an admin sees the
-    whole team and can filter it, the same scope rule /reports uses.
+    whole team and can filter it, the same scope rule /reports uses. An
+    approver additionally gets the queue: every request still waiting, across
+    all time rather than only this period — a December request filed today has
+    to be answerable today.
     """
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     is_admin = auth.is_admin(user)
+    is_approver = auth.is_approver(user)
     period = period if period in _ABSENCE_PERIODS else "weekly"
     rng = _period_range(period, _project_anchor(period, start))
     people = ops.list_people()
@@ -2891,22 +2982,39 @@ def absences_page(request: Request, period: str = "weekly", start: Optional[str]
         keep = set(picks)
         rows = [r for r in rows if r["person_id"] in keep]
     cols = _absence_columns(period, rng)
-    board, totals = _absence_board(rows, cols, rng, people)
+    # a declined row is not an absence — it never reaches the board, only the
+    # list, where it explains itself
+    board, totals = _absence_board([r for r in rows if r["status"] != "declined"],
+                                   cols, rng, people)
     for r in rows:
-        s, e = _parse_date(r["start"]), _parse_date(r["end"])
-        r["label"] = (f"{s:%d %b %Y}" if s and s == e else
-                      f"{s:%d %b} – {e:%d %b %Y}" if s and e else r["start"])
+        r["label"] = _absence_label(r)
         r["mine"] = bool(user.get("id")) and r["person_id"] == user.get("id")
     rows.sort(key=lambda r: (r["start"], r["person"].lower()))
+    pending = []
+    if is_approver:
+        try:
+            pending = ops.list_pending_absences()
+        except Exception:
+            # the queue is one extra read on a page that already works — a
+            # failure hides it rather than 500ing everyone's absences
+            logging.exception("Reading the pending-absence queue failed")
+        for r in pending:
+            r["label"] = _absence_label(r)
     return templates.TemplateResponse(request, "absences.html", {
-        "user": user, "is_admin": is_admin,
+        "user": user, "is_admin": is_admin, "is_approver": is_approver,
         "enabled": ops.absences_enabled(),
         "period": period, "rng": rng, "anchor": rng["value"],
         "people": people, "focus_people": picks,
         "cols": cols, "board": board, "totals": totals, "rows": rows,
-        "days_off": sum(totals), "people_off": len(board),
+        "pending": pending,
+        # an approver counts the whole queue; everyone else counts what they can
+        # see, which is their own requests in this period — both are the number
+        # that person is actually waiting on
+        "pending_count": len(pending) if is_approver
+                         else len([r for r in rows if r["status"] == "pending"]),
+        "days_off": sum(totals), "people_off": len([r for r in board if r["days"]]),
         "today": dt.date.today().isoformat(),
-        "max_reason": ops.MAX_ABSENCE_REASON,
+        "max_reason": ops.MAX_ABSENCE_REASON, "max_note": ops.MAX_ABSENCE_NOTE,
         "ok": ok, "err": err,
     })
 
@@ -2946,9 +3054,48 @@ def submit_absence(request: Request,
     except Exception:
         logging.exception("Filing an absence for %s failed", user.get("name"))
         return bounce("Notion refused that absence. Try again in a moment.")
+    _notify_absence_requested(row, user, str(request.base_url).rstrip("/"))
     if not row["days"]:   # a Saturday-to-Sunday absence is saved, but costs nothing
-        return bounce(ok="Saved — that range is all weekend, so it costs no working days.")
-    return bounce(ok=f"{row['days']} day{'' if row['days'] == 1 else 's'} logged as off.")
+        return bounce(ok="Saved — that range is all weekend, so it costs no working "
+                         "days. It still waits for an approver's OK.")
+    return bounce(ok=f"Sent for approval — {row['days']} "
+                     f"day{'' if row['days'] == 1 else 's'}.")
+
+
+class AbsenceDecide(BaseModel):
+    absence_id: str
+    decision: str
+    note: str = ""
+
+
+@app.post("/api/absence/decide")
+def api_absence_decide(request: Request, a: AbsenceDecide):
+    """Approve or decline one absence. Approvers only — and an approver is a
+    People-db tick, not an admin: six admins, two approvers.
+
+    A decision may be revisited (approved → declined and back), so this is the
+    same endpoint either way; the row keeps one Status and names whoever
+    touched it last.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not auth.is_approver(user):
+        return JSONResponse({"ok": False, "error": "only an approver can do that"},
+                            status_code=403)
+    try:
+        row = ops.decide_absence(a.absence_id, a.decision, user.get("id"),
+                                 (a.note or "").strip())
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Deciding absence %s failed", a.absence_id)
+        return JSONResponse({"ok": False, "error": "could not save that decision"},
+                            status_code=400)
+    _notify_absence_decided(row, str(request.base_url).rstrip("/"))
+    return JSONResponse({"ok": True, "status": row["status"]})
 
 
 class AbsenceDelete(BaseModel):

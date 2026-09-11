@@ -9,6 +9,10 @@ when it counts days, so a Mon–Fri absence over a weekend still costs 5.
 `Days` is stored as well as the dates so the Notion table shows what an absence
 costs without anyone doing the arithmetic by hand.
 
+`Status` carries the approval: a row is Pending until one of the People-db
+approvers signs it, and only Approved days count as time off. A row with no
+Status at all predates the flow and reads as Approved.
+
 Idempotent: does nothing if databases.json already has the ids.
 """
 from config import get_client, get_parent_page_id, load_db_ids, save_db_ids
@@ -22,6 +26,17 @@ ABSENCE_PROPS = {
     "Dates": {"date": {}},
     "Days": {"number": {"format": "number"}},  # weekdays covered
     "Reason": {"rich_text": {}},
+    # Approval: every absence is filed Pending and needs one approver's word.
+    # Three fixed options — the app never writes a fourth, because a Notion
+    # select invents an option for any name it's handed.
+    "Status": {"select": {"options": [
+        {"name": "Pending", "color": "yellow"},
+        {"name": "Approved", "color": "green"},
+        {"name": "Declined", "color": "red"},
+    ]}},
+    "Decided by": {"people": {}},
+    "Decided at": {"date": {}},
+    "Decision note": {"rich_text": {}},
 }
 
 

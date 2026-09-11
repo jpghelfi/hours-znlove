@@ -2,7 +2,8 @@
 
 The People database is the roster the web app shows (assignments columns,
 schedule rows, person dropdowns) AND the access list: an Active row grants
-login, an additionally-ticked Admin row grants the team-wide reports scope
+login, an additionally-ticked Admin row grants the team-wide reports scope,
+and an `Approves absences` tick grants the absence queue
 (matched by the linked Notion user, so the same person who authorizes via
 OAuth). Curate it in Notion — untick Active to revoke access (don't delete the
 row: this script only skips people who still have one, so deleted people come
@@ -21,6 +22,9 @@ PEOPLE_PROPS = {
     "Person": {"people": {}},
     "Active": {"checkbox": {}},  # ticked = can log in to the web app
     "Admin": {"checkbox": {}},   # ticked = team-wide reports / exports scope
+    # ticked = may approve absences. Its own column rather than Admin: there
+    # are six admins and two approvers, so the two are different questions.
+    "Approves absences": {"checkbox": {}},
 }
 
 
@@ -57,11 +61,12 @@ def main() -> None:
     if ids.get("people_ds_id"):
         people_db, people_ds = ids["people_db_id"], ids["people_ds_id"]
         print(f"People database already exists (ds {people_ds}) — seeding only.")
-        # Backfill the Admin column on People dbs created before it existed.
+        # Backfill the access columns on People dbs created before they existed.
         ds = notion.data_sources.retrieve(people_ds)
-        if "Admin" not in ds["properties"]:
-            notion.data_sources.update(people_ds, properties={"Admin": {"checkbox": {}}})
-            print("  + added Admin checkbox to existing People db")
+        for col in ("Admin", "Approves absences"):
+            if col not in ds["properties"]:
+                notion.data_sources.update(people_ds, properties={col: {"checkbox": {}}})
+                print(f"  + added {col} checkbox to existing People db")
     else:
         print("Creating People database…")
         people_db, people_ds = create_db(notion, get_parent_page_id(), "People", PEOPLE_PROPS)
