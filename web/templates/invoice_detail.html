@@ -31,9 +31,23 @@
   </div>
 </div>
 
-{# both carry the **billed** hours, with unbilled lines left out — this is the
-   copy that goes to the client, not the internal tracked/billed comparison #}
+{# The bill: what the PDF says and what the email lists. Not the log — the
+   lines are typed here, the hours and amount are prefilled from the month and
+   can be typed over, and all three are saved onto the invoice before the PDF
+   is built, so the download and the send show exactly what's on screen. #}
 <div class="card wide sendbox">
+  <label class="sendbox-msg billlines">What the bill is for <span class="lbl-hint">· one line per row</span>
+    <textarea id="lines" rows="3" placeholder="Website maintenance&#10;Landing page build">{{ doc.lines|join('\n') }}</textarea>
+  </label>
+  <div class="sendbox-grid billnums">
+    <label>Total hours
+      <input type="number" id="hours" step="0.25" min="0" max="10000" value="{{ '%g'|format(doc.hours_billed) }}">
+    </label>
+    <label>Amount <span class="lbl-hint">· {{ currency }}{% if tax.tax_pct %}, before {{ tax.tax_label }}{% endif %}</span>
+      <input type="number" id="amount" step="0.01" min="0" value="{{ '%.2f'|format(doc.amount) }}">
+    </label>
+  </div>
+  <div class="subtle billtotal" id="billtotal"></div>
   {# The To/Subject/Send controls exist only once a transport is configured and
      the invoice switch is on — an inert field and a dead Send button are worse
      than no email UI at all. Same rule as the export screen, different switch:
@@ -50,7 +64,7 @@
     </label>
   </div>
   <label class="sendbox-msg">Message
-    <textarea id="message" rows="3" placeholder="Leave blank for a short default note…"></textarea>
+    <textarea id="message" rows="3" placeholder="Leave blank for a short note listing the lines and the total…"></textarea>
   </label>
   {% if not billing.client_email %}
   <div class="notebar">
@@ -62,16 +76,17 @@
   {% endif %}
   <div class="sendbox-actions">
     <div class="subtle">
-      {{ sheet_rows|length }} billed line{{ '' if sheet_rows|length == 1 else 's' }} ·
-      {{ '%g'|format(now_billed) }} h — the hours as invoiced, without the lines billed at nothing
+      The PDF and the email carry the lines and totals above — not the entries.
+      Excel and Sheets carry the {{ sheet_rows|length }} billed line{{ '' if sheet_rows|length == 1 else 's' }}
+      ({{ '%g'|format(now_billed) }} h as invoiced, without the lines billed at nothing).
       {%- if mail_ready %}<br>Sends the PDF from {{ sender or 'your Google account' }}
         {%- if mail_cc %} · copy to {{ mail_cc|join(', ') }}{% endif %}{% endif %}
     </div>
     <div class="sendbox-btns">
       <button type="button" class="btn" onclick="copyToSheets()">⧉ Copy &amp; open Google Sheets</button>
       <a class="btn" href="/invoices/{{ invoice.id }}.xlsx">⬇ Download Excel</a>
-      <a class="btn {{ '' if mail_ready else 'btn-primary' }}"
-         href="/invoices/{{ invoice.id }}.pdf">⬇ Download PDF</a>
+      <button type="button" class="btn {{ '' if mail_ready else 'btn-primary' }}"
+              id="pdfbtn" onclick="downloadPdf()">⬇ Download PDF</button>
       {% if mail_ready %}
       <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendInvoice()">✉ Send to client</button>
       {% endif %}
@@ -105,6 +120,17 @@
   the tracked figure rather than the billed one.
   <a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
   to record the breakdown.
+</div>
+{% endif %}
+
+{% if not legacy and days and (now_billed - invoice.hours_billed)|abs >= 0.01 %}
+{# the total was typed over in the send box: the bill says one number, the
+   lines below add up to another — said here, so nobody hunts for the entry
+   that explains the difference #}
+<div class="notebar">
+  <strong>The bill says {{ '%g'|format(invoice.hours_billed) }} h;</strong>
+  the lines below add up to {{ '%g'|format(now_billed) }} h. The total was edited
+  before sending — what was logged is unchanged.
 </div>
 {% endif %}
 
@@ -233,26 +259,95 @@ function say(msg, ok) {
   box.textContent = msg;
 }
 
+/* ---- the bill: lines, hours, amount ------------------------------------
+   The same arithmetic invoice_pdf.totals does, so the total previewed under
+   the fields is the one the PDF prints. */
+const TAX_PCT = {{ tax.tax_pct|tojson }};
+const TAX_LABEL = {{ tax.tax_label|tojson }};
+const CURRENCY = {{ currency|tojson }};
+const SYMBOLS = {USD: '$', EUR: '€', GBP: '£', ARS: '$'};
+
+function fmtMoney(v) {
+  const body = (Math.round(v * 100) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return SYMBOLS[CURRENCY] ? SYMBOLS[CURRENCY] + body : CURRENCY + ' ' + body;
+}
+
+function billPayload() {
+  return {
+    invoice_id: {{ invoice.id|tojson }},
+    lines: document.getElementById('lines').value,
+    hours: parseFloat(document.getElementById('hours').value) || 0,
+    amount: parseFloat(document.getElementById('amount').value) || 0
+  };
+}
+
+function showBillTotal() {
+  const b = billPayload();
+  const sub = Math.round(b.amount * 100) / 100;
+  const tax = sub ? Math.round(sub * TAX_PCT) / 100 : 0;
+  const lines = b.lines.split('\n').map(s => s.trim()).filter(Boolean).length;
+  let text = lines + ' line' + (lines === 1 ? '' : 's') + ' · ' + (Math.round(b.hours * 100) / 100) + ' h';
+  if (sub) {
+    text += ' · ' + fmtMoney(sub);
+    if (TAX_PCT) text += ' + ' + TAX_LABEL + ' ' + fmtMoney(tax) + ' = ' + fmtMoney(sub + tax);
+  } else {
+    text += ' · no amount — the PDF shows hours only';
+  }
+  document.getElementById('billtotal').textContent = text;
+}
+['lines', 'hours', 'amount'].forEach(id =>
+  document.getElementById(id).addEventListener('input', showBillTotal));
+showBillTotal();
+
+/* Saves what's on screen onto the invoice first, so the file that comes down
+   is the one you're looking at rather than the one last saved. */
+async function saveBill() {
+  const res = await fetch('/api/invoice/bill', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(billPayload())
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'unknown error');
+  return data;
+}
+
+async function downloadPdf() {
+  const btn = document.getElementById('pdfbtn');
+  btn.disabled = true;
+  try {
+    await saveBill();
+    window.location.href = '/invoices/{{ invoice.id }}.pdf';
+  } catch (e) {
+    say('Not saved: ' + e.message, false);
+  }
+  btn.disabled = false;
+}
+
 {% if mail_ready %}
 /* Nothing is queued: the send either completes while this request is open or
-   it says why not, in Google's own words. */
+   it says why not, in Google's own words. The lines / hours / amount ride
+   along and are saved before the PDF is built. */
 async function sendInvoice() {
   const btn = document.getElementById('sendbtn');
   const to = document.getElementById('to').value.trim();
   if (!to) { say('Add an email address first.', false); return; }
-  if (!await zConfirm(to, {title: 'Email this invoice to:', ok: 'Send'})) return;
+  const b = billPayload();
+  if (!b.lines.trim()) { say('Write at least one line saying what the bill is for.', false); return; }
+  const sub = Math.round(b.amount * 100) / 100;
+  const total = sub ? fmtMoney(sub + (Math.round(sub * TAX_PCT) / 100)) : 'hours only';
+  if (!await zConfirm(to + '\n' + (Math.round(b.hours * 100) / 100) + ' h · ' + total,
+                      {title: 'Email this invoice to:', ok: 'Send'})) return;
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = 'Sending…';
   try {
     const res = await fetch('/api/invoice/send', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        invoice_id: {{ invoice.id|tojson }},
+      body: JSON.stringify(Object.assign(b, {
         to: to,
         subject: document.getElementById('subject').value,
         message: document.getElementById('message').value
-      })
+      }))
     });
     const data = await res.json();
     if (data.ok) {

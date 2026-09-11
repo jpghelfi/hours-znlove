@@ -6,8 +6,17 @@ with a company on it, an addressee, a rate, an amount and a total, laid out so
 it can be forwarded to a client's accounts payable without editing.
 
 Kept out of app.py (routes) and notion_ops.py (Notion reads/writes) for the
-same reason report_xlsx.py is: this module only turns rows that have already
-been read into bytes.
+same reason report_xlsx.py is: this module only turns an invoice that has
+already been read into bytes.
+
+**The bill says what the sender typed, not what was logged.** It used to list
+one line per person and, on a second page, every entry with its comment. A
+client doesn't need the log — that's what the workbook is for — and a bill
+that copies it is a bill nobody wants to edit. So the document carries the
+invoice's *lines* (one or more lines of detail, written on the invoice page
+before it goes out), its total hours and its amount, all prefilled from the
+month and all editable before sending. `default_lines()` and `bill_amount()`
+are those prefills, shared with the screen so the two can't drift.
 
 **Money is optional.** A project with no `Rate` still produces a valid
 document — the rate and amount columns simply aren't drawn, and it reads as a
@@ -31,8 +40,7 @@ from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import (KeepTogether, PageBreak, Paragraph, SimpleDocTemplate,
-                                Spacer, Table, TableStyle)
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 INK = colors.HexColor("#1B2138")
 MUTED = colors.HexColor("#6B7280")
@@ -95,19 +103,36 @@ def totals(hours: float, rate: float, subtotal: float | None = None) -> dict:
     """Subtotal / tax / total for a bill — shared with the screens, so what the
     browser previews and what the PDF prints can't drift.
 
-    `subtotal` overrides the hours × rate arithmetic with the sum of the line
-    amounts actually printed. Each line is rounded to the cent before it is
-    shown, so several people on one invoice can sum to a cent either side of
-    one multiplication — and a total that doesn't match the lines above it is
-    exactly what an accounts-payable department bounces.
+    `subtotal` overrides the hours × rate arithmetic with the amount the bill
+    actually says — the sender can type over it before sending, so a
+    discounted or capped month is the amount on the bill, not the product of
+    two numbers the client never sees.
     """
     co = company()
     if subtotal is None:
         subtotal = round(float(hours) * float(rate or 0), 2)
     subtotal = round(float(subtotal), 2)
-    tax = round(subtotal * co["tax_pct"] / 100, 2) if rate else 0.0
+    tax = round(subtotal * co["tax_pct"] / 100, 2) if subtotal else 0.0
     return {"subtotal": subtotal, "tax": tax, "tax_pct": co["tax_pct"],
             "tax_label": co["tax_label"], "total": round(subtotal + tax, 2)}
+
+
+def default_lines(invoice: dict) -> list[str]:
+    """What the bill says when nobody has typed anything: the project and the
+    month. One line, so the sender has something to edit rather than a blank."""
+    project = (invoice.get("project") or "").strip()
+    period = (invoice.get("period_label") or "").strip()
+    return [" — ".join(p for p in (project, period) if p) or "Services"]
+
+
+def bill_amount(invoice: dict) -> float:
+    """The pre-tax amount the bill says. `amount` on the row once one has been
+    saved, hours × rate until then — a row filed before amounts existed still
+    prices itself."""
+    amount = invoice.get("amount")
+    if amount is not None:
+        return round(float(amount), 2)
+    return round(float(invoice.get("hours_billed") or 0) * float(invoice.get("rate") or 0), 2)
 
 
 def _styles() -> dict:
@@ -150,26 +175,6 @@ def _human_date(iso: str) -> str:
         return iso or ""
 
 
-def by_person(rows: list[dict]) -> list[dict]:
-    """One line item per person, hours descending — the summary a client reads.
-
-    Grouped by person *id* where there is one (two people can share a name) and
-    by name otherwise, the same way the workbook groups.
-    """
-    people: dict = {}
-    for r in rows:
-        key = r.get("person_id") or r.get("person") or "(unassigned)"
-        p = people.setdefault(key, {"name": r.get("person") or "(unassigned)",
-                                    "hours": 0.0, "entries": 0, "days": set()})
-        p["hours"] += float(r.get("hours") or 0)
-        p["entries"] += 1
-        p["days"].add(r.get("date"))
-    out = [{"name": p["name"], "hours": round(p["hours"], 2),
-            "entries": p["entries"], "days": len(p["days"])} for p in people.values()]
-    out.sort(key=lambda p: (-p["hours"], p["name"].lower()))
-    return out
-
-
 def _meta_table(invoice: dict, co: dict, st: dict, width: float) -> Table:
     """Number / issued / due / period, right-aligned beside the company name."""
     issued = invoice.get("issued") or ""
@@ -199,31 +204,29 @@ def _meta_table(invoice: dict, co: dict, st: dict, width: float) -> Table:
     return t
 
 
-def _items_table(items: list[dict], rate: float, currency: str, st: dict,
-                 width: float) -> tuple[Table, float]:
-    """The line items. Money columns are drawn only when there is a rate."""
-    billable = bool(rate)
+def _items_table(lines: list[str], hours: float, amount: float, currency: str,
+                 st: dict, width: float, billable: bool) -> Table:
+    """The bill's one line item: the detail lines as its description, the
+    total hours beside them and the amount when there is money on the bill.
+
+    One row, not one per line: the lines are what the work *was*, and the
+    hours and amount are the sender's totals — splitting either across lines
+    would mean inventing numbers nobody typed.
+    """
     if billable:
-        head = ["Description", "Hours", "Rate", "Amount"]
-        widths = [width - 105 * mm, 25 * mm, 30 * mm, 50 * mm]
+        head = ["Description", "Hours", "Amount"]
+        widths = [width - 75 * mm, 25 * mm, 50 * mm]
     else:
         head = ["Description", "Hours"]
         widths = [width - 30 * mm, 30 * mm]
 
     data = [[Paragraph(f"<b>{h}</b>", st["cell"] if i == 0 else st["cellr"])
              for i, h in enumerate(head)]]
-    subtotal = 0.0
-    for it in items:
-        amount = round(it["hours"] * rate, 2)
-        subtotal += amount
-        desc = (f"{_esc(it['name'])}<br/><font size=7.5 color='#6B7280'>"
-                f"{it['entries']} entr{'y' if it['entries'] == 1 else 'ies'} · "
-                f"{it['days']} day{'' if it['days'] == 1 else 's'}</font>")
-        row = [Paragraph(desc, st["cell"]), Paragraph(_hours(it["hours"]), st["cellr"])]
-        if billable:
-            row += [Paragraph(money(rate, currency), st["cellr"]),
-                    Paragraph(money(amount, currency), st["cellr"])]
-        data.append(row)
+    desc = "<br/>".join(_esc(line) for line in lines) or "&nbsp;"
+    row = [Paragraph(desc, st["cell"]), Paragraph(_hours(hours), st["cellr"])]
+    if billable:
+        row.append(Paragraph(money(amount, currency), st["cellr"]))
+    data.append(row)
 
     t = Table(data, colWidths=widths, repeatRows=1, hAlign="LEFT")
     t.setStyle(TableStyle([
@@ -237,22 +240,27 @@ def _items_table(items: list[dict], rate: float, currency: str, st: dict,
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ]))
-    return t, round(subtotal, 2)
+    return t
 
 
-def _totals_table(hours: float, rate: float, currency: str, co: dict, st: dict,
-                  width: float, subtotal: float | None = None) -> Table:
-    sums = totals(hours, rate, subtotal)
+def _totals_table(hours: float, rate: float, amount: float, currency: str, st: dict,
+                  width: float, billable: bool) -> Table:
+    sums = totals(hours, rate, amount)
     rows = []
-    if rate:
+    if billable:
         rows.append(("Total hours", _hours(hours) + " h"))
+        # the rate is printed only when the amount is still hours × rate — a
+        # typed-over amount is the bill, and a rate beside it that doesn't
+        # multiply into it is exactly what accounts payable bounces
+        if rate and abs(round(hours * rate, 2) - sums["subtotal"]) < 0.005:
+            rows.append(("Rate", money(rate, currency) + "/h"))
         rows.append(("Subtotal", money(sums["subtotal"], currency)))
         if sums["tax_pct"]:
             rows.append((f"{sums['tax_label']} {sums['tax_pct']:g}%",
                          money(sums["tax"], currency)))
     data = [[Paragraph(k, st["muted"]), Paragraph(_esc(v), st["right"])] for k, v in rows]
-    label = "Total" if rate else "Total hours"
-    value = money(sums["total"], currency) if rate else _hours(hours) + " h"
+    label = "Total" if billable else "Total hours"
+    value = money(sums["total"], currency) if billable else _hours(hours) + " h"
     data.append([Paragraph(f"<b>{label}</b>", st["body"]), Paragraph(_esc(value), st["big"])])
 
     t = Table(data, colWidths=[width * 0.55, width * 0.45], hAlign="RIGHT")
@@ -266,36 +274,6 @@ def _totals_table(hours: float, rate: float, currency: str, co: dict, st: dict,
     return t
 
 
-def _detail_table(rows: list[dict], st: dict, width: float, has_goals: bool) -> Table:
-    head = ["Date", "Person", "Hours"] + (["Goal"] if has_goals else []) + ["Description"]
-    if has_goals:
-        widths = [22 * mm, 32 * mm, 16 * mm, 30 * mm, width - 100 * mm]
-    else:
-        widths = [22 * mm, 34 * mm, 16 * mm, width - 72 * mm]
-    data = [[Paragraph(f"<b>{h}</b>", st["cellr"] if h == "Hours" else st["cell"])
-             for h in head]]
-    for r in sorted(rows, key=lambda r: (r.get("date") or "", (r.get("person") or "").lower())):
-        line = [Paragraph(_esc(r.get("date") or ""), st["cell"]),
-                Paragraph(_esc(r.get("person") or ""), st["cell"]),
-                Paragraph(_hours(r.get("hours")), st["cellr"])]
-        if has_goals:
-            line.append(Paragraph(_esc(r.get("goal") or ""), st["cell"]))
-        line.append(Paragraph(_esc(r.get("description") or ""), st["cell"]))
-        data.append(line)
-    t = Table(data, colWidths=widths, repeatRows=1, hAlign="LEFT")
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), HEAD_BG),
-        ("ALIGN", (2, 0), (2, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.3, RULE),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    return t
-
-
 def filename(invoice: dict) -> str:
     """A filename a client can file: the number when there is one, the project
     and month otherwise."""
@@ -305,21 +283,27 @@ def filename(invoice: dict) -> str:
     return f"invoice-{slug}-{tail}.pdf" if tail else f"invoice-{slug}.pdf"
 
 
-def build(invoice: dict, rows: list[dict], client: dict | None = None) -> bytes:
+def build(invoice: dict, client: dict | None = None) -> bytes:
     """The invoice PDF.
 
     `invoice` carries project, number, month, period_label, issued, rate,
-    currency and an optional client-facing note; `rows` are the **billed**
-    lines (hours already the billed ones, lines billed at nothing already
-    dropped) — the same rows the workbook and the Sheets export are built from,
-    so the three can't disagree about what was billed.
+    currency, `hours_billed`, `amount`, `lines` and an optional client-facing
+    note. The lines, hours and amount are what the sender confirmed on the
+    invoice page (`default_lines` / `bill_amount` stand in until then), so the
+    file a client is emailed says exactly what was on screen — and nothing
+    about who logged what on which day.
     """
     co = company()
     st = _styles()
     client = client or {}
     rate = float(invoice.get("rate") or 0)
     currency = (invoice.get("currency") or default_currency()).upper()
-    hours = round(sum(float(r.get("hours") or 0) for r in rows), 2)
+    hours = round(float(invoice.get("hours_billed") or 0), 2)
+    amount = bill_amount(invoice)
+    lines = [l for l in (invoice.get("lines") or []) if l] or default_lines(invoice)
+    # money columns are drawn when there is money on the bill: a rate on the
+    # project, or an amount typed in by hand for a project that has none
+    billable = bool(rate or amount)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -361,9 +345,9 @@ def build(invoice: dict, rows: list[dict], client: dict | None = None) -> bytes:
     story += [who, Spacer(1, 8 * mm)]
 
     # ---- the bill itself
-    table, lines_total = _items_table(by_person(rows), rate, currency, st, width)
-    story += [table, Spacer(1, 6 * mm),
-              _totals_table(hours, rate, currency, co, st, width * 0.45, lines_total)]
+    story += [_items_table(lines, hours, amount, currency, st, width, billable),
+              Spacer(1, 6 * mm),
+              _totals_table(hours, rate, amount, currency, st, width * 0.45, billable)]
 
     if invoice.get("client_note"):
         story += [Spacer(1, 8 * mm), Paragraph("NOTES", st["label"]),
@@ -373,17 +357,6 @@ def build(invoice: dict, rows: list[dict], client: dict | None = None) -> bytes:
                   _para_block(co["payment"], st["body"])]
     if co["footer"]:
         story += [Spacer(1, 6 * mm), Paragraph(_esc(co["footer"]), st["muted"])]
-
-    # ---- the annex: every hour on the bill, so a client can check it
-    if rows:
-        has_goals = any((r.get("goal") or "").strip() for r in rows)
-        story += [PageBreak(),
-                  KeepTogether([Paragraph("Detail", st["h"]),
-                                Paragraph("Every entry billed on this invoice · "
-                                          f"{_esc(invoice.get('period_label') or '')} · "
-                                          f"{_hours(hours)} h", st["muted"]),
-                                Spacer(1, 4 * mm)]),
-                  _detail_table(rows, st, width, has_goals)]
 
     doc.build(story)
     return buf.getvalue()

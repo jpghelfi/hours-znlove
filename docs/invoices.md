@@ -55,6 +55,7 @@ and wired into both id paths in `src/config.py` — `databases.json` locally,
 | `Amount` | number | `Hours billed × Rate`, pre-tax |
 | `Currency` | rich text | copied off the project too |
 | `Client note` | rich text | printed on the PDF, unlike `Note`, which is internal |
+| `Lines` | rich text | what the bill is for, one line per row — typed on the invoice page before sending |
 | `Sent to` / `Sent at` | rich text / date | written only after Gmail accepts the message |
 
 Everything degrades quietly when it isn't configured: `invoices_enabled()` is
@@ -151,11 +152,47 @@ send go through one helper (`_invoice_document` in `app.py`) precisely so the
 file a client receives is byte-for-byte the one an admin previewed.
 
 The document is a bill, not a report: a company block, an addressee, a numbered
-header with issue and due dates, one line per person (hours × rate = amount), a
-total, and — on a second page — every billed entry with its date, person and
-comment, so a client can check the total without asking for a spreadsheet. The
-lines are `_invoice_export_rows`, the same billed rows the workbook and the
-clipboard get, which is why the three can't disagree about what was billed.
+header with issue and due dates, **one line item whose description is what the
+sender typed**, the total hours, the amount, tax and total. Nothing per person
+and nothing per entry — the workbook and the Sheets copy are the log, and a
+client who wants it gets that file, not a bill that copies it.
+
+### What the bill says is typed on the invoice page
+
+The send box on `/invoices/{id}` is the editor for the document itself, above
+the To/Subject it always had:
+
+| Field | Prefilled with | Stored as |
+|---|---|---|
+| **What the bill is for** — one line per row | `<project> — <Month YYYY>` | `Lines` (rich text, newline-separated) |
+| **Total hours** | the invoice's `Hours billed` | `Hours billed` |
+| **Amount** (before tax) | `Amount` on the row, or hours × rate when the row predates amounts | `Amount` |
+
+Under the fields the page shows the arithmetic (`n lines · 42 h · $3,000.00 +
+VAT $630.00 = $3,630.00`) with the same rules `invoice_pdf.totals` uses. All
+three are editable, and **both ways out save them first**: ⬇ Download PDF
+posts to `POST /api/invoice/bill` and then fetches the file, and ✉ Send carries
+the same fields and writes them before the PDF is built (`_apply_bill` in
+`app.py`, `ops.set_invoice_bill`) — so a send that fails keeps the edits, and
+the file a client received is the one an admin can download afterwards. The
+covering email lists the same lines and the same total, so the note can't
+describe a different bill from the one attached. A bill needs at least one
+line; lines are capped at 20 of 200 characters.
+
+**The typed hours *are* `Hours billed`.** Typing over the total on the send box
+rewrites the invoice's billed hours — it's what was billed — while the
+day-by-day breakdown under it keeps saying what was logged. When the two
+differ, the page says so in a note rather than leaving a total that the lines
+below don't add up to. The typed amount is stored as a real number, including
+`0`, and `_invoice_row` returns `None` for a row that never had one — the same
+distinction `rate` draws — so a deliberate free month and a pre-amount row
+can't collapse into each other. Re-invoicing from the export screen resets
+`Amount` to hours × rate (it's a new bill) but leaves `Lines` alone.
+
+The rate is printed on the PDF only while the amount is still hours × rate: a
+typed-over amount is the bill, and a rate beside it that doesn't multiply into
+it is exactly what accounts payable bounces. An amount typed for a project
+with no rate still draws the money columns and is still taxed.
 
 ### Money: three places, on purpose
 
@@ -249,9 +286,11 @@ has needed to make yet.
 - The PDF, end to end against real Notion: saving with a rate filed
   `2026-014` / rate 45 / amount 382.50; re-saving at a different rate **kept the
   number and the page**; the document rendered with the company block, bill-to,
-  line items, VAT and total, and a second page listing every billed entry; a
-  project with no rate produced the same document without money columns; a month
-  billed at nothing produced a valid one-page file rather than an error.
+  line items, VAT and total, and a second page listing every billed entry
+  (since replaced by the typed lines — see "What the bill says is typed on the
+  invoice page"); a project with no rate produced the same document without
+  money columns; a month billed at nothing produced a valid one-page file
+  rather than an error.
 - The guards: `/api/invoice/send` answers 403 while `INVOICE_EMAIL_ENABLED` is
   off, and the To/Subject/Send controls aren't rendered at all — the same rule
   the export screen follows. With the switch on, the send box appears, names the

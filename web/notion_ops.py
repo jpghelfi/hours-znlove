@@ -1688,6 +1688,8 @@ def ensure_invoice_properties() -> None:
         missing[SENT_AT_PROP] = {"date": {}}
     if CLIENT_NOTE_PROP not in have:
         missing[CLIENT_NOTE_PROP] = {"rich_text": {}}
+    if LINES_PROP not in have:
+        missing[LINES_PROP] = {"rich_text": {}}
     if missing:
         _notion.data_sources.update(INVOICES_DS, properties=missing)
 
@@ -1703,6 +1705,12 @@ INV_CURRENCY_PROP = "Currency"
 SENT_TO_PROP = "Sent to"
 SENT_AT_PROP = "Sent at"
 CLIENT_NOTE_PROP = "Client note"   # printed on the PDF, unlike `Note`, which is internal
+# What the bill *says* it is for: one line of detail per row, typed by the
+# sender before the invoice goes out. The PDF used to list every entry and
+# every person; a client gets these lines and the totals instead.
+LINES_PROP = "Lines"
+MAX_BILL_LINES = 20
+MAX_LINE_CHARS = 200
 
 
 _NUMBER_RE = re.compile(r"(\d{4})-(\d+)\s*$")
@@ -1791,9 +1799,13 @@ def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
         # filed before rates existed — otherwise re-saving the first one picks
         # up the project's current rate and quietly prices a free month.
         "rate": props.get(INV_RATE_PROP, {}).get("number"),
-        "amount": props.get(AMOUNT_PROP, {}).get("number") or 0,
+        # None, not 0, for the same reason as rate: an amount typed as 0 on the
+        # invoice page is a decision, an empty one is a row filed before the
+        # bill carried an amount — invoice_pdf.bill_amount tells them apart
+        "amount": props.get(AMOUNT_PROP, {}).get("number"),
         "currency": _plain(props, INV_CURRENCY_PROP) or default_currency(),
         "client_note": _plain(props, CLIENT_NOTE_PROP),
+        "lines": bill_lines(_plain(props, LINES_PROP)),
         "sent_to": _plain(props, SENT_TO_PROP),
         "sent_at": ((props.get(SENT_AT_PROP, {}).get("date") or {}).get("start") or "")[:19],
     }
@@ -1933,6 +1945,40 @@ def mark_invoice_sent(invoice_id: str, recipients: list[str]) -> dict:
             timespec="seconds")}},
     })
     return dict(invoice, sent_to=to)
+
+
+def bill_lines(raw: str) -> list[str]:
+    """The detail lines of a bill, one per line, blanks dropped, capped."""
+    out = []
+    for line in (raw or "").replace("\r", "").split("\n"):
+        line = " ".join(line.split())[:MAX_LINE_CHARS]
+        if line:
+            out.append(line)
+    return out[:MAX_BILL_LINES]
+
+
+def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: float) -> dict:
+    """Record what the bill says: its detail lines, its hours and its amount.
+
+    These are the sender's numbers, typed over the defaults on the invoice page
+    before the PDF goes out — `Hours billed` and `Amount` are rewritten because
+    they *are* what was billed, and the day-by-day breakdown under them keeps
+    saying what was logged. Written before the send, so a send that fails
+    doesn't lose the edits; the parent check is get_invoice's.
+    """
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        raise ValueError("that isn't an invoice")
+    lines = bill_lines("\n".join(lines))
+    text = "\n".join(lines)
+    _notion.pages.update(invoice_id, properties={
+        LINES_PROP: {"rich_text": [{"text": {"content": text[i:i + _CHUNK]}}
+                                   for i in range(0, len(text), _CHUNK)]},
+        "Hours billed": {"number": round(float(hours), 2)},
+        AMOUNT_PROP: {"number": round(float(amount), 2)},
+    })
+    return dict(invoice, lines=lines, hours_billed=round(float(hours), 2),
+                amount=round(float(amount), 2))
 
 
 def entry_task(props: dict) -> dict:

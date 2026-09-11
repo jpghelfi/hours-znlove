@@ -1757,23 +1757,98 @@ def _invoice_export_rows(invoice: dict) -> tuple[list[dict], dict]:
     return rows, rng
 
 
+def _invoice_doc(invoice: dict) -> dict:
+    """The invoice as the PDF (and the email body) reads it: with its period
+    label, and its lines/amount filled from the defaults when nothing has
+    been typed yet."""
+    month = _parse_date(invoice["month"])
+    doc = dict(invoice,
+               period_label=month.strftime("%B %Y") if month else invoice["month"])
+    doc["lines"] = [l for l in (doc.get("lines") or []) if l] or invoice_pdf.default_lines(doc)
+    doc["amount"] = invoice_pdf.bill_amount(doc)
+    return doc
+
+
 def _invoice_document(invoice: dict) -> tuple[bytes, str, dict]:
     """The invoice PDF, its filename, and the client it's addressed to.
 
     One helper for both ways out — the download and the send — so the file a
-    client is emailed is byte-for-byte the one an admin previewed. The rows are
-    `_invoice_export_rows`, i.e. the same billed lines the workbook and the
-    clipboard get.
+    client is emailed is byte-for-byte the one an admin previewed. The bill
+    says what the row says: its lines, its hours and its amount, all of which
+    the invoice page lets the sender edit before sending. Nothing per entry or
+    per person goes into it — the workbook is the log, this is the bill.
     """
-    rows, _ = _invoice_export_rows(invoice)
-    month = _parse_date(invoice["month"])
-    doc = dict(invoice,
-               period_label=month.strftime("%B %Y") if month else invoice["month"])
+    doc = _invoice_doc(invoice)
     client = ops.project_billing(invoice["project_id"])
-    return (invoice_pdf.build(doc, rows, {"name": client.get("client_name"),
-                                          "email": client.get("client_email"),
-                                          "address": client.get("client_address")}),
+    return (invoice_pdf.build(doc, {"name": client.get("client_name"),
+                                    "email": client.get("client_email"),
+                                    "address": client.get("client_address")}),
             invoice_pdf.filename(invoice), client)
+
+
+class InvoiceBill(BaseModel):
+    invoice_id: str
+    lines: str = ""            # one line of detail per line
+    hours: Optional[float] = None    # Optional, not `| None`: the venv is 3.9
+    amount: Optional[float] = None
+
+
+def _apply_bill(req: InvoiceBill, invoice: dict) -> dict | JSONResponse:
+    """Write the sender's lines / hours / amount onto the invoice, when any
+    were sent, and hand back the row as it now reads. A refusal is a
+    JSONResponse the caller returns as-is."""
+    lines = ops.bill_lines(req.lines)
+    hours = invoice["hours_billed"] if req.hours is None else req.hours
+    amount = invoice_pdf.bill_amount(invoice) if req.amount is None else req.amount
+    if hours < 0 or hours > 10000:
+        return JSONResponse({"ok": False, "error": "hours must be between 0 and 10000"},
+                            status_code=400)
+    if amount < 0 or amount > 1e9:
+        return JSONResponse({"ok": False, "error": "that amount doesn't look right"},
+                            status_code=400)
+    if not lines:
+        return JSONResponse({"ok": False, "error": "the bill needs at least one line of detail"},
+                            status_code=400)
+    unchanged = (lines == [l for l in (invoice.get("lines") or []) if l]
+                 and abs(hours - invoice["hours_billed"]) < 0.005
+                 and invoice.get("amount") is not None
+                 and abs(amount - invoice["amount"]) < 0.005)
+    if unchanged:
+        return invoice
+    try:
+        return ops.set_invoice_bill(invoice["id"], lines, hours, amount)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+    except Exception:
+        logging.exception("Saving the bill for invoice %s failed", invoice["id"])
+        return JSONResponse({"ok": False, "error": "Notion refused the save — try again"},
+                            status_code=502)
+
+
+@app.post("/api/invoice/bill")
+def api_invoice_bill(request: Request, req: InvoiceBill):
+    """Save what the bill says — lines, hours, amount — without sending it.
+
+    What ⬇ Download PDF calls first, so the file that comes down is the one on
+    screen; the send endpoint does the same write before it mails.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    invoice = ops.get_invoice(req.invoice_id)
+    if not invoice:
+        return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
+    saved = _apply_bill(req, invoice)
+    if isinstance(saved, JSONResponse):
+        return saved
+    sums = invoice_pdf.totals(saved["hours_billed"], saved.get("rate") or 0,
+                              invoice_pdf.bill_amount(saved))
+    return JSONResponse({"ok": True, "lines": saved["lines"], "hours": saved["hours_billed"],
+                         "amount": sums["subtotal"], "total": sums["total"]})
 
 
 @app.get("/invoices/{invoice_id}.pdf")
@@ -1798,8 +1873,7 @@ def invoice_pdf_download(request: Request, invoice_id: str):
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
-class InvoiceSend(BaseModel):
-    invoice_id: str
+class InvoiceSend(InvoiceBill):
     to: str = ""
     subject: str = ""
     message: str = ""
@@ -1838,6 +1912,11 @@ def api_invoice_send(request: Request, req: InvoiceSend):
     if not invoice:
         return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
 
+    # the lines / hours / amount on screen are written first, so the PDF that
+    # goes out is built from the row — and a send that fails keeps the edits
+    invoice = _apply_bill(req, invoice)
+    if isinstance(invoice, JSONResponse):
+        return invoice
     pdf, fname, client = _invoice_document(invoice)
     try:
         to = mailer.clean_recipients(req.to or client.get("client_email") or "")
@@ -1870,20 +1949,22 @@ def api_invoice_send(request: Request, req: InvoiceSend):
 
 
 def _invoice_email_body(invoice: dict, period: str, user: dict) -> str:
-    """The default covering note. Says what's attached and what it totals —
-    a client should not have to open the PDF to know what arrived."""
-    hours = round(invoice.get("hours_billed") or 0, 2)
-    rate = invoice.get("rate") or 0
-    sums = invoice_pdf.totals(hours, rate)
-    line = f"{hours:g} h"
-    if rate:
-        line += f" at {invoice_pdf.money(rate, invoice.get('currency'))}/h — " \
-                f"{invoice_pdf.money(sums['total'], invoice.get('currency'))}"
+    """The default covering note: what's attached, the lines it bills for and
+    what it totals — a client should not have to open the PDF to know what
+    arrived. The same lines / hours / amount the PDF prints, so the note can't
+    describe a different bill from the one attached."""
+    doc = _invoice_doc(invoice)
+    hours = round(doc.get("hours_billed") or 0, 2)
+    sums = invoice_pdf.totals(hours, doc.get("rate") or 0, doc["amount"])
+    total = f"{hours:g} h"
+    if sums["subtotal"]:
+        total += f" — {invoice_pdf.money(sums['total'], doc.get('currency'))}"
         if sums["tax_pct"]:
-            line += f" (incl. {sums['tax_label']})"
-    return (f"Hi,\n\nPlease find attached invoice "
-            f"{invoice.get('number') or ''} for {invoice['project']}, {period}: "
-            f"{line}.\n\nThe full breakdown of hours is on the second page.\n\n"
+            total += f" (incl. {sums['tax_label']})"
+    detail = "\n".join(f"- {line}" for line in doc["lines"])
+    number = f" {invoice['number']}" if invoice.get("number") else ""
+    return (f"Hi,\n\nPlease find attached invoice{number} for {invoice['project']}, "
+            f"{period}:\n\n{detail}\n\nTotal: {total}.\n\n"
             f"— {user.get('name') or user.get('email') or 'ZN Love'}\n")
 
 
@@ -1941,11 +2022,15 @@ def invoice_detail(request: Request, invoice_id: str):
     # the rate on the invoice, not the project's rate today: a bill already
     # sent must keep saying what it said (see save_invoice)
     billing = ops.project_billing(invoice["project_id"])
-    sums = invoice_pdf.totals(round(sum(r["billed"] for r in rows), 2),
-                              invoice.get("rate") or 0)
+    # what the bill says — its lines, hours and amount — prefilled from the
+    # row (or the defaults) and editable in the send box before it goes out
+    doc = _invoice_doc(invoice)
+    sums = invoice_pdf.totals(doc["hours_billed"], invoice.get("rate") or 0, doc["amount"])
     return templates.TemplateResponse(request, "invoice_detail.html", {
         "sheet_rows": sheet_rows,
-        "billing": billing, "sums": sums,
+        "billing": billing, "sums": sums, "doc": doc,
+        "currency": (invoice.get("currency") or invoice_pdf.default_currency()).upper(),
+        "tax": invoice_pdf.company(),
         "money": lambda v: invoice_pdf.money(v, invoice.get("currency")),
         # the client email lives on the project in Notion; when it's missing the
         # send box says so rather than offering an empty To field with no hint
