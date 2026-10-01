@@ -4,8 +4,11 @@ import os
 import re
 from pathlib import Path
 
+import threading
+
 from dotenv import load_dotenv
 from notion_client import Client
+from notion_client.errors import HTTPResponseError
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_FILE = ROOT / "databases.json"
@@ -13,11 +16,32 @@ DB_FILE = ROOT / "databases.json"
 load_dotenv(ROOT / ".env")
 
 
+class _RetryingClient(Client):
+    """notion-client retries a 5xx only on GET/DELETE, but every database read
+    here is a POST to `…/query` (and search is a POST too), so one Notion blip
+    became an instant 500 page. Those POSTs are reads, so they're safe to retry
+    like a GET. Writes (pages.create/update) still never retry — a 500 there may
+    have landed, and retrying would duplicate the row."""
+
+    _local = threading.local()   # the client is shared across request threads
+
+    def _execute_with_retry(self, method, path, *args, **kwargs):
+        self._local.read = method.upper() == "GET" or (
+            method.upper() == "POST" and (path.endswith("/query") or path == "search"))
+        return super()._execute_with_retry(method, path, *args, **kwargs)
+
+    def _can_retry(self, error, method):
+        if getattr(self._local, "read", False) and isinstance(error, HTTPResponseError):
+            # Includes a bare 502/504 from Notion's edge, which carries no API code.
+            return error.status in (429, 500, 502, 503, 504)
+        return super()._can_retry(error, method)
+
+
 def get_client() -> Client:
     token = os.environ.get("NOTION_TOKEN")
     if not token:
         raise SystemExit("NOTION_TOKEN is missing. Copy .env.example to .env and fill it in.")
-    return Client(auth=token)
+    return _RetryingClient(auth=token)
 
 
 def _extract_id(value: str) -> str:
