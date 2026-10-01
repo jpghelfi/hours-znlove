@@ -176,10 +176,11 @@ Sep 25).
 - **New override:** Harvest renamed Neurogum to `Neuro Gum - OSS - 60h`, which no
   longer contains the Notion name, so 27.75 h (Pablo) went unmatched until
   `PROJECT_OVERRIDES` mapped it back to `Neurogum`.
-- `Camp Snap - OSS - 80h` (1 h, Pablo) has no Notion project — reported and left out.
+- `Camp Snap - OSS - 80h` (1 h, Pablo) had no Notion project; once a `Camp Snap` project
+  was added in Notion, a re-run matched it by name with no override (+2 rows).
 - Notion threw a transient 500 (`Cross-cell memcached access is not allowed`) mid-write;
   the re-run picked up where it stopped with no duplicate rows, which is the
   idempotency rule doing its job.
-- Result: 66 day rows planned → 60 Harvest-marked rows (141.25 h) in Notion, 6 skipped
+- Result: 68 day rows planned → 62 Harvest-marked rows (142.25 h) in Notion, 6 skipped
   as hand-logged (all Lautaro / 44PRO). Five match the hand-logged hours; **Sep 11 is
   3.5 h in Harvest vs 1.75 h in the app**. Immediate re-run: 0 created, 0 updated.
