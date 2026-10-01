@@ -54,7 +54,7 @@ def message(kind: str, method: str, path: str, exc: BaseException,
              f"*{type(exc).__name__}*: {str(exc)[:300]}"]
     if repeats:
         lines.append(f"_(+{repeats} more like this since the last alert)_")
-    lines.append(f"```{tb}```")
+    lines.append("```" + tb.replace("```", "'''") + "```")
     return "\n".join(lines)
 
 
@@ -73,9 +73,13 @@ def notify(kind: str, method: str, path: str, exc: BaseException,
     url = webhook()
     if not url:
         return False
-    repeats = _claim((kind, type(exc).__name__, path), time.monotonic())
-    if repeats is None:
+    try:   # an alert must never be what breaks the error page
+        repeats = _claim((kind, type(exc).__name__, path), time.monotonic())
+        if repeats is None:
+            return False
+        text = message(kind, method, path, exc, user, repeats)
+        threading.Thread(target=_post, args=(url, text), daemon=True).start()
+        return True
+    except Exception:
+        logging.exception("Building the Slack error alert failed")
         return False
-    text = message(kind, method, path, exc, user, repeats)
-    threading.Thread(target=_post, args=(url, text), daemon=True).start()
-    return True

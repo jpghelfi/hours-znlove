@@ -6,8 +6,9 @@ screenshot an "Internal Server Error" (`web/alerts.py`).
 ## What triggers one
 
 - **Any uncaught error in a request** (`server_error` in `web/app.py`) — the user
-  still gets a plain 500; Slack gets the method, path, who was logged in, the error
-  and the tail of the traceback.
+  still gets a plain 500; Slack gets the method, the **route template** (`/p/{token}`,
+  never the real path — a share-link token or an invoice id stays out of Slack), who
+  was logged in, the error and the tail of the traceback.
 - **A Notion failure that survived the retries** (`notion_unavailable`, see
   `docs/notion-errors.md`) — titled *Notion unavailable* when it's an outage (the
   user saw the 503 "try again" page) and *Notion error* when it's a 400/404 bug.
@@ -17,7 +18,7 @@ entries", a budget refusal) are handled behaviour, not failures, and don't alert
 
 ## Not a flood
 
-The same error on the same path is sent **once per 15 minutes**
+The same error on the same route is sent **once per 15 minutes**
 (`ALERT_COOLDOWN_MIN` to change it). A Notion outage fails every page load, so
 without this an hour of it would be hundreds of messages; with it, the next alert
 after the cooldown says `+N more like this` so the count isn't lost. The cooldown is

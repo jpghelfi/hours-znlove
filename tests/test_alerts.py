@@ -121,7 +121,18 @@ def _app():
         raise APIResponseError(code="internal_server_error", status=500, message="Cross-cell",
                                headers=httpx.Headers(), raw_body_text="")
 
+    @app.get("/__share/{token}")
+    def share(token: str):
+        raise RuntimeError("share page broke")
+
     return TestClient(app, raise_server_exceptions=False)
+
+
+@check("a token in the path never reaches Slack — the route template does")
+def _():
+    _app().get("/__share/SECRET-TOKEN-123")
+    assert len(SENT) == 1
+    assert "SECRET-TOKEN-123" not in SENT[0] and "/__share/{token}" in SENT[0], SENT[0]
 
 
 @check("an uncaught error in a route is a 500 and an alert")

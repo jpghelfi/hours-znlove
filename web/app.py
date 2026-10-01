@@ -125,10 +125,19 @@ def _alert_user(request: Request) -> Optional[dict]:
     return (request.scope.get("session") or {}).get("user")
 
 
+def _alert_path(request: Request) -> str:
+    # The route template (`/p/{token}`), never the real path: a share-link
+    # token or an invoice id has no business in Slack, and one key per route
+    # keeps the cooldown working across ids.
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or "(no matching route)"
+
+
 @app.exception_handler(Exception)
 async def server_error(request: Request, exc: Exception):
     """Any other uncaught error: still a plain 500, but Slack hears about it."""
-    alerts.notify("500 error", request.method, request.url.path, exc, _alert_user(request))
+    alerts.notify("500 error", request.method, _alert_path(request), exc,
+                  _alert_user(request))
     return PlainTextResponse("Internal Server Error", status_code=500)
 
 
@@ -143,7 +152,7 @@ async def notion_unavailable(request: Request, exc: NotionClientErrorBase):
     transient = (isinstance(exc, RequestTimeoutError)
                  or getattr(exc, "status", None) in (429, 500, 502, 503, 504))
     alerts.notify("Notion unavailable (503 shown)" if transient else "Notion error (500)",
-                  request.method, request.url.path, exc, _alert_user(request))
+                  request.method, _alert_path(request), exc, _alert_user(request))
     if not transient:
         return PlainTextResponse("Internal Server Error", status_code=500)
     if request.method == "GET":
