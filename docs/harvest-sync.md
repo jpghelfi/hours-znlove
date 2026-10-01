@@ -166,3 +166,20 @@ Worth writing down, because two obvious routes are dead ends:
   (August was 2 pages), let the harness spill each oversized response to a file, and
   merge those files into the `--entries` JSON without ever reading them. Per-user calls
   work too and are much smaller, but you need the ids from the aggregate step first.
+
+## September 2026 backfill (third run)
+
+Run on 2026-10-01 for `2026-09-01..2026-09-30` from an MCP-pulled export (2 pages,
+2,821 entries), same flags. September had been synced part-way already (49 rows, to
+Sep 25).
+
+- **New override:** Harvest renamed Neurogum to `Neuro Gum - OSS - 60h`, which no
+  longer contains the Notion name, so 27.75 h (Pablo) went unmatched until
+  `PROJECT_OVERRIDES` mapped it back to `Neurogum`.
+- `Camp Snap - OSS - 80h` (1 h, Pablo) has no Notion project — reported and left out.
+- Notion threw a transient 500 (`Cross-cell memcached access is not allowed`) mid-write;
+  the re-run picked up where it stopped with no duplicate rows, which is the
+  idempotency rule doing its job.
+- Result: 66 day rows planned → 60 Harvest-marked rows (141.25 h) in Notion, 6 skipped
+  as hand-logged (all Lautaro / 44PRO). Five match the hand-logged hours; **Sep 11 is
+  3.5 h in Harvest vs 1.75 h in the app**. Immediate re-run: 0 created, 0 updated.

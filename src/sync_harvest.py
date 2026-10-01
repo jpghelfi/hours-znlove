@@ -48,6 +48,8 @@ MARKER = "Harvest"
 PROJECT_OVERRIDES = {
     "streamside: 7 additional parks": "Streamside 7 Additional parks",
     "bear website (internal)": "Bear Website",
+    # Renamed in Harvest in September 2026 ("Neurogum" -> "Neuro Gum - OSS - 60h").
+    "neuro gum oss 60h": "Neurogum",
 }
 
 
