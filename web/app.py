@@ -21,6 +21,7 @@ from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from notion_client.errors import NotionClientErrorBase
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -115,6 +116,31 @@ def _startup() -> None:
 @app.get("/healthz")
 def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
+
+
+_NOTION_DOWN = ("Notion isn't answering right now, so this page couldn't load. "
+                "Nothing was lost — try again in a minute.")
+
+
+@app.exception_handler(NotionClientErrorBase)
+async def notion_unavailable(request: Request, exc: NotionClientErrorBase):
+    """A Notion failure that survived the client's retries (src/config.py)
+    used to surface as a bare "Internal Server Error". Say what happened
+    instead: a 503 with a retry button, or JSON for the API endpoints."""
+    logging.error("Notion request failed on %s %s: %s", request.method,
+                  request.url.path, exc)
+    if request.url.path.startswith("/api/") or request.method != "GET":
+        return JSONResponse({"ok": False, "error": _NOTION_DOWN}, status_code=503)
+    return HTMLResponse(
+        "<!doctype html><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Notion is unavailable</title>"
+        "<body style='font:16px system-ui,sans-serif;max-width:32rem;margin:15vh auto;"
+        "padding:0 16px;color:#222'><h1 style='font-size:1.3rem'>Notion is having trouble</h1>"
+        f"<p>{_NOTION_DOWN}</p>"
+        "<p><button onclick='location.reload()' style='font:inherit;padding:.5em 1em'>"
+        "Try again</button></p></body>",
+        status_code=503, headers={"Retry-After": "30"})
 
 
 # ---- auth helpers ------------------------------------------------------
