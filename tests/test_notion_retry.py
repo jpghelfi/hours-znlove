@@ -114,25 +114,58 @@ def _():
     assert calls == ["PATCH"]
 
 
-@check("a Notion failure renders a 503 page, and JSON on /api")
-def _():
+def _error_app():
     from fastapi.testclient import TestClient
     from web.app import app
 
+    def err(status, code):
+        return APIResponseError(code=code, status=status, message="boom",
+                                headers=httpx.Headers(), raw_body_text="")
+
     @app.get("/__boom")
     def boom():
-        raise APIResponseError(code="internal_server_error", status=500,
-                               message="Cross-cell", headers=httpx.Headers(), raw_body_text="")
+        raise err(500, "internal_server_error")
 
     @app.get("/api/__boom")
     def api_boom():
-        return boom()
+        raise err(500, "internal_server_error")
 
-    tc = TestClient(app, raise_server_exceptions=False)
-    r = tc.get("/__boom")
+    @app.post("/__boom")
+    def boom_post():
+        raise err(503, "service_unavailable")
+
+    @app.get("/__missing")
+    def missing():
+        raise err(404, "object_not_found")
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
+_HTML = {"accept": "text/html"}
+
+
+@check("a Notion outage renders a 503 page, and JSON on /api")
+def _():
+    tc = _error_app()
+    r = tc.get("/__boom", headers=_HTML)
     assert r.status_code == 503 and "Try again" in r.text, r.status_code
-    r = tc.get("/api/__boom")
+    r = tc.get("/api/__boom", headers=_HTML)
     assert r.status_code == 503 and r.json()["ok"] is False
+
+
+@check("a failed write doesn't promise nothing was lost, and doesn't reload")
+def _():
+    tc = _error_app()
+    r = tc.post("/__boom", headers=_HTML)
+    assert r.status_code == 503
+    assert "may or may not" in r.text and "history.back()" in r.text
+    assert "Nothing was lost" not in r.text
+
+
+@check("a 404 from Notion is a bug or a bad id, not an outage: plain 500")
+def _():
+    r = _error_app().get("/__missing", headers=_HTML)
+    assert r.status_code == 500 and "Notion is having trouble" not in r.text
 
 
 if __name__ == "__main__":

@@ -18,10 +18,10 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from notion_client.errors import NotionClientErrorBase
+from notion_client.errors import NotionClientErrorBase, RequestTimeoutError
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -118,28 +118,40 @@ def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-_NOTION_DOWN = ("Notion isn't answering right now, so this page couldn't load. "
-                "Nothing was lost — try again in a minute.")
-
-
 @app.exception_handler(NotionClientErrorBase)
 async def notion_unavailable(request: Request, exc: NotionClientErrorBase):
-    """A Notion failure that survived the client's retries (src/config.py)
+    """A Notion outage that survived the client's retries (src/config.py)
     used to surface as a bare "Internal Server Error". Say what happened
-    instead: a 503 with a retry button, or JSON for the API endpoints."""
+    instead: a 503 with a retry button, or JSON for the API endpoints.
+    Only for outages — a 400/404 is a bug or a bad id, and stays a 500."""
     logging.error("Notion request failed on %s %s: %s", request.method,
                   request.url.path, exc)
-    if request.url.path.startswith("/api/") or request.method != "GET":
-        return JSONResponse({"ok": False, "error": _NOTION_DOWN}, status_code=503)
+    transient = (isinstance(exc, RequestTimeoutError)
+                 or getattr(exc, "status", None) in (429, 500, 502, 503, 504))
+    if not transient:
+        return PlainTextResponse("Internal Server Error", status_code=500)
+    if request.method == "GET":
+        msg = ("Notion isn't answering right now, so this page couldn't load. "
+               "Nothing was lost — try again in a minute.")
+    else:
+        # Writes aren't retried because a failed one may still have landed.
+        msg = ("Notion isn't answering right now. Your change may or may not have "
+               "been saved — reload and check before trying again.")
+    if request.url.path.startswith("/api/") or \
+            "text/html" not in request.headers.get("accept", ""):
+        return JSONResponse({"ok": False, "error": msg}, status_code=503)
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<title>Notion is unavailable</title>"
         "<body style='font:16px system-ui,sans-serif;max-width:32rem;margin:15vh auto;"
         "padding:0 16px;color:#222'><h1 style='font-size:1.3rem'>Notion is having trouble</h1>"
-        f"<p>{_NOTION_DOWN}</p>"
-        "<p><button onclick='location.reload()' style='font:inherit;padding:.5em 1em'>"
-        "Try again</button></p></body>",
+        f"<p>{msg}</p>"
+        # Reloading a failed form post would resubmit it, so a write goes back instead.
+        "<p><button onclick='" + ("location.reload()" if request.method == "GET"
+                                  else "history.back()") +
+        "' style='font:inherit;padding:.5em 1em'>"
+        + ("Try again" if request.method == "GET" else "Go back") + "</button></p></body>",
         status_code=503, headers={"Retry-After": "30"})
 
 
