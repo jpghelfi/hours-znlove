@@ -1245,6 +1245,7 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
         # not blow up a Jinja lookup that assumes it's always there
         sel = dict(sel, pm_name=name_map.get(sel.get("pm_id")),
                   am_name=name_map.get(sel.get("am_id")))
+    off_roster = _off_roster_names([sel], people) if sel else {}
     # Goals belong to a project, so the block and the picker only appear once
     # one is selected — which is also what keeps assignment validatable with a
     # single read (see /api/entry/goal).
@@ -1270,6 +1271,7 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
         "user": user, "is_admin": True,
         "projects": projects, "sel": sel, "sel_ids": sel_ids, "is_all": is_all,
         "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
+        "off_roster": off_roster,
         "partners": ops.list_partners(sc["all_projects"]),
         "partner_selected": sc["partners"],
         "period": period, "rng": rng,
@@ -1562,6 +1564,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         # a filter dropped on the way back is a filter the export silently
         # disagrees with the next time you look at the page
         "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
+        "off_roster": off_roster,
         "partners": ops.list_partners(sc["all_projects"]),
         "partner_selected": sc["partners"],
         "period": period, "rng": rng, "start_iso": rng["from"],
@@ -2503,11 +2506,13 @@ def assignments_page(request: Request):
     if not user or not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
     projects = ops.list_projects(include_members=True)
+    people = ops.list_people()
     return templates.TemplateResponse(request, "assignments.html", {
         "user": user,
         "is_admin": True,
         "projects": projects,
-        "people": ops.list_people(),
+        "people": people,
+        "off_roster": _off_roster_names(projects, people),
         # the umbrella a project sits under is edited here, beside its PM and
         # its people — the one page that answers "how is this project set up"
         "partners": ops.list_partners(projects),
@@ -2544,8 +2549,8 @@ class ProjectRole(BaseModel):
 
 @app.post("/api/project/role")
 def api_project_role(request: Request, r: ProjectRole):
-    """Set a project's PM or Account manager — /assignments is the only place
-    this is edited, saving one field per call like /api/budget."""
+    """Set a project's PM or Account manager — edited on /projects/roles,
+    /assignments and /project, saving one field per call like /api/budget."""
     user = _require_login(request)
     if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
@@ -2561,6 +2566,74 @@ def api_project_role(request: Request, r: ProjectRole):
         logging.exception("Saving the %s for project %s failed", r.role, r.project_id)
         return JSONResponse({"ok": False, "error": "could not save that role"}, status_code=400)
     return JSONResponse({"ok": True})
+
+
+_MISSING_ROLES = ("pm", "am", "either")
+
+
+def _missing_pick(value: Optional[str]) -> str:
+    """Resolve ?missing= to "pm", "am", "either" or "" (no filter). Anything
+    else is dropped, the _project_picks rule: a mangled link shows every row."""
+    return value if value in _MISSING_ROLES else ""
+
+
+def _missing_match(project: dict, missing: str) -> bool:
+    """Does this project lack the role ?missing= asks about? "either" keeps a
+    project missing a PM *or* an account manager — the to-do list."""
+    if missing == "pm":
+        return not project.get("pm_id")
+    if missing == "am":
+        return not project.get("am_id")
+    if missing == "either":
+        return not project.get("pm_id") or not project.get("am_id")
+    return True
+
+
+def _off_roster_names(projects: list, people: list, lookup=None) -> dict:
+    """Names for role holders who aren't on the active roster — someone
+    unticked in People since they were made PM. Without this their select
+    would read "—", which looks exactly like "nobody", the one thing it isn't.
+    `lookup` is only called when such an id exists (it's a Notion read)."""
+    known = {p["id"] for p in people}
+    stray = {pid for p in projects for pid in (p.get("pm_id"), p.get("am_id"))
+             if pid and pid not in known}
+    if not stray:
+        return {}
+    try:
+        names = (lookup or ops.workspace_names)()
+    except Exception:
+        logging.exception("Resolving off-roster role holders failed")
+        names = {}
+    return {pid: names.get(pid) or "Unknown person" for pid in stray}
+
+
+@app.get("/projects/roles", response_class=HTMLResponse)
+def project_roles_page(request: Request, pm: list[str] = Query(default=[]),
+                       am: list[str] = Query(default=[]),
+                       missing: Optional[str] = None, show: str = "active"):
+    """PM and account manager per project, as one compact editable list —
+    the same two fields /assignments edits, without the person matrix."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    show = "all" if show == "all" else "active"
+    people = ops.list_people()
+    projects = ops.list_projects(active_only=show == "active")
+    pm_ids, am_ids = _role_picks(people, pm, am)
+    missing = _missing_pick(missing)
+    rows = [p for p in projects
+            if _scope_match(p, pm_ids, am_ids) and _missing_match(p, missing)]
+    return templates.TemplateResponse(request, "project_roles.html", {
+        "user": user, "is_admin": True, "rows": rows, "people": people,
+        "off_roster": _off_roster_names(rows, people),
+        "pm_selected": pm_ids, "am_selected": am_ids,
+        "missing": missing, "show": show, "total": len(projects),
+        "no_pm": sum(1 for p in rows if not p.get("pm_id")),
+        "no_am": sum(1 for p in rows if not p.get("am_id")),
+        "has_partners": any(p.get("partner") for p in projects),
+    })
 
 
 class ProjectPartner(BaseModel):

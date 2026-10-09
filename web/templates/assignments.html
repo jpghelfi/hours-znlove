@@ -2,6 +2,7 @@
 {% block title %}Assignments · Hours Tracker{% endblock %}
 {% block nav_assignments %}active{% endblock %}
 {% block content %}
+{% from "_role_select.html" import role_select %}
 <div class="week-head">
   <div>
     <h1>Assignments</h1>
@@ -9,7 +10,7 @@
   </div>
 </div>
 
-<div id="assign-notice" class="assign-notice" role="alert" hidden></div>
+<div id="assign-notice" class="assign-notice" role="alert" data-role-notice hidden></div>
 
 <div class="assign-wrap">
 <div class="grid-wrap assign-scroll">
@@ -61,17 +62,8 @@
         {% if proj.umbrella %}<span class="ptag" title="{{ proj.partner }}'s own project — book the partner's own hours here">umbrella</span>{% endif %}
       </td>
       {% endif %}
-      {% for role, current in [('pm', proj.pm_id), ('am', proj.am_id)] %}
-      <td class="col-role">
-        <select class="role-pick" data-project="{{ proj.id }}" data-role="{{ role }}"
-                aria-label="{{ 'PM' if role == 'pm' else 'Account manager' }} for {{ proj.name }}"
-                onchange="saveRole(this)">
-          <option value="">—</option>
-          {% for p in people %}
-          <option value="{{ p.id }}" {{ 'selected' if p.id == current }}>{{ p.name }}</option>
-          {% endfor %}
-        </select>
-      </td>
+      {% for role in ['pm', 'am'] %}
+      <td class="col-role">{{ role_select(proj, role, people, off_roster) }}</td>
       {% endfor %}
       {% for p in people %}
       <td class="assign-cell">
@@ -94,6 +86,7 @@
 </div>
 </div>
 
+<script src="/static/roles.js?v={{ asset_v('roles.js') }}"></script>
 <script>
 async function saveAssignment(cb) {
   const td = cb.closest('td');
@@ -125,7 +118,7 @@ async function saveAssignment(cb) {
 
 // dataset.prev holds the last known-saved value, so a failed save can revert
 // to it rather than to whatever the <select> happens to show now
-document.querySelectorAll('.role-pick, .partner-pick').forEach(sel => { sel.dataset.prev = sel.value; });
+document.querySelectorAll('.partner-pick').forEach(sel => { sel.dataset.prev = sel.value; });
 
 async function savePartner(sel) {
   const project_id = sel.dataset.project, partner = sel.value;
@@ -145,28 +138,6 @@ async function savePartner(sel) {
     sel.classList.add('bad');
     // the server's own words: "'Bea' isn't a partner" is worth reading
     showAssignNotice(e.message || "Couldn't save — check your connection.");
-  } finally {
-    sel.disabled = false;
-  }
-}
-
-async function saveRole(sel) {
-  const project_id = sel.dataset.project, role = sel.dataset.role, person_id = sel.value || null;
-  const prev = sel.dataset.prev;
-  sel.classList.remove('bad');
-  sel.disabled = true;
-  try {
-    const res = await fetch('/api/project/role', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({project_id, role, person_id})
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'could not save');
-    sel.dataset.prev = sel.value;
-  } catch (e) {
-    sel.value = prev;
-    sel.classList.add('bad');
-    showAssignNotice("Couldn't save — check your connection.");
   } finally {
     sel.disabled = false;
   }

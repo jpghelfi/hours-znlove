@@ -12,7 +12,7 @@ Pages are grouped by the job they do, not by who may open them:
 | Track   | Log hours `/`, My week `/week`, Absences `/absences` | everyone |
 | Plan    | Schedule `/schedule`                    | everyone reads, admins plan |
 | Reports | Reports `/reports`, By project `/project`, Budgets `/budgets` | admins |
-| Admin   | Invoices `/invoices`, Assignments `/assignments` | admins |
+| Admin   | Invoices `/invoices`, Assignments `/assignments`, Project owners `/projects/roles` | admins |
 
 ## Desktop (> 720px)
 
