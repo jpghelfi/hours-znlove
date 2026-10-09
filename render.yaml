@@ -100,6 +100,11 @@ services:
       # People-db misconfig can't leave a queue nobody can answer.
       - key: ABSENCE_APPROVER_EMAILS
         value: zarco@znlove.xyz,jp.ghelfi@znlove.xyz
+      # The shared "Absences" Google Calendar that approved absences are
+      # mirrored onto (docs/absences-calendar.md). Unset = off. Needs the
+      # calendar.events scope on GOOGLE_REFRESH_TOKEN.
+      - key: ABSENCES_CALENDAR_ID
+        sync: false
       # Invoices (src/setup_invoices_db.py). Unset hides invoicing entirely —
       # no Invoice button, and /invoices explains what to run.
       - key: INVOICES_DS_ID

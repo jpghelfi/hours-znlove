@@ -74,6 +74,10 @@ Two, both a courtesy and both logged-and-swallowed the way `_maybe_alert_budget`
 
 Both ride **`ABSENCE_EMAIL_ENABLED`**, their own switch — the same reasoning as `BUDGET_ALERTS_ENABLED` and `INVOICE_EMAIL_ENABLED`: one `GOOGLE_*` authorization powers every send this app makes, so connecting Google for the Sheets export must not start mailing two people every time somebody books a Friday off. `mailer.send_plain(..., channel="absence")` picks the transport and names the right variable when it refuses.
 
+### The calendar
+
+Approved absences are also mirrored onto the shared **Absences** Google Calendar (approve → event, decline/delete → gone), behind `ABSENCES_CALENDAR_ID`. See [absences-calendar.md](absences-calendar.md).
+
 ## Reading it
 
 ### The overlap query
