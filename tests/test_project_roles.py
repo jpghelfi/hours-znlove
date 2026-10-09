@@ -222,6 +222,67 @@ def _():
          ops.planned_rows, webapp.auth.is_admin) = old
 
 
+# ---- /projects/roles: the missing-role filter and off-roster names ------
+
+_P = {"full": {"id": "p1", "pm_id": "u1", "am_id": "u2"},
+      "no_pm": {"id": "p2", "pm_id": None, "am_id": "u2"},
+      "no_am": {"id": "p3", "pm_id": "u1", "am_id": None},
+      "none": {"id": "p4"}}
+
+
+def _kept(missing):
+    return {k for k, p in _P.items() if webapp._missing_match(p, missing)}
+
+
+@check("?missing= resolves to pm/am/either, anything else to no filter")
+def _():
+    for v in ("pm", "am", "either"):
+        assert webapp._missing_pick(v) == v
+    for v in (None, "", "PM", "both", "x"):
+        assert webapp._missing_pick(v) == ""
+
+
+@check("missing filter: no pick keeps everything")
+def _():
+    assert _kept("") == set(_P)
+
+
+@check("missing filter: pm / am keep only rows lacking that role")
+def _():
+    assert _kept("pm") == {"no_pm", "none"}
+    assert _kept("am") == {"no_am", "none"}
+
+
+@check("missing filter: either keeps rows lacking one or both")
+def _():
+    assert _kept("either") == {"no_pm", "no_am", "none"}
+
+
+@check("off-roster names: nothing to resolve means no Notion read")
+def _():
+    people = [{"id": "u1", "name": "Ana"}, {"id": "u2", "name": "Beto"}]
+    def boom():
+        raise AssertionError("looked up names with nobody off the roster")
+    assert webapp._off_roster_names(list(_P.values()), people, lookup=boom) == {}
+
+
+@check("off-roster names: a stray holder is named, an unknown one labelled")
+def _():
+    people = [{"id": "u1", "name": "Ana"}]
+    projects = [{"id": "p1", "pm_id": "u1", "am_id": "gone"},
+                {"id": "p2", "pm_id": "ghost", "am_id": None}]
+    got = webapp._off_roster_names(projects, people, lookup=lambda: {"gone": "Carla"})
+    assert got == {"gone": "Carla", "ghost": "Unknown person"}
+
+
+@check("off-roster names: a failed lookup degrades to labels, not a 500")
+def _():
+    def fail():
+        raise RuntimeError("notion down")
+    got = webapp._off_roster_names([{"id": "p", "pm_id": "x"}], [], lookup=fail)
+    assert got == {"x": "Unknown person"}
+
+
 if __name__ == "__main__":
     print(f"\n{len(_FAILS)} failed\n" if _FAILS else "\nall passed\n")
     for f in _FAILS:

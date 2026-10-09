@@ -157,6 +157,16 @@ def _people_from_workspace() -> list[dict]:
     return people
 
 
+def workspace_names() -> dict:
+    """Notion user id -> name for every workspace member, active or not.
+
+    The roster (list_people) is only the *Active* People rows, so a PM who has
+    since been unticked has no name there. The project-roles page resolves
+    those leftovers here — one users.list, read only when such an id exists.
+    """
+    return {p["id"]: p["name"] for p in _people_from_workspace()}
+
+
 # ---- access control (login allowlist + admins) --------------------------
 #
 # Who may log in and who is an admin is curated in the People db, matched by
