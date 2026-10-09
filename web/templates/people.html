@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}People · Hours Tracker{% endblock %}
+{% block nav_people %}active{% endblock %}
+{% block content %}
+<div class="week-head">
+  <div>
+    <h1>People</h1>
+    <div class="subtle">The roster everyone sees, and who may sign in. Untick <b>Active</b> to revoke access — the row stays, so their history and assignments keep their name.</div>
+  </div>
+</div>
+
+<div id="assign-notice" class="assign-notice" role="alert" hidden></div>
+
+{% if not configured %}
+<p class="subtle">The People database isn't configured (<code>PEOPLE_DS_ID</code>). Run <code>src/setup_people_db.py</code> first.</p>
+{% else %}
+
+<div class="card people-add">
+  {% if candidates is none %}
+  <span class="subtle">Couldn't load the Notion workspace members — adding is unavailable right now.</span>
+  {% elif not candidates %}
+  <span class="subtle">Every workspace member is already on the roster.</span>
+  {% else %}
+  <label for="addPick">Add person</label>
+  <select id="addPick" class="role-pick">
+    {% set fresh = candidates | selectattr('page_id', 'none') | list %}
+    {% set back = candidates | rejectattr('page_id', 'none') | list %}
+    {% if fresh %}<optgroup label="Not on the roster">
+      {% for c in fresh %}<option value="{{ c.id }}" data-name="{{ c.name }}">{{ c.name }}{% if c.email %} · {{ c.email }}{% endif %}</option>{% endfor %}
+    </optgroup>{% endif %}
+    {% if back %}<optgroup label="Inactive — reactivate">
+      {% for c in back %}<option value="{{ c.id }}" data-row="{{ c.page_id }}" data-name="{{ c.name }}">{{ c.name }}{% if c.email %} · {{ c.email }}{% endif %}</option>{% endfor %}
+    </optgroup>{% endif %}
+  </select>
+  <button type="button" id="addBtn" onclick="addPerson()">Add</button>
+  <span class="subtle">Notion workspace members only. New rows start Active.</span>
+  {% endif %}
+</div>
+
+<div class="grid-wrap">
+<table class="grid people-grid">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th class="col-user">Notion user</th>
+      <th class="col-flag" title="May sign in, and appears on the roster">Active</th>
+      <th class="col-flag" title="Team-wide reports, exports and these admin pages">Admin</th>
+      <th class="col-flag" title="May approve or decline absence requests">Approves absences</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in roster %}
+    {% set m = members.get((r.user_id or '')|replace('-', '')|lower) %}
+    <tr class="{{ '' if r.active else 'is-inactive' }}" data-row="{{ r.page_id }}"
+        data-self="{{ '1' if r.user_id and (r.user_id|replace('-', '')|lower) == me else '' }}">
+      <td>
+        <input class="people-name" value="{{ r.name }}" data-prev="{{ r.name }}" maxlength="100"
+               aria-label="Name" onchange="renamePerson(this)"
+               onkeydown="if (event.key === 'Enter') this.blur(); if (event.key === 'Escape') { this.value = this.dataset.prev; this.blur(); }">
+      </td>
+      <td class="subtle col-user">
+        {% if not r.user_id %}<span class="ptag" title="Without a linked Notion user this row can't sign in or be assigned">no Notion user</span>
+        {% elif m %}{{ m.name }}{% if m.email %} · {{ m.email }}{% endif %}
+        {% else %}<span title="Not a current workspace member">not in the workspace</span>{% endif %}
+      </td>
+      {% for field in ['active', 'admin', 'approver'] %}
+      <td class="assign-cell col-flag">
+        <input type="checkbox" data-field="{{ field }}" {{ 'checked' if r[field] }}
+               aria-label="{{ {'active': 'Active', 'admin': 'Admin', 'approver': 'Approves absences'}[field] }} · {{ r.name }}"
+               onchange="saveFlag(this)">
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+    {% if not roster %}
+    <tr class="empty"><td colspan="5">Nobody on the roster yet.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<script>
+let peopleNoticeTimer = null;
+function showPeopleNotice(msg) {
+  const el = document.getElementById('assign-notice');
+  el.textContent = msg; el.hidden = false;
+  clearTimeout(peopleNoticeTimer);
+  peopleNoticeTimer = setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(body)});
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!data.ok) throw new Error(data.error || "Couldn't save — check your connection.");
+  return data;
+}
+
+async function saveFlag(cb) {
+  const tr = cb.closest('tr'), td = cb.closest('td');
+  const field = cb.dataset.field, value = cb.checked;
+  // locking yourself out is allowed (another admin exists) but worth a pause
+  if (!value && tr.dataset.self && field !== 'approver') {
+    const ok = await zConfirm(field === 'active'
+        ? "Untick your own Active? You'll be signed out within a minute."
+        : "Remove your own Admin? You'll lose this page and the reports.",
+        {title: 'Change your own access?', ok: 'Untick', danger: true});
+    if (!ok) { cb.checked = true; return; }
+  }
+  td.classList.remove('saved', 'err'); td.classList.add('saving');
+  cb.disabled = true;
+  try {
+    await postJSON('/api/people/flag', {page_id: tr.dataset.row, field, value});
+    td.classList.remove('saving'); td.classList.add('saved');
+    if (field === 'active') tr.classList.toggle('is-inactive', !value);
+    setTimeout(() => td.classList.remove('saved'), 800);
+  } catch (e) {
+    cb.checked = !value;
+    td.classList.remove('saving'); td.classList.add('err');
+    showPeopleNotice(e.message);
+  } finally {
+    cb.disabled = false;
+  }
+}
+
+async function renamePerson(input) {
+  const prev = input.dataset.prev, name = input.value.trim();
+  if (name === prev) return;
+  input.classList.remove('bad'); input.disabled = true;
+  try {
+    const data = await postJSON('/api/people/rename', {page_id: input.closest('tr').dataset.row, name});
+    input.value = input.dataset.prev = data.name;
+  } catch (e) {
+    input.value = prev; input.classList.add('bad');
+    showPeopleNotice(e.message);
+  } finally {
+    input.disabled = false;
+  }
+}
+
+async function addPerson() {
+  const sel = document.getElementById('addPick'), btn = document.getElementById('addBtn');
+  const opt = sel.selectedOptions[0];
+  if (!opt) return;
+  btn.disabled = true;
+  try {
+    if (opt.dataset.row) {
+      // already has a row, just inactive: tick it back on instead of a second row
+      if (!await zConfirm(opt.dataset.name + ' already has a row. Reactivate it?',
+                          {title: 'Reactivate', ok: 'Reactivate'})) return;
+      await postJSON('/api/people/flag', {page_id: opt.dataset.row, field: 'active', value: true});
+    } else {
+      await postJSON('/api/people/add', {user_id: sel.value});
+    }
+    location.reload();
+  } catch (e) {
+    showPeopleNotice(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+{% endblock %}

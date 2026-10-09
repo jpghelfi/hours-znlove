@@ -1554,3 +1554,23 @@ dialog.pop label.pop-check input { width: 16px; height: 16px; min-height: 0; mar
   .tl-bar { padding: 0 5px; font-size: 10.5px; }
   .plan-actions { margin-left: 0; }
 }
+
+/* /people — the roster editor */
+.card.people-add { max-width: none; margin: 0 0 16px; padding: 14px 16px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.people-add label { flex-direction: row; }
+.people-add select { width: auto; min-width: 240px; max-width: 100%; }
+.people-grid th, .people-grid td { text-align: left; }
+.people-grid .col-flag { width: 96px; text-align: center; }
+.people-name { padding: 6px 8px; border-color: transparent; background: transparent; min-width: 160px; }
+.people-name:hover { border-color: var(--line); }
+.people-name.bad { border-color: var(--over); background: var(--err); }
+.people-grid tr.is-inactive .people-name,
+.people-grid tr.is-inactive td.subtle { opacity: .55; }
+/* on a phone the toggles matter more than whose Notion account it is */
+@media (max-width: 560px) {
+  table.grid.people-grid { min-width: 0; }
+  .people-grid .col-user { display: none; }
+  .people-grid .col-flag { width: 58px; padding-left: 4px; padding-right: 4px; font-size: 10px; }
+  .people-name { min-width: 0; }
+}

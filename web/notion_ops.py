@@ -144,17 +144,17 @@ def _people_from_db() -> list[dict]:
 
 def _people_from_workspace() -> list[dict]:
     """Workspace members (real people, not bots)."""
-    people = []
-    start = None
-    while True:
-        res = _notion.users.list(start_cursor=start, page_size=100) if start else _notion.users.list(page_size=100)
-        for u in res["results"]:
-            if u.get("type") == "person":
-                people.append({"id": u["id"], "name": u.get("name") or "(unnamed)"})
-        if not res.get("has_more"):
-            break
-        start = res["next_cursor"]
-    return people
+    return [{"id": m["id"], "name": m["name"]} for m in list_workspace_members()]
+
+
+def list_workspace_members() -> list[dict]:
+    """Every Notion workspace member who is a person (bots and integrations
+    left out), as {id, name, email}. Guests aren't returned by users.list at
+    all, which is the scope /people wants: the roster is workspace members."""
+    from setup_people_db import list_workspace_members as _members  # src/: the seeder's own list
+    return [{"id": u["id"], "name": u.get("name") or "(unnamed)",
+             "email": (u.get("person") or {}).get("email") or ""}
+            for u in _members(_notion)]
 
 
 # ---- access control (login allowlist + admins) --------------------------
@@ -233,6 +233,179 @@ def access_ids() -> dict:
     with _access_lock:
         _access_cache.update(at=now, allowed=allowed, admins=admins, approvers=approvers)
     return {"allowed": allowed, "admins": admins, "approvers": approvers}
+
+
+def invalidate_access_cache() -> None:
+    """Drop the cached access sets so the next is_allowed/is_admin re-reads the
+    People db. Called after every /people write: the admin who just unticked
+    someone's Active expects it to bite now, not a minute from now. Only this
+    process's cache — another worker (or a hand edit in Notion) still waits
+    out _ACCESS_TTL."""
+    with _access_lock:
+        _access_cache.update(at=0.0, allowed=None, admins=None, approvers=None)
+
+
+# ---- the roster, managed from /people ------------------------------------
+#
+# The same People db list_people and access_ids read, but *every* row —
+# inactive ones too, since reactivating someone is half the reason to open the
+# page. Writes address a row by its page id (which comes from the browser, so
+# every write checks the page really sits in the People data source first).
+
+PEOPLE_FLAGS = {"active": "Active", "admin": "Admin", "approver": APPROVER_PROP}
+
+
+class LastAdmin(Exception):
+    """The write would leave the People db with no active admin."""
+
+
+def _roster_row(page: dict) -> dict:
+    props = page.get("properties") or {}
+    linked = props.get("Person", {}).get("people") or []
+    title = props.get("Name", {}).get("title") or []
+    return {
+        "page_id": page["id"],
+        "name": "".join(t.get("plain_text", "") for t in title).strip(),
+        "user_id": linked[0]["id"] if linked else None,
+        "active": bool(props.get("Active", {}).get("checkbox")),
+        "admin": bool(props.get("Admin", {}).get("checkbox")),
+        "approver": bool(props.get(APPROVER_PROP, {}).get("checkbox")),
+    }
+
+
+def list_roster() -> list[dict]:
+    """Every People row, active or not, sorted active-first then by name."""
+    if not PEOPLE_DS:
+        return []
+    rows = [_roster_row(p) for p in _query_all({"data_source_id": PEOPLE_DS, "page_size": 100})]
+    rows.sort(key=lambda r: (not r["active"], r["name"].lower()))
+    return rows
+
+
+def add_candidates(members: list[dict], roster: list[dict]) -> list[dict]:
+    """Workspace members the "Add person" picker can offer.
+
+    Deduped by Notion user id against *every* row, active or not: someone with
+    an inactive row comes back with that row's `page_id` so the page offers to
+    reactivate it rather than create a second row for them (two rows for one
+    user is what list_people has to paper over). Anyone with an active row is
+    already in, so they're left out. Sorted by name.
+    """
+    rows_by_user: dict = {}
+    for r in roster:
+        if r.get("user_id"):
+            rows_by_user.setdefault(_bare(r["user_id"]), []).append(r)
+    out = []
+    for m in members:
+        rows = rows_by_user.get(_bare(m["id"]), [])
+        if any(r["active"] for r in rows):
+            continue
+        out.append({**m, "page_id": rows[0]["page_id"] if rows else None})
+    out.sort(key=lambda c: c["name"].lower())
+    return out
+
+
+def check_last_admin(roster: list[dict], page_id: str, field: str, value: bool) -> None:
+    """Refuse a write that leaves no active admin behind.
+
+    Unticking Admin on the last active admin — or unticking their Active,
+    which revokes the same thing — would leave nobody able to open /people
+    to undo it (ADMIN_EMAILS is the only way back in). Counted by linked
+    user the way access_ids counts: another active Admin row — even a
+    duplicate row for the same person — keeps an admin in place, while a row
+    with no linked user can't log in and so can't count.
+    """
+    if value or field not in ("admin", "active"):
+        return
+    target = next((r for r in roster if _bare(r["page_id"]) == _bare(page_id)), None)
+    if not target or not (target["active"] and target["admin"] and target["user_id"]):
+        return
+    others = {_bare(r["user_id"]) for r in roster
+              if r["active"] and r["admin"] and r["user_id"]
+              and _bare(r["page_id"]) != _bare(page_id)}
+    if not others:
+        raise LastAdmin(f"{target['name'] or 'This person'} is the last active admin — "
+                        "make someone else an admin first.")
+
+
+def _people_page(page_id: str) -> dict:
+    """Retrieve a page and refuse it unless it's a People row (ids come from
+    the browser)."""
+    if not PEOPLE_DS:
+        raise ValueError("the People database isn't configured")
+    page = _notion.pages.retrieve(page_id)
+    if _bare((page.get("parent") or {}).get("data_source_id")) != _bare(PEOPLE_DS):
+        raise ValueError("not a People row")
+    return page
+
+
+def set_person_flag(page_id: str, field: str, value: bool) -> dict:
+    """Tick or untick Active / Admin / Approves absences on one People row."""
+    if field not in PEOPLE_FLAGS:
+        raise ValueError(f"unknown field {field!r}")
+    with _write_lock:
+        _people_page(page_id)
+        check_last_admin(list_roster(), page_id, field, value)
+        _notion.pages.update(page_id, properties={PEOPLE_FLAGS[field]: {"checkbox": bool(value)}})
+    invalidate_access_cache()
+    return {"ok": True, "field": field, "value": bool(value)}
+
+
+MAX_PERSON_NAME = 100
+
+
+def rename_person(page_id: str, name: str) -> dict:
+    """Retitle a People row — the name the app shows everywhere."""
+    name = " ".join((name or "").split())
+    if not name:
+        raise ValueError("a name can't be empty")
+    if len(name) > MAX_PERSON_NAME:
+        raise ValueError(f"keep the name under {MAX_PERSON_NAME} characters")
+    with _write_lock:
+        _people_page(page_id)
+        _notion.pages.update(page_id, properties={
+            "Name": {"title": [{"type": "text", "text": {"content": name}}]}})
+    invalidate_access_cache()
+    return {"ok": True, "name": name}
+
+
+class AlreadyOnRoster(Exception):
+    def __init__(self, msg: str, page_id: str, active: bool):
+        super().__init__(msg)
+        self.page_id, self.active = page_id, active
+
+
+def add_person(user_id: str) -> dict:
+    """Create an Active People row for a workspace member not yet on the roster.
+
+    The user id comes from the browser, so it must be a current workspace
+    *person* (not a bot, not a guest) — the same rule src/setup_people_db.py
+    seeds by. Someone who already has a row (even an inactive one) is refused
+    with AlreadyOnRoster: reactivating that row is the right move, a second
+    row isn't.
+    """
+    if not PEOPLE_DS:
+        raise ValueError("the People database isn't configured")
+    member = next((m for m in list_workspace_members() if _bare(m["id"]) == _bare(user_id)), None)
+    if not member:
+        raise ValueError("that isn't a member of the Notion workspace")
+    with _write_lock:
+        existing = [r for r in list_roster() if r["user_id"] and _bare(r["user_id"]) == _bare(user_id)]
+        if existing:
+            row = next((r for r in existing if r["active"]), existing[0])
+            raise AlreadyOnRoster(
+                f"{member['name']} is already on the roster" + ("" if row["active"] else " (inactive)"),
+                row["page_id"], row["active"])
+        page = _notion.pages.create(
+            parent={"type": "data_source_id", "data_source_id": PEOPLE_DS},
+            properties={
+                "Name": {"title": [{"type": "text", "text": {"content": member["name"]}}]},
+                "Person": {"people": [{"object": "user", "id": member["id"]}]},
+                "Active": {"checkbox": True},
+            },
+        )
+    invalidate_access_cache()
+    return {"ok": True, "page_id": page["id"], "name": member["name"]}
 
 
 def get_user(user_id: str) -> dict:
