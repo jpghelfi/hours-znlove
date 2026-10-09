@@ -1,0 +1,20 @@
+{# One PM / Account manager <select>, saved on change by /static/roles.js via
+   POST /api/project/role. Shared by /projects/roles, /assignments and /project
+   so the three can't drift. `off_roster` maps a holder who's no longer on the
+   active roster to their name: they stay selected (greyed, disabled so they
+   can't be re-picked — set_project_role would refuse them) instead of the
+   select reading "—", which would look like nobody holds the role. #}
+{% macro role_select(proj, role, people, off_roster) %}
+{% set current = proj.pm_id if role == 'pm' else proj.am_id %}
+<select class="role-pick{{ ' is-off' if current in off_roster }}" data-project="{{ proj.id }}" data-role="{{ role }}"
+        aria-label="{{ 'PM' if role == 'pm' else 'Account manager' }} for {{ proj.name }}"
+        onchange="saveRole(this)">
+  <option value="">—</option>
+  {% if current in off_roster %}
+  <option value="{{ current }}" selected disabled>{{ off_roster[current] }} (off roster)</option>
+  {% endif %}
+  {% for p in people %}
+  <option value="{{ p.id }}" {{ 'selected' if p.id == current }}>{{ p.name }}</option>
+  {% endfor %}
+</select>
+{% endmacro %}

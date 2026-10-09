@@ -157,6 +157,16 @@ def list_workspace_members() -> list[dict]:
             for u in _members(_notion)]
 
 
+def workspace_names() -> dict:
+    """Notion user id -> name for every workspace member, active or not.
+
+    The roster (list_people) is only the *Active* People rows, so a PM who has
+    since been unticked has no name there. The project-roles page resolves
+    those leftovers here — one users.list, read only when such an id exists.
+    """
+    return {p["id"]: p["name"] for p in _people_from_workspace()}
+
+
 # ---- access control (login allowlist + admins) --------------------------
 #
 # Who may log in and who is an admin is curated in the People db, matched by
@@ -2189,6 +2199,9 @@ ABSENCE_STATUS_PROP = "Status"
 ABSENCE_DECIDER_PROP = "Decided by"
 ABSENCE_DECIDED_PROP = "Decided at"
 ABSENCE_NOTE_PROP = "Decision note"
+# The Google Calendar event mirroring an approved absence (web/gcal.py). The id
+# is derived from the page id anyway; storing it says *whether* one exists.
+ABSENCE_EVENT_PROP = "Calendar event"
 
 STATUS_PENDING = "Pending"
 STATUS_APPROVED = "Approved"
@@ -2225,6 +2238,8 @@ def ensure_absence_properties() -> None:
         missing[ABSENCE_DECIDED_PROP] = {"date": {}}
     if ABSENCE_NOTE_PROP not in have:
         missing[ABSENCE_NOTE_PROP] = {"rich_text": {}}
+    if ABSENCE_EVENT_PROP not in have:
+        missing[ABSENCE_EVENT_PROP] = {"rich_text": {}}
     if missing:
         _notion.data_sources.update(ABSENCES_DS, properties=missing)
 
@@ -2265,6 +2280,7 @@ def _absence_row(page: dict, people: dict) -> dict:
     decided = props.get(ABSENCE_DECIDER_PROP, {}).get("people") or []
     did = decided[0]["id"] if decided else None
     when = props.get(ABSENCE_DECIDED_PROP, {}).get("date") or {}
+    event = props.get(ABSENCE_EVENT_PROP, {}).get("rich_text") or []
     return {
         "id": page["id"],
         "person_id": pid,
@@ -2279,6 +2295,7 @@ def _absence_row(page: dict, people: dict) -> dict:
         "decided_by_name": people.get(did, "(unknown)") if did else "",
         "decided_at": (when.get("start") or "")[:10],
         "note": "".join(t.get("plain_text", "") for t in note),
+        "calendar_event": "".join(t.get("plain_text", "") for t in event),
         "url": page.get("url", ""),
     }
 
@@ -2398,6 +2415,20 @@ def decide_absence(absence_id: str, decision: str, decider_id: str | None = None
                decided_at=dt.date.today().isoformat(),
                note=note[:MAX_ABSENCE_NOTE])
     return row
+
+
+def set_absence_calendar_event(absence_id: str, event_id: str) -> None:
+    """Record (or, with "", clear) the Calendar event mirroring an absence.
+
+    Only ever called with ids the server already read or verified — the
+    decide/delete paths check the parent first, and the reconcile reads its
+    rows from list_absences — so there's no parent check here. An archived
+    page (a just-deleted absence) has nothing worth recording.
+    """
+    if not ABSENCES_DS:
+        return
+    text = [{"text": {"content": event_id}}] if event_id else []
+    _notion.pages.update(absence_id, properties={ABSENCE_EVENT_PROP: {"rich_text": text}})
 
 
 def delete_absence(absence_id: str, requester_id: str | None = None,

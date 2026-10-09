@@ -59,26 +59,59 @@ exactly like `/api/assignment` and `/api/budget`. It saves one field per call, t
 reason `/api/budget` does: the first sitting over a project list is dozens of rows, and one
 bad save shouldn't cost the rest.
 
-## Editing: `/assignments` only
+## Editing: three places, one select
 
-`/assignments` already owns "who is on which project"; each row grows two `<select>`s (PM,
-Account manager) listing the whole roster plus a blank "—", saved on `change` via
-`/api/project/role`. The select tracks its own last-saved value in `dataset.prev` so a
-failed save reverts the dropdown instead of leaving a value on screen that was never
-written — the same optimistic-save-then-revert idiom the assignment checkboxes next to it
-already use.
+The roles are edited in three places, all through the same macro
+(`web/templates/_role_select.html`) and the same script (`web/static/roles.js`), so the
+three can't drift:
 
-Every other page shows the roles **read-only**:
+- **`/projects/roles`** ("Project owners" under Admin ▾ and in the phone sheet) — the
+  dedicated page: one compact row per project (Project · Partner · PM · Account manager),
+  nothing else. See below.
+- **`/assignments`** — each row of the person matrix carries the same two selects.
+- **`/project`**, one project selected — the PM / Account manager beside the name are
+  selects for an admin (the page is admin-only today, so that's everyone who can open
+  it); the read-only chips remain as the non-admin branch.
 
-- `/project`, one project selected — PM and Account manager as chips beside the name,
-  resolved to `pm_name`/`am_name` in the route (not in the template) so a role id that's
-  since dropped off the roster reads as "—" instead of breaking a Jinja lookup.
+Every select lists the roster plus a blank "—" and saves on `change` via
+`/api/project/role`. `roles.js` keeps the last-saved value in `dataset.prev`, so a failed
+save reverts the dropdown (and turns it red) instead of leaving a value on screen that was
+never written, and shows the server's reason in the page's `[data-role-notice]` banner —
+or the app's `zAlert` on a page without one.
+
+**A role holder who's no longer on the active roster stays visible.** `list_people` is
+only Active People rows, so a PM unticked since they were made PM has no name there and
+their select used to read "—" — indistinguishable from "nobody". `_off_roster_names`
+(`web/app.py`) collects those stray ids and names them through `ops.workspace_names()`
+(one `users.list`, read **only** when such an id exists; a failure degrades to
+"Unknown person"). The select shows them greyed and italic, as a selected-but-disabled
+option labelled "(off roster)": disabled because `set_project_role` refuses an off-roster
+person, so re-picking them could only fail.
+
+Other pages still show the roles **read-only**:
+
 - `/project`, the all-projects rollup — two columns (`PM`, `Account manager`) next to
   each project's row; blank under the person rows nested inside it, since a role is
-  project-level, not per-person. Hidden below 560px, next to the other numeric columns
-  that already don't fit a phone-width row — the roles are one tap away on `/assignments`
-  or `/budgets`.
+  project-level, not per-person. Hidden below 560px.
 - `/budgets` — two columns beside the project name.
+
+## `/projects/roles` — the owners page
+
+Admin-only (a non-admin is redirected to `/`, like `/assignments`). Filters:
+
+- **Show: Active / All projects** (`?show=all`) — All reads `list_projects(active_only=False)`
+  and tags inactive rows.
+- **PM / Account manager** — the shared `_role_filter.html` pickers (`?pm=`, `?am=`),
+  resolved by `_role_picks` and matched by `_scope_match`, same semantics as below.
+- **Missing** (`?missing=pm|am|either`) — the to-do list: projects with no PM, no account
+  manager, or either. `_missing_pick` drops any other value (a mangled link shows every
+  row); `_missing_match` does the test. It ANDs with the pickers, so `?pm=X&missing=pm`
+  is honestly empty.
+- **Search** — client-side over project and partner name; the whole list is already on
+  the page.
+
+The header counts what's on screen: "N of M projects · X without a PM · Y without an
+account manager". One `list_projects` + one `list_people` per load.
 
 ## Filtering
 
@@ -144,8 +177,13 @@ second id set and intersected with this one — see `docs/reports-filters.md`.
 calls. Covers `_role_from_props` parsing (missing column, a renamed one, two people in the
 column), `_role_picks`'s roster-validation and set semantics, `_role_match`'s OR-within /
 AND-across / no-pick-matches-everything rules, `set_project_role`'s two refusals (unknown
-role, off-roster person), and the `/reports` narrowing end to end (a role pick drops
-entries and planned rows on the excluded project; no pick leaves everything in place).
+role, off-roster person), the `/reports` narrowing end to end (a role pick drops
+entries and planned rows on the excluded project; no pick leaves everything in place),
+and the owners page's helpers: `_missing_pick`/`_missing_match` and `_off_roster_names`
+(no lookup when nothing is off the roster; a failed lookup labels rather than 500s).
+
+Five `_role_match`/`_role_keep_ids` checks fail on `main` already: those helpers were
+renamed `_scope_match`/`_scope_keep_ids` when partners landed and the tests weren't updated.
 
 ## Not built
 

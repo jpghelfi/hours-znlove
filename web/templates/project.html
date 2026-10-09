@@ -21,12 +21,19 @@
       {%- if goal_sel %} · <strong>{% if goal_sel == unassigned %}not filed under a goal{% else %}{{ (goal_rows|selectattr('id', 'equalto', goal_sel)|first).name }}{% endif %}</strong> only{% endif %}
       {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|length ~ ' projects' }}{% endif %}
       {%- if partner_selected %} · under <strong>{{ partner_selected|join(', ') }}</strong>{% endif %}</div>
-    {# single-project view: PM/AM as chips beside the name — read-only here,
-       edited only on /assignments #}
+    {# single-project view: PM/AM beside the name — editable for an admin
+       (the same select and endpoint as /projects/roles), chips otherwise #}
     {% if sel %}
+    {% from "_role_select.html" import role_select %}
     <div class="rolechips">
-      <span class="chip {{ 'chip-role' if sel.pm_name else 'chip-none' }}">PM: {{ sel.pm_name or '—' }}</span>
-      <span class="chip {{ 'chip-role' if sel.am_name else 'chip-none' }}">Account manager: {{ sel.am_name or '—' }}</span>
+      {% if is_admin %}
+      <label class="role-inline">PM {{ role_select(sel, 'pm', people, off_roster) }}</label>
+      <label class="role-inline">Account manager {{ role_select(sel, 'am', people, off_roster) }}</label>
+      <script src="/static/roles.js?v={{ asset_v('roles.js') }}" defer></script>
+      {% else %}
+      <span class="chip {{ 'chip-role' if sel.pm_name else 'chip-none' }}">PM: {{ sel.pm_name or off_roster.get(sel.pm_id) or '—' }}</span>
+      <span class="chip {{ 'chip-role' if sel.am_name else 'chip-none' }}">Account manager: {{ sel.am_name or off_roster.get(sel.am_id) or '—' }}</span>
+      {% endif %}
     </div>
     {% endif %}
   </div>

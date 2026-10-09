@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Project owners · Hours Tracker{% endblock %}
+{% block nav_roles %}active{% endblock %}
+{% block content %}
+{% from "_role_select.html" import role_select %}
+{# filters ride along on the Active/All toggle so switching keeps them #}
+{% set qsr %}{% for id in pm_selected %}&pm={{ id }}{% endfor %}{% for id in am_selected %}&am={{ id }}{% endfor %}{% if missing %}&missing={{ missing }}{% endif %}{% endset %}
+<div class="week-head">
+  <div>
+    <h1>Project owners</h1>
+    <div class="subtle">PM and account manager per project · changes save as you pick ·
+      {{ rows|length }}{% if rows|length != total %} of {{ total }}{% endif %} project{{ '' if total == 1 else 's' }}
+      · {{ no_pm }} without a PM · {{ no_am }} without an account manager</div>
+  </div>
+</div>
+
+<form class="range-form" method="get" action="/projects/roles">
+  <div class="seg" role="group" aria-label="Projects shown">
+    <span class="seg-label">Show</span>
+    <div class="seg-opts">
+      {% for v, lbl in [('active', 'Active'), ('all', 'All projects')] %}
+      <a class="seg-opt{{ ' is-on' if show == v }}" {% if show == v %}aria-current="page"{% endif %}
+         href="/projects/roles?show={{ v }}{{ qsr }}">{{ lbl }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <input type="hidden" name="show" value="{{ show }}">
+  <span class="seg-label filters-label">Owners</span>
+  {% with pm_selected = pm_selected, am_selected = am_selected %}{% include "_role_filter.html" %}{% endwith %}
+  <label class="period-pick">Missing
+    <select name="missing" onchange="navStart(); this.form.submit()">
+      {% for v, lbl in [('', 'Anything'), ('pm', 'No PM'), ('am', 'No account manager'), ('either', 'Either one')] %}
+      <option value="{{ v }}" {{ 'selected' if missing == v }}>{{ lbl }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <input type="search" id="roleSearch" class="roles-search" placeholder="Search projects…"
+         aria-label="Search projects" autocomplete="off">
+</form>
+
+<div class="assign-notice" role="alert" data-role-notice hidden></div>
+
+<div class="grid-wrap">
+<table class="grid roles-grid">
+  <thead>
+    <tr>
+      <th class="left">Project</th>
+      {% if has_partners %}<th class="left col-partner">Partner</th>{% endif %}
+      <th class="left">PM</th>
+      <th class="left">Account manager</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for proj in rows %}
+    <tr data-name="{{ (proj.name ~ ' ' ~ (proj.partner or ''))|lower }}">
+      <td class="left">
+        <a href="/project?project={{ proj.id }}">{{ proj.name }}</a>
+        {% if not proj.active %}<span class="ptag">inactive</span>{% endif %}
+      </td>
+      {% if has_partners %}<td class="left col-partner subtle">{{ proj.partner or '—' }}</td>{% endif %}
+      <td class="col-role">{{ role_select(proj, 'pm', people, off_roster) }}</td>
+      <td class="col-role">{{ role_select(proj, 'am', people, off_roster) }}</td>
+    </tr>
+    {% endfor %}
+    <tr class="empty" id="roleNoMatch" {% if rows %}hidden{% endif %}>
+      <td colspan="{{ 4 if has_partners else 3 }}">
+        {% if rows %}No project matches that search.{% else %}No projects match these filters · <a href="/projects/roles?show={{ show }}">show every project</a>{% endif %}
+      </td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<script src="/static/roles.js?v={{ asset_v('roles.js') }}"></script>
+<script>
+  // client-side: the whole list is already on the page
+  (function () {
+    var box = document.getElementById('roleSearch');
+    var rows = document.querySelectorAll('.roles-grid tbody tr[data-name]');
+    var none = document.getElementById('roleNoMatch');
+    box.addEventListener('input', function () {
+      var q = box.value.trim().toLowerCase(), shown = 0;
+      rows.forEach(function (tr) {
+        var hit = !q || tr.dataset.name.indexOf(q) !== -1;
+        tr.hidden = !hit;
+        if (hit) shown++;
+      });
+      if (rows.length) none.hidden = shown > 0;
+    });
+    // Enter in the search box would submit the filter form and lose the text
+    box.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+  })();
+</script>
+{% endblock %}
