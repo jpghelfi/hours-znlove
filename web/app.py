@@ -27,6 +27,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import alerts
 from . import auth
+from . import gcal
 from . import google_auth
 from . import invoice_pdf
 from . import mailer
@@ -3163,6 +3164,7 @@ def absences_page(request: Request, period: str = "weekly", start: Optional[str]
         "days_off": sum(totals), "people_off": len([r for r in board if r["days"]]),
         "today": dt.date.today().isoformat(),
         "max_reason": ops.MAX_ABSENCE_REASON, "max_note": ops.MAX_ABSENCE_NOTE,
+        "calendar_sync": gcal.enabled() and (is_admin or is_approver),
         "ok": ok, "err": err,
     })
 
@@ -3243,6 +3245,9 @@ def api_absence_decide(request: Request, a: AbsenceDecide):
         return JSONResponse({"ok": False, "error": "could not save that decision"},
                             status_code=400)
     _notify_absence_decided(row, str(request.base_url).rstrip("/"))
+    # approved -> on the shared calendar, declined -> off it; never fails the
+    # decision, which is already saved
+    gcal.sync_absence(row, record=ops.set_absence_calendar_event)
     return JSONResponse({"ok": True, "status": row["status"]})
 
 
@@ -3259,7 +3264,7 @@ def api_absence_delete(request: Request, a: AbsenceDelete):
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
     try:
-        ops.delete_absence(a.absence_id, user.get("id"), any_person=auth.is_admin(user))
+        row = ops.delete_absence(a.absence_id, user.get("id"), any_person=auth.is_admin(user))
     except PermissionError:
         return JSONResponse({"ok": False, "error": "that's someone else's absence"},
                             status_code=403)
@@ -3269,7 +3274,39 @@ def api_absence_delete(request: Request, a: AbsenceDelete):
         logging.exception("Deleting absence %s failed", a.absence_id)
         return JSONResponse({"ok": False, "error": "could not remove that absence"},
                             status_code=400)
+    gcal.remove_absence(row["id"])
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/absence/calendar-sync")
+def api_absence_calendar_sync(request: Request):
+    """Reconcile the shared Absences calendar with Notion over a bounded window
+    (gcal.SYNC_BACK_DAYS back, SYNC_AHEAD_DAYS ahead): fixes drift, and puts
+    absences approved before the calendar existed onto it. Admins and approvers.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not (auth.is_admin(user) or auth.is_approver(user)):
+        return JSONResponse({"ok": False, "error": "only an admin can do that"},
+                            status_code=403)
+    if not gcal.enabled():
+        return JSONResponse({"ok": False, "error": "the Absences calendar isn't configured"},
+                            status_code=400)
+    today = dt.date.today()
+    date_from = (today - dt.timedelta(days=gcal.SYNC_BACK_DAYS)).isoformat()
+    date_to = (today + dt.timedelta(days=gcal.SYNC_AHEAD_DAYS)).isoformat()
+    try:
+        rows = ops.list_absences(date_from, date_to)
+        counts = gcal.reconcile(rows, date_from, date_to,
+                                record=ops.set_absence_calendar_event)
+    except Exception as exc:  # noqa: BLE001
+        logging.exception("Calendar sync failed")
+        return JSONResponse({"ok": False, "error": f"calendar sync failed: {exc}"},
+                            status_code=502)
+    return JSONResponse({"ok": True, **counts})
 
 
 class Cell(BaseModel):

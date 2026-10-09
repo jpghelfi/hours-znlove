@@ -1,8 +1,9 @@
 """One Google authorization, shared by the Gmail and Sheets calls.
 
-Both features ride on the same refresh token (minted by
-src/google_oauth_setup.py), so the app asks for both scopes at once: sending
-mail as the user, and creating the spreadsheets it makes. `drive.file` is the
+Every feature rides on the same refresh token (minted by
+src/google_oauth_setup.py), so the app asks for all scopes at once: sending
+mail as the user, creating the spreadsheets it makes, and writing approved
+absences onto the shared Absences calendar. `drive.file` is the
 narrow one — it grants access only to files this app created, never to the rest
 of the Drive.
 
@@ -19,6 +20,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = (
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/calendar.events",
 )
 
 _VARS = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")
@@ -28,7 +30,12 @@ _token: dict = {"value": None, "expires": 0.0}
 
 
 class GoogleError(RuntimeError):
-    """Google said no — carries the message Google actually returned."""
+    """Google said no — carries the message Google actually returned, and the
+    HTTP status when there was one (0 otherwise)."""
+
+    def __init__(self, message: str = "", status: int = 0):
+        super().__init__(message)
+        self.status = status
 
 
 def configured() -> bool:
@@ -88,6 +95,6 @@ def call(method: str, url: str, **kw) -> httpx.Response:
         if res.status_code == 401 and attempt == 1:
             continue
         if res.status_code >= 300:
-            raise GoogleError(reason(res))
+            raise GoogleError(reason(res), res.status_code)
         return res
     raise GoogleError("Google kept rejecting the token")  # unreachable in practice

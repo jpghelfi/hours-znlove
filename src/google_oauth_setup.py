@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""One-time: authorize the app to send mail and create sheets as you.
+"""One-time: authorize the app to send mail, create sheets and write the
+Absences calendar as you.
 
 Run this on your own machine — it opens a browser for consent and catches the
 redirect on localhost. Nothing is stored: it prints the three values to paste
@@ -9,7 +10,8 @@ into Render, and the refresh token is the only long-lived secret.
 
 Before running, in console.cloud.google.com (as jp.ghelfi@znlove.xyz):
   1. Create a project (any name).
-  2. APIs & Services → Library → enable **Gmail API** *and* **Google Sheets API**.
+  2. APIs & Services → Library → enable **Gmail API**, **Google Sheets API** *and*
+     **Google Calendar API**.
   3. OAuth consent screen → **Internal** (Workspace only — this matters: an
      External app in "testing" hands out refresh tokens that die after 7 days).
   4. Credentials → Create credentials → OAuth client ID → **Desktop app**.
@@ -32,6 +34,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = " ".join((
     "https://www.googleapis.com/auth/gmail.send",   # send the report
     "https://www.googleapis.com/auth/drive.file",   # create the sheet it makes
+    "https://www.googleapis.com/auth/calendar.events",  # approved absences -> calendar
 ))
 PORT = 8765
 REDIRECT = f"http://localhost:{PORT}/"

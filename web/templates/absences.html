@@ -18,6 +18,12 @@
     </div>
   </div>
   <div class="weeknav arrows">
+    {% if calendar_sync %}
+    <div class="week-actions">
+      <button type="button" class="btn" onclick="syncCalendar(this)" data-busy="Syncing…"
+              title="Put every approved absence (last 60 days to a year ahead) on the shared Absences calendar, and take off anything that isn't approved">Sync to calendar</button>
+    </div>
+    {% endif %}
     <a class="btn" href="/absences?period={{ period }}&start={{ rng.prev }}{{ qs_person }}" aria-label="Earlier" title="Earlier">←</a>
     <a class="btn" href="/absences?period={{ period }}&start={{ rng.now }}{{ qs_person }}">{{ rng.now_label }}</a>
     <a class="btn" href="/absences?period={{ period }}&start={{ rng.next }}{{ qs_person }}" aria-label="Later" title="Later">→</a>
@@ -306,6 +312,24 @@ async function decideAbsence(btn, id, decision, note) {
   } catch (e) {
     setBusy(btn, false);
     zAlert(e.message, {title: 'Decision failed'});
+  }
+}
+{% endif %}
+
+{% if calendar_sync %}
+async function syncCalendar(btn) {
+  setBusy(btn, true);
+  try {
+    const res = await fetch('/api/absence/calendar-sync', {method: 'POST'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || 'calendar sync failed');
+    zAlert(data.synced + ' on the calendar, ' + data.removed + ' removed'
+           + (data.failed ? ', ' + data.failed + ' failed (see the logs)' : '') + '.',
+           {title: 'Calendar synced'});
+  } catch (e) {
+    zAlert(e.message, {title: 'Calendar sync failed'});
+  } finally {
+    setBusy(btn, false);
   }
 }
 {% endif %}
