@@ -2660,6 +2660,113 @@ def api_project_partner(request: Request, r: ProjectPartner):
         return JSONResponse({"ok": False, "error": "could not save"}, status_code=500)
 
 
+# ---- the People roster (/people) -----------------------------------------
+
+@app.get("/people", response_class=HTMLResponse)
+def people_page(request: Request):
+    """Manage the People db from the app: who may log in, who's admin, who
+    approves absences, what everyone is called, and who's added next."""
+    user = _require_login(request)
+    if not user or not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+    roster = ops.list_roster()
+    try:
+        members = ops.list_workspace_members()
+    except Exception:
+        # the roster is still worth showing when the member list won't load
+        logging.exception("Listing Notion workspace members failed")
+        members = None
+    return templates.TemplateResponse(request, "people.html", {
+        "user": user,
+        "is_admin": True,
+        "configured": bool(ops.PEOPLE_DS),
+        "roster": roster,
+        "candidates": ops.add_candidates(members, roster) if members is not None else None,
+        # the linked Notion user's own name/email, keyed by bare id
+        "members": {_bare_id(m["id"]): m for m in members or []},
+        "me": _bare_id(user.get("id")),
+    })
+
+
+def _bare_id(i: Optional[str]) -> str:
+    return (i or "").replace("-", "").lower()
+
+
+def _people_write_guard(request: Request) -> Optional[JSONResponse]:
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    return None
+
+
+class PersonFlag(BaseModel):
+    page_id: str
+    field: str        # "active" | "admin" | "approver"
+    value: bool
+
+
+@app.post("/api/people/flag")
+def api_people_flag(request: Request, f: PersonFlag):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.set_person_flag(f.page_id, f.field, f.value))
+    except ops.LastAdmin as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Saving %s on People row %s failed", f.field, f.page_id)
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
+
+
+class PersonName(BaseModel):
+    page_id: str
+    name: str
+
+
+@app.post("/api/people/rename")
+def api_people_rename(request: Request, r: PersonName):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.rename_person(r.page_id, r.name))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Renaming People row %s failed", r.page_id)
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
+
+
+class PersonAdd(BaseModel):
+    user_id: str
+
+
+@app.post("/api/people/add")
+def api_people_add(request: Request, a: PersonAdd):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.add_person(a.user_id))
+    except ops.AlreadyOnRoster as exc:
+        # the page offers reactivation for inactive rows; this is the race
+        # where someone added or reactivated them in another tab meanwhile
+        return JSONResponse({"ok": False, "error": str(exc), "page_id": exc.page_id,
+                             "active": exc.active}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Adding %s to the People db failed", a.user_id)
+        return JSONResponse({"ok": False, "error": "could not add"}, status_code=400)
+
+
 class Alloc(BaseModel):
     person_id: str
     project_id: str

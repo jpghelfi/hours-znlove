@@ -20,7 +20,7 @@
 {% block nav_form %}{% endblock %}{% block nav_week %}{% endblock %}{% block nav_absences %}{% endblock %}
 {% block nav_schedule %}{% endblock %}{% block nav_reports %}{% endblock %}{% block nav_project %}{% endblock %}
 {% block nav_budgets %}{% endblock %}{% block nav_assignments %}{% endblock %}{% block nav_invoices %}{% endblock %}
-{% block nav_plan %}{% endblock %}{% block nav_roles %}{% endblock %}
+{% block nav_plan %}{% endblock %}{% block nav_roles %}{% endblock %}{% block nav_people %}{% endblock %}
 {%- endset -%}
 {#- Which page is on: each page overrides one nav_* block with "active".
     Rendering them here once gives the grouped menus and the phone tab bar a
@@ -31,9 +31,10 @@
   'reports': self.nav_reports()|trim, 'project': self.nav_project()|trim,
   'budgets': self.nav_budgets()|trim, 'assignments': self.nav_assignments()|trim,
   'invoices': self.nav_invoices()|trim, 'plan': self.nav_plan()|trim,
-  'roles': self.nav_roles()|trim } -%}
+  'roles': self.nav_roles()|trim,
+  'people': self.nav_people()|trim } -%}
 {%- set on_reports = nav.reports or nav.project or nav.budgets -%}
-{%- set on_admin = nav.assignments or nav.roles or nav.invoices or nav.plan -%}
+{%- set on_admin = nav.assignments or nav.roles or nav.invoices or nav.plan or nav.people -%}
   <header class="topbar">
     {# The public plan page (/p/<token>) wears the shell without the menu: a
        link holder isn't a user, and nothing on that page may lead into the app. #}
@@ -65,6 +66,7 @@
           <a href="/assignments" class="{{ nav.assignments }}"><b>Assignments</b><small>who's on which project · PM · partner</small></a>
           <a href="/projects/roles" class="{{ nav.roles }}"><b>Project owners</b><small>PM and account manager per project</small></a>
           <a href="/plan" class="{{ nav.plan }}"><b>Plan</b><small>a project's week or month · timeline · share link</small></a>
+          <a href="/people" class="{{ nav.people }}"><b>People</b><small>who may sign in · admins · approvers</small></a>
         </div>
       </details>
       {% endif %}
@@ -124,6 +126,7 @@
       <a href="/assignments" class="{{ nav.assignments }}">Assignments</a>
       <a href="/projects/roles" class="{{ nav.roles }}">Project owners</a>
       <a href="/plan" class="{{ nav.plan }}">Plan</a>
+      <a href="/people" class="{{ nav.people }}">People</a>
     </div>
     {% endif %}
     <button type="button" class="btn sheet-close" onclick="document.getElementById('moreSheet').close()">Close</button>
