@@ -51,7 +51,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(
-            b"<h2>All set — close this tab and go back to the terminal.</h2>" if ok
+            b"<h2>All set - close this tab and go back to the terminal.</h2>" if ok
             else b"<h2>No code came back. Check the terminal.</h2>")
 
     def log_message(self, *args):  # keep the console clean
