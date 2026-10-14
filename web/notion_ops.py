@@ -253,6 +253,7 @@ def invalidate_access_cache() -> None:
     out _ACCESS_TTL."""
     with _access_lock:
         _access_cache.update(at=0.0, allowed=None, admins=None, approvers=None)
+        _roster_cache.update(at=0.0, rows=None)
 
 
 # ---- the roster, managed from /people ------------------------------------
@@ -492,15 +493,55 @@ def _person_name_map() -> dict:
     return {p["id"]: p["name"] for p in list_people()}
 
 
-def _row_person(props) -> tuple[str | None, str]:
-    """Return (person_id, person_name), preferring Person, falling back to Logged by."""
+# Every People row, inactive ones included, as user id -> row: the names of
+# people who have left. Notion drops the name from a user ref once that user
+# leaves the workspace, so their past entries would otherwise read
+# "(unnamed)". Cached like the access sets, and dropped with them.
+_ROSTER_TTL = 300.0
+_roster_cache: dict = {"at": 0.0, "rows": None}
+
+
+def _roster_by_user() -> dict:
+    now = time.monotonic()
+    with _access_lock:
+        if _roster_cache["rows"] is not None and now - _roster_cache["at"] < _ROSTER_TTL:
+            return _roster_cache["rows"]
+    try:
+        rows = {_bare(r["user_id"]): r for r in list_roster() if r["user_id"]}
+    except Exception:
+        logging.exception("People roster read failed; former members will read as unnamed")
+        rows = {}
+    with _access_lock:
+        _roster_cache.update(at=now, rows=rows)
+    return rows
+
+
+def _resolve_person(user: dict) -> tuple[str, bool]:
+    """(name, former) for a people-property / created-by user ref.
+
+    The payload's name wins while there is one (it's what every page has always
+    shown). A ref with no name is someone who left the workspace: their People
+    row still knows what to call them. `former` is true for anyone whose People
+    row is unticked, or — with no row at all — who is gone from the workspace.
+    """
+    row = _roster_by_user().get(_bare(user.get("id") or ""))
+    name = user.get("name") or (row["name"] if row else "") or "(former member)"
+    # the People row decides when there is one: a ref can arrive nameless for
+    # reasons other than leaving (created-by refs often do)
+    former = (not row["active"]) if row else not user.get("name")
+    return name, former
+
+
+def _row_person(props) -> tuple[str | None, str, bool]:
+    """Return (person_id, person_name, former), preferring Person, falling back
+    to Logged by. `former` marks someone no longer on the team (_resolve_person)."""
     people = props.get("Person", {}).get("people", [])
     if people:
-        return people[0]["id"], people[0].get("name") or "(unnamed)"
+        return (people[0]["id"], *_resolve_person(people[0]))
     lb = props.get("Logged by", {}).get("created_by", {})
     if lb.get("type") == "person":
-        return lb["id"], lb.get("name") or "(unnamed)"
-    return None, "(unassigned)"
+        return (lb["id"], *_resolve_person(lb))
+    return None, "(unassigned)", False
 
 
 def entries_between(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
@@ -523,7 +564,7 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
         res = _notion.data_sources.query(**kwargs)
         for row in res["results"]:
             props = row["properties"]
-            pid, person = _row_person(props)
+            pid, person, former = _row_person(props)
             if person_id and pid != person_id:
                 continue
             date = props["Date"]["date"]
@@ -533,7 +574,7 @@ def entries_between(date_from: str, date_to: str, person_id: str | None = None) 
                 # the entry's own page id, so a reader can offer to edit that
                 # exact row (see set_entry_hours)
                 "id": row["id"],
-                "person_id": pid, "person": person,
+                "person_id": pid, "person": person, "person_former": former,
                 # project_id as well as the name: /project's All view groups by
                 # id, so two projects sharing a name can't be merged into one
                 "project_id": rel[0]["id"] if rel else None,
@@ -569,11 +610,11 @@ def project_entries(project_id: str, date_from: str, date_to: str) -> list[dict]
             date = props["Date"]["date"]
             if not date:
                 continue
-            pid, person = _row_person(props)
+            pid, person, former = _row_person(props)
             desc = props["Description"]["rich_text"]
             out.append({
                 "id": row["id"],
-                "person_id": pid, "person": person,
+                "person_id": pid, "person": person, "person_former": former,
                 "date": date["start"][:10],
                 "hours": props["Hours"]["number"] or 0,
                 "description": desc[0]["plain_text"] if desc else "",
@@ -730,7 +771,7 @@ def week_grid(monday: dt.date, person_id: str) -> dict:
         rel = props["Project"]["relation"]
         if not rel:
             continue
-        pid, _ = _row_person(props)
+        pid = _row_person(props)[0]
         if pid != person_id:  # each person sees only their own hours
             continue
         project_id = rel[0]["id"]

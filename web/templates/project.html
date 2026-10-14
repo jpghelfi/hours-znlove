@@ -89,6 +89,8 @@
    the rollup, where the row is a level deeper than the person rows the project
    disclosure toggles — without it a closed project would leave entries on
    screen. Hours stay editable here, same as in the list at the bottom. #}
+{# someone no longer on the team: their past hours keep their name, tagged #}
+{% macro former(flag) %}{% if flag %}<span class="tag-former" title="No longer on the team">former</span>{% endif %}{% endmacro %}
 {% macro entry_row(e, who, project_label, parent=None, wide=False) %}
 <tr class="entry-row{{ ' sub-row' if not parent }}" {% if parent %}data-parent="{{ parent }}"{% endif %}
     data-entry="{{ e.id }}" hidden>
@@ -192,10 +194,10 @@
         {% if r.log %}
         <button type="button" class="disclosure person-disclosure" data-pkey="{{ r.key }}"
                 onclick="togglePerson(this)" aria-expanded="false">
-          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ r.person_name }}</span>
+          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ r.person_name }}</span>{{ former(r.person_former) }}
           <span class="who-count">{{ r.log|length }}</span>
         </button>
-        {% else %}{{ r.person_name }}{% endif %}
+        {% else %}{{ r.person_name }}{{ former(r.person_former) }}{% endif %}
       </td>
       {# PM/AM are project-level, not per person — blank under a person row #}
       <td class="col-role"></td>
@@ -321,10 +323,10 @@
         {# somebody with nothing logged has nothing to expand into — plain name #}
         {% if r.log %}
         <button type="button" class="disclosure" onclick="toggleGroup(this)" aria-expanded="false">
-          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ r.person_name }}</span>
+          <span class="caret" aria-hidden="true">▸</span><span class="who-name">{{ r.person_name }}</span>{{ former(r.person_former) }}
           <span class="who-count">{{ r.log|length }}</span>
         </button>
-        {% else %}{{ r.person_name }}{% endif %}
+        {% else %}{{ r.person_name }}{{ former(r.person_former) }}{% endif %}
       </td>
       <td class="col-hours">{{ '%g'|format(r.hours) if r.hours else '—' }}</td>
       {% if r.hours %}{{ share_cell(r.pct, r.share) }}{% else %}<td class="col-share"></td>{% endif %}
@@ -372,7 +374,7 @@
           {%- if goals_on %}<span class="gchip gchip-inline goal-of{{ ' is-none' if not e.goal }}"
                 data-goal-of="{{ e.id }}">{{ e.goal }}</span>{% endif %}</td>
         {% if is_all %}<td class="left">{{ e.project }}</td>{% endif %}
-        <td class="left">{{ e.person }}</td>
+        <td class="left">{{ e.person }}{{ former(e.person_former) }}</td>
         {# the whole page is admin-only, so every reader here may correct an entry #}
         <td class="cell">
           <input type="number" step="0.25" min="0" max="24" inputmode="decimal"

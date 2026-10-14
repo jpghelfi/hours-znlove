@@ -54,6 +54,18 @@ phone's More sheet) does it in the app.
   admins unticking each other at once can't both pass the last-admin check in
   one process.
 
+## Former members keep their name
+
+When someone leaves the Notion workspace, Notion stops sending their name with
+the user refs on their old entries, which then read "(unnamed)". Entry readers
+(`_row_person` → `_resolve_person` in `notion_ops.py`) fall back to that
+person's People row — active or not, `list_roster()` cached ~5 min — and mark
+the entry `person_former` when the row is unticked (or, with no People row at
+all, when the user is gone from the workspace) — the row decides, since a ref
+can arrive nameless for other reasons. `/project` shows a small **FORMER** tag next to the name; exports
+just carry the name. A project member who's off the roster and logged nothing
+in the period no longer gets an empty row. To archive someone: untick Active.
+
 ## Not here
 
 - No deleting rows — untick Active. Deleted rows would come back on the next
