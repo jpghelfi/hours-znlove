@@ -522,11 +522,13 @@ def _resolve_person(user: dict) -> tuple[str, bool]:
     The payload's name wins while there is one (it's what every page has always
     shown). A ref with no name is someone who left the workspace: their People
     row still knows what to call them. `former` is true for anyone whose People
-    row is unticked, or who is gone from the workspace.
+    row is unticked, or — with no row at all — who is gone from the workspace.
     """
     row = _roster_by_user().get(_bare(user.get("id") or ""))
     name = user.get("name") or (row["name"] if row else "") or "(former member)"
-    former = (row is not None and not row["active"]) or not user.get("name")
+    # the People row decides when there is one: a ref can arrive nameless for
+    # reasons other than leaving (created-by refs often do)
+    former = (not row["active"]) if row else not user.get("name")
     return name, former
 
 
