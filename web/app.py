@@ -983,21 +983,24 @@ def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict,
                if entries is None else entries)
     rows: dict = {}
 
-    def row_for(pid, name):
+    def row_for(pid, name, former=False):
         return rows.setdefault(pid or "(unassigned)", {
-            "person_id": pid, "person_name": name,
+            "person_id": pid, "person_name": name, "person_former": former,
             "hours": 0.0, "entries": 0, "days": set(), "log": [],
         })
 
     for e in entries:
-        r = row_for(e["person_id"], e["person"])
+        r = row_for(e["person_id"], e["person"], e.get("person_former", False))
         r["hours"] += e["hours"]
         r["entries"] += 1
         r["days"].add(e["date"])
         # the person's own entries, so their row can expand into what they did
         r["log"].append(e)
     for mid in member_ids:
-        row_for(mid, name_map.get(mid, "(unnamed)"))
+        # a member who's off the roster and logged nothing here has left — an
+        # idle "(unnamed)" row says nothing
+        if mid in name_map:
+            row_for(mid, name_map[mid])
 
     ordered = sorted(rows.values(), key=lambda r: (-r["hours"], r["person_name"].lower()))
     total = round(sum(r["hours"] for r in ordered), 2)
@@ -1056,8 +1059,8 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
         g["days"].add(e["date"])
         key = e["person_id"] or "(unassigned)"
         p = g["people"].setdefault(key, {
-            "person_name": e["person"], "hours": 0.0, "entries": 0, "days": set(),
-            "log": [],
+            "person_name": e["person"], "person_former": e.get("person_former", False),
+            "hours": 0.0, "entries": 0, "days": set(), "log": [],
         })
         p["hours"] += e["hours"]
         p["entries"] += 1
@@ -1069,8 +1072,10 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
     for proj in projects:  # every active project shows up, logged against or not
         g = group_for(proj["id"], proj["name"])
         for mid in proj.get("member_ids", []):
+            if mid not in name_map:  # left the team; see _project_hours
+                continue
             g["people"].setdefault(mid, {
-                "person_name": name_map.get(mid, "(unnamed)"),
+                "person_name": name_map[mid],
                 "hours": 0.0, "entries": 0, "days": set(), "log": [],
             })
 
