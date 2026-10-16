@@ -1569,7 +1569,6 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         # a filter dropped on the way back is a filter the export silently
         # disagrees with the next time you look at the page
         "people": people, "pm_selected": pm_ids, "am_selected": am_ids,
-        "off_roster": off_roster,
         "partners": ops.list_partners(sc["all_projects"]),
         "partner_selected": sc["partners"],
         "period": period, "rng": rng, "start_iso": rng["from"],
