@@ -1675,7 +1675,9 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
     if not month or month.day != 1:
         return JSONResponse({"ok": False, "error": "an invoice covers a calendar month"},
                             status_code=400)
-    projects = {p["id"]: p for p in ops.list_projects(include_members=True)}
+    # archived projects included: billing a finished project's last month is
+    # exactly when it gets archived, and /project already offers it
+    projects = {p["id"]: p for p in ops.list_projects(include_members=True, active_only=False)}
     project = projects.get(req.project_id)
     if not project:
         return JSONResponse({"ok": False, "error": "pick one project to invoice"},

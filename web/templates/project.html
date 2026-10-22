@@ -21,7 +21,7 @@
     <div class="subtle">
       {%- if is_all %}Hours per project · expand one to see its people{% else %}Hours per person{% endif %} · {{ rng.label }}
       {%- if goal_sel %} · <strong>{% if goal_sel == unassigned %}not filed under a goal{% else %}{{ (goal_rows|selectattr('id', 'equalto', goal_sel)|first).name }}{% endif %}</strong> only{% endif %}
-      {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|length ~ ' projects' }}{% endif %}
+      {%- if sel_ids and not sel %} · {{ sel_names|join(', ') if sel_names|length <= 3 else sel_names|length ~ ' of ' ~ projects|selectattr('active')|list|length ~ ' projects' }}{% endif %}
       {%- if partner_selected %} · under <strong>{{ partner_selected|join(', ') }}</strong>{% endif %}</div>
     {# single-project view: PM/AM beside the name — editable for an admin
        (the same select and endpoint as /projects/roles), chips otherwise #}
