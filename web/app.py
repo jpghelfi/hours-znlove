@@ -870,13 +870,12 @@ def reports_page(request: Request, scope: str = "me", range: Optional[str] = Non
     all_projects = ops.list_projects(active_only=False)
     data = _report_data(user, scope, range, date_from, date_to, person, pm, am, roster,
                         project, all_projects, partner)
-    picked = set(data["project_selected"])
     return templates.TemplateResponse(request, "reports.html", {
         "user": user, "r": data, "scope": "team" if data["team"] else "me",
         "is_admin": True, "people": roster,
-        # the dropdown offers the active projects — plus any archived one that's
-        # actually picked, so a bookmark on it still filters and still has a name
-        "projects": [p for p in all_projects if p["active"] or p["id"] in picked],
+        # every project, archived ones grouped last: an archived project's
+        # past hours are still something you'd want to report on
+        "projects": all_projects,
         "partners": ops.list_partners(all_projects),
     })
 
@@ -969,6 +968,48 @@ def _period_range(period: str, anchor: Optional[dt.date]) -> dict:
         "now": ops.monday_of(today).isoformat(), "now_label": "This week",
         "picker": "date", "value": mon.isoformat(),
     }
+
+
+_PROJECT_PERIODS = _PERIODS + ("custom",)
+# a custom range is one entries_between read, so it's bounded like everything
+# else that reads a window: a year is plenty and keeps a typo'd 2016 cheap
+_MAX_CUSTOM_DAYS = 366
+
+
+def _custom_range(start: Optional[dt.date], end: Optional[dt.date]) -> dict:
+    """A from–to range of any length, shaped like _period_range's dict so every
+    /project template and export reads it the same way. Missing bounds default
+    to month-to-date; reversed ones are swapped; an over-long one is clipped at
+    the far end. The arrows step by the range's own length, and the middle
+    button is the same length ending today."""
+    today = dt.date.today()
+    a = start or today.replace(day=1)
+    b = end or (today if a <= today else a)
+    if b < a:
+        a, b = b, a
+    b = min(b, a + dt.timedelta(days=_MAX_CUSTOM_DAYS - 1))
+    span = (b - a).days + 1
+    step = dt.timedelta(days=span)
+    first = a.strftime("%d %b") if a.year == b.year else a.strftime("%d %b %Y")
+    return {
+        "from": a.isoformat(), "to": b.isoformat(),
+        "label": f"{first} – {b.strftime('%d %b %Y')} · {span} day{'' if span == 1 else 's'}",
+        "prev": (a - step).isoformat(), "prev_end": (b - step).isoformat(),
+        "next": (a + step).isoformat(), "next_end": (b + step).isoformat(),
+        "now": (today - step + dt.timedelta(days=1)).isoformat(), "now_end": today.isoformat(),
+        "now_label": "To today",
+        "picker": "range", "value": a.isoformat(), "value_end": b.isoformat(),
+    }
+
+
+def _project_range(period: str, start: Optional[str], end: Optional[str]) -> tuple:
+    """/project's (period, range): a day/week/month, or a custom from–to.
+    Shared by the page, its exports and the goal endpoint so they can't read
+    the same link differently."""
+    period = period if period in _PROJECT_PERIODS else "monthly"
+    if period == "custom":
+        return period, _custom_range(_parse_date(start), _parse_date(end))
+    return period, _period_range(period, _project_anchor(period, start))
 
 
 def _project_hours(project_id: str, rng: dict, member_ids: list, name_map: dict,
@@ -1070,6 +1111,10 @@ def _all_projects_hours(rng: dict, projects: list, name_map: dict,
         p["log"].append(e)
 
     for proj in projects:  # every active project shows up, logged against or not
+        # an archived one only when it has hours here or was picked outright —
+        # a zeroed row for every finished project would bury the live ones
+        if not proj.get("active", True) and proj["id"] not in groups and keep_ids is None:
+            continue
         g = group_for(proj["id"], proj["name"])
         for mid in proj.get("member_ids", []):
             if mid not in name_map:  # left the team; see _project_hours
@@ -1225,13 +1270,13 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
                  pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                  partner: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None,
-                 goal: Optional[str] = None):
+                 end: Optional[str] = None, goal: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    period = period if period in _PERIODS else "monthly"
+    period, rng = _project_range(period, start, end)
     people = ops.list_people()
     # The PM/account-manager pick narrows the project list *before* ?project=
     # is resolved against it, so the two filters compose (AND) — and ?project=
@@ -1242,7 +1287,6 @@ def project_page(request: Request, project: list[str] = Query(default=[]),
     projects, sel_ids, sel = sc["projects"], sc["sel_ids"], sc["sel"]
     pm_ids, am_ids = sc["pm_ids"], sc["am_ids"]
     is_all = sel is None
-    rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
     if sel:
         # resolved here, not in the template: a role id that's since dropped
@@ -1309,7 +1353,9 @@ def _project_scope(project: list, pm: list, am: list, partner: Optional[list] = 
     renders names loads it anyway, and list_people() is a live Notion query, so
     passing it through is one round trip saved per filtered request.
     """
-    all_projects = ops.list_projects(include_members=include_members)
+    # archived (Active unticked) projects included: their past hours must stay
+    # pickable and exportable — archiving hides a project, it doesn't erase it
+    all_projects = ops.list_projects(include_members=include_members, active_only=False)
     partners = _partner_picks(partner or [], ops.list_partners(all_projects))
     pm_ids, am_ids = _roles_from_query(pm, am, people)
     scope_ids = _scope_keep_ids(all_projects, pm_ids, am_ids, set(partners))
@@ -1389,16 +1435,15 @@ def project_csv(request: Request, project: list[str] = Query(default=[]),
                 pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                 partner: list[str] = Query(default=[]),
                 period: str = "monthly", start: Optional[str] = None,
-                goal: Optional[str] = None):
+                end: Optional[str] = None, goal: Optional[str] = None):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    period = period if period in _PERIODS else "monthly"
+    period, rng = _project_range(period, start, end)
     sc = _project_scope(project, pm, am, partner, include_members=True)
     sel_ids, sel = sc["sel_ids"], sc["sel"]
-    rng = _period_range(period, _project_anchor(period, start))
     entries = _period_entries(sel, sel_ids, rng, _export_goal(sel, goal),
                               keep_ids=sc["scope_ids"])
     import csv
@@ -1493,18 +1538,17 @@ def project_xlsx(request: Request, project: list[str] = Query(default=[]),
                  pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                  partner: list[str] = Query(default=[]),
                  period: str = "monthly", start: Optional[str] = None,
-                 goal: Optional[str] = None):
+                 end: Optional[str] = None, goal: Optional[str] = None):
     """The report as a workbook — a sheet per project, people then their log."""
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    period = period if period in _PERIODS else "monthly"
+    period, rng = _project_range(period, start, end)
     people = ops.list_people()
     sc = _project_scope(project, pm, am, partner, include_members=True, people=people)
     sel_ids, sel = sc["sel_ids"], sc["sel"]
-    rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
     rows = _export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal),
                                         keep_ids=sc["scope_ids"]),
@@ -1518,7 +1562,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
                         pm: list[str] = Query(default=[]), am: list[str] = Query(default=[]),
                         partner: list[str] = Query(default=[]),
                         period: str = "monthly", start: Optional[str] = None,
-                        goal: Optional[str] = None,
+                        end: Optional[str] = None, goal: Optional[str] = None,
                         sent: Optional[str] = None, err: Optional[str] = None):
     """Adjust the numbers for the copy that leaves the building, then download
     or email it. Edits here never touch the logged hours — that is the whole
@@ -1529,12 +1573,11 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    period = period if period in _PERIODS else "monthly"
+    period, rng = _project_range(period, start, end)
     people = ops.list_people()
     sc = _project_scope(project, pm, am, partner, include_members=True, people=people)
     projects, sel_ids, sel = sc["projects"], sc["sel_ids"], sc["sel"]
     pm_ids, am_ids = sc["pm_ids"], sc["am_ids"]
-    rng = _period_range(period, _project_anchor(period, start))
     name_map = {p["id"]: p["name"] for p in people}
     rows = sorted(_export_rows(_period_entries(sel, sel_ids, rng, _export_goal(sel, goal),
                                                keep_ids=sc["scope_ids"]),
@@ -2622,9 +2665,11 @@ def project_roles_page(request: Request, pm: list[str] = Query(default=[]),
         return RedirectResponse(url="/login", status_code=303)
     if not auth.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    show = "all" if show == "all" else "active"
+    show = show if show in ("all", "archived") else "active"
     people = ops.list_people()
     projects = ops.list_projects(active_only=show == "active")
+    if show == "archived":
+        projects = [p for p in projects if not p["active"]]
     pm_ids, am_ids = _role_picks(people, pm, am)
     missing = _missing_pick(missing)
     rows = [p for p in projects
@@ -2638,6 +2683,26 @@ def project_roles_page(request: Request, pm: list[str] = Query(default=[]),
         "no_am": sum(1 for p in rows if not p.get("am_id")),
         "has_partners": any(p.get("partner") for p in projects),
     })
+
+
+class ProjectActive(BaseModel):
+    project_id: str
+    active: bool
+
+
+@app.post("/api/project/active")
+def api_project_active(request: Request, r: ProjectActive):
+    """Archive or restore a project (admins). Nothing logged against it moves:
+    /project and /reports keep offering archived projects for their history."""
+    user = _require_login(request)
+    if not user or not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        return JSONResponse(ops.set_project_active(r.project_id, r.active))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
 class ProjectPartner(BaseModel):
@@ -4040,6 +4105,7 @@ class GoalAssign(BaseModel):
     project_id: str
     period: str = "monthly"
     start: Optional[str] = None
+    end: Optional[str] = None
 
 
 @app.post("/api/entry/goal")
@@ -4062,8 +4128,7 @@ def api_entry_goal(request: Request, a: GoalAssign):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
     if not ops.goals_enabled():
         return JSONResponse({"ok": False, "error": "goals are not set up yet"}, status_code=403)
-    period = a.period if a.period in _PERIODS else "monthly"
-    rng = _period_range(period, _project_anchor(period, a.start))
+    _, rng = _project_range(a.period, a.start, a.end)
     try:
         allowed = {e["id"] for e in ops.project_entries(a.project_id, rng["from"], rng["to"])}
         res = ops.set_entry_goals(a.entry_ids, a.goal_id or None, allowed_ids=allowed,

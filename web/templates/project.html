@@ -12,6 +12,8 @@
 {# a goal pick rides along too: changing month while looking at one goal should
    keep looking at it. An id that stops existing is dropped server-side. #}
 {% set qsg %}{% if goal_sel %}&goal={{ goal_sel }}{% endif %}{% endset %}
+{# a custom range needs its end on every link too; the other periods derive it #}
+{% set qse %}{% if period == 'custom' %}&end={{ rng.to }}{% endif %}{% endset %}
 {% set sel_names = projects|selectattr('id', 'in', sel_ids)|map(attribute='name')|list %}
 <div class="week-head">
   <div>
@@ -38,9 +40,9 @@
     {% endif %}
   </div>
   <div class="weeknav arrows">
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}" aria-label="Earlier" title="Earlier">←</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">{{ rng.now_label }}</a>
-    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}" aria-label="Later" title="Later">→</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.prev }}{% if rng.prev_end %}&end={{ rng.prev_end }}{% endif %}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}" aria-label="Earlier" title="Earlier">←</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.now }}{% if rng.now_end %}&end={{ rng.now_end }}{% endif %}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ rng.next }}{% if rng.next_end %}&end={{ rng.next_end }}{% endif %}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}" aria-label="Later" title="Later">→</a>
   </div>
 </div>
 
@@ -50,18 +52,29 @@
     <div class="seg-opts">
       {# no `start` here: each granularity re-anchors on today, so switching to
          Monthly lands on this month rather than the month the old day sat in #}
-      {% for p, lbl in [('daily', 'Daily'), ('weekly', 'Weekly'), ('monthly', 'Monthly')] %}
+      {% for p, lbl in [('daily', 'Daily'), ('weekly', 'Weekly'), ('monthly', 'Monthly'), ('custom', 'Custom')] %}
       <a class="seg-opt{{ ' is-on' if period == p }}" {% if period == p %}aria-current="page"{% endif %}
          href="/project?period={{ p }}{{ qsp }}{{ qsr }}{{ qsn }}">{{ lbl }}</a>
       {% endfor %}
     </div>
   </div>
   <input type="hidden" name="period" value="{{ period }}">
+  {% if period == 'custom' %}
+  {# two dates, any length (capped at a year server-side); either one changing
+     reloads, the same as the single picker below #}
+  <label class="period-pick">From
+    <input type="date" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
+  </label>
+  <label class="period-pick">To
+    <input type="date" name="end" value="{{ rng.value_end }}" onchange="navStart(); this.form.submit()">
+  </label>
+  {% else %}
   <label class="period-pick">{{ 'Month' if period == 'monthly' else ('Week of' if period == 'weekly' else 'Day') }}
     {# navStart() by hand: form.submit() fires no submit event, so base.html's
        progress bar never sees these #}
     <input type="{{ rng.picker }}" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
   </label>
+  {% endif %}
   <span class="seg-label filters-label">Projects</span>
   {% with selected = sel_ids, psel = partner_selected %}{% include "_project_filter.html" %}{% endwith %}
   <span class="seg-label filters-label">Owners</span>
@@ -69,13 +82,13 @@
   <details class="btnmenu">
     <summary class="btn">⬇ Download<span class="caret">▾</span></summary>
     <div class="menu-list">
-      <a href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"><b>CSV</b><small>one row per entry</small></a>
-      <a href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"><b>Excel</b><small>a sheet per project, with the log</small></a>
+      <a href="/project.csv?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"><b>CSV</b><small>one row per entry</small></a>
+      <a href="/project.xlsx?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"><b>Excel</b><small>a sheet per project, with the log</small></a>
     </div>
   </details>
   {# one project + a whole month is exactly what an invoice is, so the same
      screen is offered under its real name; anything else is still an export #}
-  <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"
+  <a class="btn btn-primary" href="/project/export?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}{{ qsr }}{{ qsn }}{{ qsg }}"
      title="{% if can_invoice %}Set the hours to bill, then save the invoice{% else %}Adjust the numbers, then download, copy to Sheets or email{% endif %}">{% if can_invoice %}🧾 Invoice{% else %}⧉ Export{% endif %}</a>
 </form>
 
@@ -140,7 +153,7 @@
       {%- if b.name == 'Direct' -%}
         {{ b.name }}
       {%- else -%}
-        <a class="plain" href="/project?period={{ period }}&start={{ start_iso }}{{ qsr }}&partner={{ b.name|urlencode }}">{{ b.name }}</a>
+        <a class="plain" href="/project?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsr }}&partner={{ b.name|urlencode }}">{{ b.name }}</a>
       {%- endif -%}
       <span class="subtle bar-where">{{ b.projects }} project{{ '' if b.projects == 1 else 's' }}</span>
     </div>
@@ -240,7 +253,7 @@
   <div class="goalcard-head">
     <h3>Goals</h3>
     <div class="goalcard-actions">
-      {% if goal_sel %}<a class="btn btn-sm" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}">✕ Clear filter</a>{% endif %}
+      {% if goal_sel %}<a class="btn btn-sm" href="/project?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}">✕ Clear filter</a>{% endif %}
       <button type="button" class="btn btn-sm" onclick="newGoal()">＋ New goal</button>
     </div>
   </div>
@@ -250,7 +263,7 @@
     <div class="goalrow-wrap">
     <a class="goalrow{{ ' is-on' if goal_sel == g.id }}{{ ' is-none' if g.unassigned }}"
        data-goal-row="{{ g.id }}" data-hours="{{ '%g'|format(g.hours) }}"
-       href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{% if goal_sel != g.id %}&goal={{ g.id }}{% endif %}"
+       href="/project?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}{% if goal_sel != g.id %}&goal={{ g.id }}{% endif %}"
        {% if goal_sel == g.id %}aria-current="true"{% endif %}>
       <span class="goalrow-name">{{ g.name }}
         {%- if g.status and g.status != 'Open' and not g.unassigned %} <span class="gstat">{{ g.status }}</span>{% endif %}</span>
@@ -530,7 +543,7 @@ function toggleAll(btn) {
 // entries actually logged for this project and period.
 const GOAL_BATCH = {{ batch_size }};
 const PROJECT_ID = "{{ sel.id }}";
-const PERIOD = "{{ period }}", START = "{{ start_iso }}";
+const PERIOD = "{{ period }}", START = "{{ start_iso }}", END = "{{ rng.to }}";
 const GOAL_FILTER = "{{ goal_sel or '' }}";
 // {goalId, items:[{id, goal, hours}]} — where the last filing sent them, and
 // where each entry was before it. Undo needs both: the ids to move, the goals
@@ -613,7 +626,7 @@ async function postBatch(ids, goalId) {
   const res = await fetch('/api/entry/goal', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({entry_ids: ids, goal_id: goalId || null,
-                          project_id: PROJECT_ID, period: PERIOD, start: START}),
+                          project_id: PROJECT_ID, period: PERIOD, start: START, end: END}),
   });
   const data = await res.json().catch(() => ({ok: false, error: 'bad response'}));
   if (!data.ok && !data.updated) throw new Error(data.error || 'could not file those entries');
@@ -875,13 +888,13 @@ async function deleteGoal() {
         if (await zConfirm(
               `${n} ${data.in_use === 1 && !data.more ? 'entry is' : 'entries are'} still filed under “${name}”, and its hours would be stranded.\n\nFile them somewhere else first — or close the goal instead, which keeps them.`,
               {title: 'Still in use', ok: 'Show those entries', cancel: 'Not now'})) {
-          location.href = `/project?period={{ period }}&start={{ start_iso }}{{ qsp }}&goal=${encodeURIComponent(id)}`;
+          location.href = `/project?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}&goal=${encodeURIComponent(id)}`;
         }
         return;
       }
       throw new Error(data.error || 'could not delete that goal');
     }
-    location.href = `/project?period={{ period }}&start={{ start_iso }}{{ qsp }}`;
+    location.href = `/project?period={{ period }}&start={{ start_iso }}{{ qse }}{{ qsp }}`;
   } catch (e) {
     err.textContent = e.message;
     err.hidden = false;

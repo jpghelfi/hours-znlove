@@ -15,7 +15,7 @@
          else 'what you change here goes in the file only' }}</div>
   </div>
   <div class="weeknav">
-    <a class="btn" href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}">← Back to the report</a>
+    <a class="btn" href="/project?period={{ period }}&start={{ start_iso }}{% if period == 'custom' %}&end={{ rng.to }}{% endif %}{{ qsp }}{{ qsr }}{{ qsn }}">← Back to the report</a>
   </div>
 </div>
 
@@ -23,7 +23,7 @@
   <strong>Adjusting hours here never changes what was logged.</strong> The entries in Notion keep their
   original values{% if can_invoice %}; saving an invoice records what you billed, not a correction to
   anyone's timesheet{% endif %}. To fix what was actually logged, edit it in the entry list on
-  <a href="/project?period={{ period }}&start={{ start_iso }}{{ qsp }}{{ qsr }}{{ qsn }}">the report</a>.
+  <a href="/project?period={{ period }}&start={{ start_iso }}{% if period == 'custom' %}&end={{ rng.to }}{% endif %}{{ qsp }}{{ qsr }}{{ qsn }}">the report</a>.
 </div>
 
 {% if can_invoice %}

@@ -3049,6 +3049,20 @@ def set_project_partner(project_id: str, partner: str) -> dict:
     return {"ok": True, "project_id": project_id, "partner": partner}
 
 
+def set_project_active(project_id: str, active: bool) -> dict:
+    """Archive (active=False) or restore a project — the same `Active` checkbox
+    curated in Notion. Archiving only takes it out of the pickers people log
+    and book against; its entries, allocations and invoices stay where they
+    are, and the reports read inactive projects on purpose."""
+    with _write_lock:
+        page = _notion.pages.retrieve(project_id)
+        parent = page.get("parent") or {}
+        if _bare(parent.get("data_source_id")) != _bare(PROJECTS_DS):
+            raise ValueError("not a project")
+        _notion.pages.update(project_id, properties={"Active": {"checkbox": bool(active)}})
+    return {"ok": True, "project_id": project_id, "active": bool(active)}
+
+
 def umbrella_project(partner: str, projects: list[dict] | None = None) -> dict | None:
     """The partner's own bookable project row, or None if it has none yet."""
     for p in (projects if projects is not None else list_projects(active_only=False)):
