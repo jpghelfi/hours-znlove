@@ -1583,6 +1583,7 @@ dialog.pop label.pop-check input { width: 16px; height: 16px; min-height: 0; mar
 table.grid.roles-grid { min-width: 0; }
 .roles-grid .col-role { width: 220px; padding: 6px 8px; }
 .roles-grid .col-partner { white-space: nowrap; }
+.roles-grid .col-archive { width: 1%; white-space: nowrap; text-align: right; }
 .roles-search { padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px;
                 background: var(--card); color: var(--ink); font: inherit; font-size: 13.5px; min-width: 180px; }
 /* a role held by someone no longer on the active roster: named, but greyed */

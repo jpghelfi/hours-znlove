@@ -18,7 +18,7 @@
   <div class="seg" role="group" aria-label="Projects shown">
     <span class="seg-label">Show</span>
     <div class="seg-opts">
-      {% for v, lbl in [('active', 'Active'), ('all', 'All projects')] %}
+      {% for v, lbl in [('active', 'Active'), ('archived', 'Archived'), ('all', 'All projects')] %}
       <a class="seg-opt{{ ' is-on' if show == v }}" {% if show == v %}aria-current="page"{% endif %}
          href="/projects/roles?show={{ v }}{{ qsr }}">{{ lbl }}</a>
       {% endfor %}
@@ -48,6 +48,7 @@
       {% if has_partners %}<th class="left col-partner">Partner</th>{% endif %}
       <th class="left">PM</th>
       <th class="left">Account manager</th>
+      <th class="col-archive" aria-label="Archive"></th>
     </tr>
   </thead>
   <tbody>
@@ -55,15 +56,20 @@
     <tr data-name="{{ (proj.name ~ ' ' ~ (proj.partner or ''))|lower }}">
       <td class="left">
         <a href="/project?project={{ proj.id }}">{{ proj.name }}</a>
-        {% if not proj.active %}<span class="ptag">inactive</span>{% endif %}
+        <span class="ptag" data-archived-tag {% if proj.active %}hidden{% endif %}>archived</span>
       </td>
       {% if has_partners %}<td class="left col-partner subtle">{{ proj.partner or '—' }}</td>{% endif %}
       <td class="col-role">{{ role_select(proj, 'pm', people, off_roster) }}</td>
       <td class="col-role">{{ role_select(proj, 'am', people, off_roster) }}</td>
+      <td class="col-archive">
+        <button type="button" class="btn btn-sm" data-project="{{ proj.id }}" data-name="{{ proj.name }}"
+                data-active="{{ 'true' if proj.active else 'false' }}" onclick="toggleArchive(this)">
+          {{ 'Archive' if proj.active else 'Restore' }}</button>
+      </td>
     </tr>
     {% endfor %}
     <tr class="empty" id="roleNoMatch" {% if rows %}hidden{% endif %}>
-      <td colspan="{{ 4 if has_partners else 3 }}">
+      <td colspan="{{ 5 if has_partners else 4 }}">
         {% if rows %}No project matches that search.{% else %}No projects match these filters · <a href="/projects/roles?show={{ show }}">show every project</a>{% endif %}
       </td>
     </tr>
@@ -90,5 +96,32 @@
     // Enter in the search box would submit the filter form and lose the text
     box.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
   })();
+
+  // Archive = untick Active in Notion: the project leaves the log/book pickers,
+  // its hours stay in /project and /reports. Restore puts it back.
+  async function toggleArchive(btn) {
+    var archiving = btn.dataset.active === 'true';
+    if (archiving && !(await zConfirm(
+        btn.dataset.name + ' will no longer be offered for logging hours or booking. ' +
+        'Its past hours stay in the reports, and you can restore it any time.',
+        {title: 'Archive ' + btn.dataset.name + '?', ok: 'Archive'}))) return;
+    btn.disabled = true;
+    try {
+      var res = await fetch('/api/project/active', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({project_id: btn.dataset.project, active: !archiving})
+      });
+      var data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'could not save');
+      btn.dataset.active = String(data.active);
+      btn.textContent = data.active ? 'Archive' : 'Restore';
+      btn.closest('tr').querySelector('[data-archived-tag]').hidden = data.active;
+    } catch (e) {
+      var why = e && e.message && e.message !== 'Failed to fetch' ? e.message : 'check your connection.';
+      zAlert("Couldn't save — " + why);
+    } finally {
+      btn.disabled = false;
+    }
+  }
 </script>
 {% endblock %}

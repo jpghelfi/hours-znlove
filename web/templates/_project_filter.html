@@ -55,7 +55,7 @@
       </div>
       {% endif %}
       {% for g in jgroups %}
-      {% set gprojects = projects|selectattr('partner', 'defined')|selectattr('partner', 'equalto', (g if g != 'Direct' else ''))|list %}
+      {% set gprojects = projects|selectattr('active')|selectattr('partner', 'defined')|selectattr('partner', 'equalto', (g if g != 'Direct' else ''))|list %}
       {% if gprojects %}
       <div class="pfilter-group" data-group="{{ g }}">
         {% if jpartners %}<div class="pfilter-gh">{{ g if g != 'Direct' else 'Direct clients' }}</div>{% endif %}
@@ -71,10 +71,24 @@
       {# a project row whose Partner column can't be read (renamed in Notion)
          still has to be pickable, so anything the groups above missed lands
          here rather than vanishing from the filter #}
-      {% set ungrouped = projects|rejectattr('partner', 'defined')|list %}
+      {% set ungrouped = projects|selectattr('active')|rejectattr('partner', 'defined')|list %}
       {% if ungrouped %}
       <div class="pfilter-group" data-group="other">
         {% for p in ungrouped %}
+        <label class="pfilter-opt" data-name="{{ p.name|lower }}">
+          <input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
+          <span class="pfilter-nm">{{ p.name }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {# archived projects (Active unticked) last and apart: still pickable,
+         because their hours are still history worth reading #}
+      {% set archived = projects|rejectattr('active')|list %}
+      {% if archived %}
+      <div class="pfilter-group" data-group="archived">
+        <div class="pfilter-gh">Archived</div>
+        {% for p in archived %}
         <label class="pfilter-opt" data-name="{{ p.name|lower }}">
           <input type="checkbox" name="project" value="{{ p.id }}" {{ 'checked' if p.id in selected }}>
           <span class="pfilter-nm">{{ p.name }}</span>
