@@ -1269,7 +1269,7 @@ td.desc .tlink { margin-left: 8px; }
 .goalrow-edit {
   flex: none; background: none; border: 1px solid transparent; border-radius: 8px;
   color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1;
-  padding: 8px 9px; opacity: 0;
+  padding: 8px 9px; opacity: .35;   /* faint, not invisible: it's the way to archive a goal */
 }
 .goalrow-wrap:hover .goalrow-edit, .goalrow-edit:focus-visible { opacity: 1; }
 .goalrow-edit:hover { color: var(--ink); border-color: var(--line); }

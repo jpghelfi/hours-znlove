@@ -137,7 +137,10 @@ its exports) to that goal; `?goal=none` is the triage view.
 same dialog with its name, target, basis, **due date** and status — the four
 things that change after a goal exists. Setting `Status: Done` takes it out of
 the picker while keeping its hours and its row (badged `Done`) for any period it
-has hours in; `Dropped` is the same for work that was abandoned. A blank Due is
+has hours in; `Dropped` is the same for work that was abandoned. **Archive** in
+that dialog is `Done` in one click (shown only while the goal is Open), and the
+✎ stays faintly visible rather than appearing on hover only — when it was
+invisible, nobody found that closing a goal was already possible. A blank Due is
 what a standing goal looks like, so clearing it is a first-class action rather
 than an omission — hence `clear_target` / `clear_due` on the request, and
 `_UNSET` versus `None` inside `update_goal`, the distinction `set_budget` makes
