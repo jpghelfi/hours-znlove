@@ -844,10 +844,9 @@ function closeGoalDlg() { document.getElementById('goalDlg').close(); }
 
 // Archive is Status: Done in one click — the goal leaves the picker and every
 // period it has no hours in, and keeps its rows where it does
-function archiveGoal() {
-  document.getElementById('goalStatus').value = 'Done';
-  saveGoal();
-}
+// The status is passed, not written into the select: a failed archive must not
+// leave the form on Done for a later plain Save to close the goal with.
+function archiveGoal() { saveGoal('Done'); }
 
 let elsewhereLoaded = false;
 async function loadElsewhere() {
@@ -920,7 +919,7 @@ function dlgBusy(on) {
   document.getElementById('goalDlg').classList.toggle('is-busy', on);
 }
 
-async function saveGoal() {
+async function saveGoal(status) {
   const name = document.getElementById('goalName').value.trim();
   const err = document.getElementById('goalErr');
   const go = document.getElementById('goalGo');
@@ -945,7 +944,7 @@ async function saveGoal() {
   };
   if (editing) {
     body.goal_id = editing;
-    body.status = document.getElementById('goalStatus').value;
+    body.status = status || document.getElementById('goalStatus').value;
   } else {
     body.project_id = PROJECT_ID;
   }
