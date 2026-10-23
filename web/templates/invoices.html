@@ -2,7 +2,7 @@
 {% block title %}Invoices · Hours Tracker{% endblock %}
 {% block nav_invoices %}active{% endblock %}
 {% block content %}
-{% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% endset %}
+{% set qsp %}{% for id in sel_ids %}&project={{ id }}{% endfor %}{% for n in partner_selected %}&partner={{ n|urlencode }}{% endfor %}{% endset %}
 
 <div class="week-head">
   <div>
@@ -15,10 +15,11 @@
   </div>
   <div class="invhead">
     <form method="get" action="/invoices" class="range-form">
+      {% for st in status_sel %}<input type="hidden" name="status" value="{{ st }}">{% endfor %}
       {% with selected = sel_ids, psel = partner_selected %}{% include "_project_filter.html" %}{% endwith %}
       <button type="submit" class="btn">Apply</button>
     </form>
-    {% if enabled %}
+    {% if enabled and is_admin %}
     {# Starting an invoice used to mean knowing to go to By project, pick one
        project and a month, and find the Invoice button — a path only visible
        in this page's empty state, so it vanished as soon as there was a first
@@ -48,16 +49,31 @@
 </div>
 {% endif %}
 
+{# Where every bill stands. Each chip is a filter; counts are taken before the
+   pick, so a chip says what it would show. The accountant's chips start at
+   Approved — a draft isn't theirs until an admin approves it. #}
+<div class="chips invstages" role="group" aria-label="Filter by status">
+  <a class="chip {{ 'chip-on' if not status_sel }}" href="/invoices?{{ qsp[1:] }}">All</a>
+  {% for st in stages %}
+  <a class="chip stage-{{ st|lower }} {{ 'chip-on' if st in status_sel }}"
+     href="/invoices?status={{ st }}{{ qsp }}">{{ 'Ready for accountant' if st == 'Approved' else st }}
+    <b>{{ stage_counts[st] }}</b></a>
+  {% endfor %}
+</div>
+
 <div class="card wide">
   <table class="grid flat">
     <thead>
       <tr>
         <th class="left">Project</th>
         <th class="left">Month</th>
+        <th class="left">Status</th>
         <th>Tracked</th>
         <th>Billed</th>
         <th>Difference</th>
+        <th>Total</th>
         <th class="left">Issued</th>
+        <th class="left">Due / paid</th>
         <th class="left">Saved by</th>
         <th class="left">Note</th>
         <th></th>
@@ -73,13 +89,20 @@
            the live report, which shows what was logged instead #}
         <td class="left"><a href="/invoices/{{ r.id }}">{{ r.project }}</a></td>
         <td class="left nowrap"><a class="plain" href="/invoices/{{ r.id }}">{{ r.month_label }}</a></td>
+        <td class="left nowrap"><span class="chip stage-{{ r.stage|lower }}">{{ 'Ready' if r.stage == 'Approved' else r.stage }}</span></td>
         <td class="tracked">{{ '%g'|format(r.hours_tracked) }}</td>
         <td><strong>{{ '%g'|format(r.hours_billed) }}</strong></td>
         <td>
           {%- if diff %}<span class="chip {{ 'chip-over' if diff > 0 else 'chip-under' }}">
             {{ '+' if diff > 0 }}{{ '%g'|format(diff) }}</span>{% else %}<span class="subtle">—</span>{% endif %}
         </td>
+        <td class="nowrap">{{ r.money or '—' }}</td>
         <td class="left nowrap">{{ r.issued or '—' }}</td>
+        <td class="left nowrap">
+          {%- if r.paid_on %}paid {{ r.paid_on }}
+          {%- elif r.due and r.status == 'Sent' %}due {{ r.due }}
+          {%- else %}<span class="subtle">—</span>{% endif %}
+        </td>
         <td class="left">{{ r.saved_by or '—' }}</td>
         <td class="left desc">
           {{ r.note }}
@@ -95,8 +118,9 @@
         <td class="nowrap"><a class="btn btn-sm" href="/invoices/{{ r.id }}">Details →</a></td>
       </tr>
       {% else %}
-      <tr class="empty"><td colspan="9">
-        {% if enabled %}No invoices yet — pick a project and a month above, then
+      <tr class="empty"><td colspan="12">
+        {% if status_sel %}Nothing in that status.{% elif not is_admin %}Nothing approved for
+        you yet — an invoice shows up here once an admin approves it.{% elif enabled %}No invoices yet — pick a project and a month above, then
         set the hours to bill.{% else %}No invoices yet.{% endif %}
       </td></tr>
       {% endfor %}

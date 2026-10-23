@@ -2,7 +2,8 @@
 
 The People database is both the roster every page shows and the access list
 (`access_ids`): an **Active** row may sign in, **Admin** adds the team-wide
-reports and admin pages, **Approves absences** adds the absence queue. Until
+reports and admin pages, **Approves absences** adds the absence queue,
+**Accountant** adds approved invoices to send and mark paid (`docs/invoices.md`). Until
 this page, the only ways to change it were `src/setup_people_db.py` and
 hand-editing Notion. `/people` (admins only, under **Admin ▾** and in the
 phone's More sheet) does it in the app.
@@ -13,7 +14,7 @@ phone's More sheet) does it in the app.
   first then by name). `list_people` and `access_ids` only ever read Active
   rows; this page has to see the inactive ones because reactivating someone is
   half the reason to open it.
-- **Three toggles per row** — Active, Admin, Approves absences — that autosave
+- **Four toggles per row** — Active, Admin, Approves absences, Accountant — that autosave
   like `/assignments`' checkboxes (`POST /api/people/flag`) and snap back with
   the server's reason if the save fails. Unticking your **own** Active or Admin
   asks first (`zConfirm`), since it ends your access.

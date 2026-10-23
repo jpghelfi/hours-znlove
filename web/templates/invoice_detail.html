@@ -26,9 +26,55 @@
   </div>
   <div class="weeknav">
     <a class="btn" href="/invoices">← All invoices</a>
+    {% if is_admin %}
     <a class="btn" href="/project?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">The report</a>
+    {% if can_edit %}
     <a class="btn btn-primary" href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
+    {% endif %}
+    {% endif %}
   </div>
+</div>
+
+{# Where the bill is: Draft → Approved → Sent → Paid. An admin prepares and
+   approves; from Approved on it's the accountant's, who marks it sent and
+   then paid. Only the moves this viewer may make are drawn as buttons — the
+   endpoint checks each one again. #}
+{% set steps = ['Draft', 'Approved', 'Sent', 'Paid'] %}
+<div class="card wide invstatus">
+  <div class="invsteps" aria-label="Invoice status">
+    {% if invoice.status == 'Void' %}
+    <span class="invstep is-void is-on">Void</span>
+    {% else %}
+    {% set at = steps.index(invoice.status) %}
+    {% for st in steps %}
+    <span class="invstep {{ 'is-done' if loop.index0 < at }} {{ 'is-on' if loop.index0 == at }}">
+      {{- 'Approved for the accountant' if st == 'Approved' and loop.index0 == at else st -}}
+    </span>
+    {% endfor %}
+    {% endif %}
+    {% if stage == 'Overdue' %}<span class="chip chip-over">Overdue</span>{% endif %}
+  </div>
+  <div class="subtle invfacts">
+    {%- if invoice.sent_at %}Sent {{ invoice.sent_at[:10] }}{% if invoice.sent_to %} to {{ invoice.sent_to }}{% endif %}{% endif %}
+    {%- if invoice.due and invoice.status in ('Sent', 'Paid') %} · due {{ invoice.due }}{% endif %}
+    {%- if invoice.paid_on %} · paid {{ invoice.paid_on }}{% if invoice.payment_ref %} ({{ invoice.payment_ref }}){% endif %}{% endif %}
+    {%- if invoice.status == 'Draft' %}Not yet approved — the accountant can't see it until an admin approves it.{% endif %}
+    {%- if invoice.status == 'Approved' %}Waiting for the accountant to send it.{% endif %}
+  </div>
+  {% if moves %}
+  <div class="sendbox-btns invmoves">
+    {% for m in moves %}
+    <button type="button" class="btn {{ 'btn-primary' if m.kind == 'primary' }} {{ 'danger' if m.kind == 'danger' }}"
+            data-to="{{ m.to }}" onclick="moveInvoice(this)">{{ m.label }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if invoice.history %}
+  <details class="invhistory">
+    <summary>History · {{ invoice.history|length }}</summary>
+    <ol>{% for h in invoice.history|reverse %}<li>{{ h }}</li>{% endfor %}</ol>
+  </details>
+  {% endif %}
 </div>
 
 {# The bill: what the PDF says and what the email lists. Not the log — the
@@ -37,22 +83,31 @@
    is built, so the download and the send show exactly what's on screen. #}
 <div class="card wide sendbox">
   <label class="sendbox-msg billlines">What the bill is for <span class="lbl-hint">· one line per row</span>
-    <textarea id="lines" rows="3" placeholder="Website maintenance&#10;Landing page build">{{ doc.lines|join('\n') }}</textarea>
+    <textarea id="lines" rows="3" placeholder="Website maintenance&#10;Landing page build"
+              {{ 'readonly' if not can_edit }}>{{ doc.lines|join('\n') }}</textarea>
   </label>
   <div class="sendbox-grid billnums">
     <label>Total hours
-      <input type="number" id="hours" step="0.25" min="0" max="10000" value="{{ '%g'|format(doc.hours_billed) }}">
+      <input type="number" id="hours" step="0.25" min="0" max="10000" value="{{ '%g'|format(doc.hours_billed) }}"
+             {{ 'readonly' if not can_edit }}>
     </label>
     <label>Amount <span class="lbl-hint">· {{ currency }}{% if tax.tax_pct %}, before {{ tax.tax_label }}{% endif %}</span>
-      <input type="number" id="amount" step="0.01" min="0" value="{{ '%.2f'|format(doc.amount) }}">
+      <input type="number" id="amount" step="0.01" min="0" value="{{ '%.2f'|format(doc.amount) }}"
+             {{ 'readonly' if not can_edit }}>
     </label>
   </div>
   <div class="subtle billtotal" id="billtotal"></div>
+  {% if is_admin and not can_edit %}
+  <div class="subtle">This invoice is {{ invoice.status|lower }}, so what it bills is fixed.
+    {%- if invoice.status in ('Sent', 'Paid') %} Undo the send to change it.{% endif %}</div>
+  {% elif is_admin and invoice.status == 'Approved' %}
+  <div class="subtle">Approved. Changing the lines, hours or amount sends it back to Draft.</div>
+  {% endif %}
   {# The To/Subject/Send controls exist only once a transport is configured and
      the invoice switch is on — an inert field and a dead Send button are worse
      than no email UI at all. Same rule as the export screen, different switch:
      this one mails a bill to a client. #}
-  {% if mail_ready %}
+  {% if mail_ready and can_send %}
   <div class="sendbox-grid">
     <label>To
       <input type="text" id="to" value="{{ recipients }}" autocomplete="off"
@@ -79,7 +134,7 @@
       The PDF and the email carry the lines and totals above — not the entries.
       Excel and Sheets carry the {{ sheet_rows|length }} billed line{{ '' if sheet_rows|length == 1 else 's' }}
       ({{ '%g'|format(now_billed) }} h as invoiced, without the lines billed at nothing).
-      {%- if mail_ready %}<br>Sends the PDF from {{ sender or 'your Google account' }}
+      {%- if mail_ready and can_send %}<br>Sends the PDF from {{ sender or 'your Google account' }}
         {%- if mail_cc %} · copy to {{ mail_cc|join(', ') }}{% endif %}{% endif %}
     </div>
     <div class="sendbox-btns">
@@ -87,7 +142,7 @@
       <a class="btn" href="/invoices/{{ invoice.id }}.xlsx">⬇ Download Excel</a>
       <button type="button" class="btn {{ '' if mail_ready else 'btn-primary' }}"
               id="pdfbtn" onclick="downloadPdf()">⬇ Download PDF</button>
-      {% if mail_ready %}
+      {% if mail_ready and can_send %}
       <button type="button" class="btn btn-primary" id="sendbtn" onclick="sendInvoice()">✉ Send to client</button>
       {% endif %}
     </div>
@@ -103,9 +158,9 @@
    probably not the one you meant to mail a client #}
 <div class="notebar">
   <strong>No rate on this invoice.</strong> The PDF will show hours without money.
-  Set <em>Rate</em> on {{ invoice.project }} in Notion, then
+  {% if can_edit %}Set <em>Rate</em> on {{ invoice.project }} in Notion, then
   <a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">re-invoice</a>
-  to price it.
+  to price it.{% endif %}
 </div>
 {% endif %}
 
@@ -118,8 +173,8 @@
   {{ '%g'|format(invoice.hours_tracked) }} h tracked, but which lines were cut wasn't
   recorded then — so the days below show the hours <em>as logged</em>, and they add up to
   the tracked figure rather than the billed one.
-  <a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
-  to record the breakdown.
+  {% if can_edit %}<a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
+  to record the breakdown.{% endif %}
 </div>
 {% endif %}
 
@@ -141,7 +196,7 @@
   <strong>This month has changed since it was invoiced.</strong>
   It was saved against {{ '%g'|format(invoice.hours_tracked) }} h tracked;
   {{ '%g'|format(now_tracked) }} h are logged now, and the days below reflect
-  today's entries. Re-invoice if the bill should follow.
+  today's entries.{% if can_edit %} Re-invoice if the bill should follow.{% endif %}
 </div>
 {% endif %}
 
@@ -311,11 +366,17 @@ async function saveBill() {
   return data;
 }
 
+const CAN_EDIT = {{ can_edit|tojson }};
+
 async function downloadPdf() {
+  if (!CAN_EDIT) { window.location.href = '/invoices/{{ invoice.id }}.pdf'; return; }
   const btn = document.getElementById('pdfbtn');
   btn.disabled = true;
   try {
-    await saveBill();
+    const saved = await saveBill();
+    if (saved.status === 'Draft' && {{ (invoice.status == 'Approved')|tojson }}) {
+      say('Saved — the edit sent this invoice back to Draft. Approve it again when it\'s right.', true);
+    }
     window.location.href = '/invoices/{{ invoice.id }}.pdf';
   } catch (e) {
     say('Not saved: ' + e.message, false);
@@ -323,7 +384,7 @@ async function downloadPdf() {
   btn.disabled = false;
 }
 
-{% if mail_ready %}
+{% if mail_ready and can_send %}
 /* Nothing is queued: the send either completes while this request is open or
    it says why not, in Google's own words. The lines / hours / amount ride
    along and are saved before the PDF is built. */
@@ -354,6 +415,8 @@ async function sendInvoice() {
       say('Sent ' + data.filename + ' to ' + data.to.join(', ')
           + (data.cc && data.cc.length ? ' (cc ' + data.cc.join(', ') + ')' : '') + '.', true);
       btn.textContent = 'Send again';
+      // the status bar moved to Sent with a due date — show it
+      setTimeout(() => window.location.reload(), 1500);
     } else {
       say('Not sent: ' + (data.error || 'unknown error'), false);
       btn.textContent = original;
@@ -365,6 +428,71 @@ async function sendInvoice() {
   btn.disabled = false;
 }
 {% endif %}
+
+/* ---- the lifecycle ------------------------------------------------------
+   One dialog for every move: Sent asks when and when it's due, Paid asks when
+   and the payment reference, everything else just takes an optional note. */
+function moveDialog(to) {
+  const dlg = document.getElementById('moveDlg');
+  dlg.querySelectorAll('[data-for]').forEach(el => {
+    el.hidden = el.dataset.for !== to;
+  });
+  document.getElementById('moveDlgTitle').textContent = {
+    Approved: 'Approve this invoice for the accountant?', Sent: 'Mark this invoice as sent?',
+    Paid: 'Mark this invoice as paid?', Draft: 'Move this invoice back to Draft?',
+    Void: 'Void this invoice?'
+  }[to] || 'Change the status?';
+  document.getElementById('moveNote').value = '';
+  const ok = document.getElementById('moveOk');
+  ok.className = 'btn ' + (to === 'Void' ? 'danger' : 'btn-primary');
+  return new Promise(function (resolve) {
+    function settle(answer) {
+      if (settle.done) return;
+      settle.done = true;
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      dlg.removeEventListener('cancel', onCancel);
+      if (dlg.open) dlg.close();
+      resolve(answer);
+    }
+    function onOk() {
+      settle({
+        sent_on: document.getElementById('moveSentOn').value,
+        due: document.getElementById('moveDue').value,
+        sent_to: document.getElementById('moveSentTo').value,
+        paid_on: document.getElementById('movePaidOn').value,
+        payment_ref: document.getElementById('moveRef').value,
+        note: document.getElementById('moveNote').value
+      });
+    }
+    function onCancel() { settle(null); }
+    const cancel = document.getElementById('moveCancel');
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    dlg.addEventListener('cancel', onCancel);
+    dlg.showModal();
+  });
+}
+
+async function moveInvoice(btn) {
+  const to = btn.dataset.to;
+  const fields = await moveDialog(to);
+  if (!fields) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/invoice/status', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({invoice_id: {{ invoice.id|tojson }}, status: to}, fields))
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (data.ok) { window.location.reload(); return; }
+    zAlert(data.error || 'unknown error', {title: 'Not changed'});
+  } catch (e) {
+    zAlert('Network error — nothing was changed.', {title: 'Not changed'});
+  }
+  btn.disabled = false;
+}
 
 function copyToSheets() {
   if (!SHEET_ROWS.length) { say('Nothing to copy — no line on this invoice was billed.', false); return; }
@@ -378,4 +506,30 @@ function copyToSheets() {
       : ' — your browser blocked the new tab, open sheets.new and paste'), true);
 }
 </script>
+{% endblock %}
+
+{% block modals %}
+{% if moves %}
+<dialog class="zdlg" id="moveDlg" aria-labelledby="moveDlgTitle">
+  <h2 class="zdlg-title" id="moveDlgTitle">Change the status?</h2>
+  <div class="movefields" data-for="Sent" hidden>
+    <label>Sent on <input type="date" id="moveSentOn" value="{{ today_iso }}"></label>
+    <label>Due <input type="date" id="moveDue" value="{{ default_due }}"></label>
+    <label><span>Sent to <span class="subtle">— optional</span></span>
+      <input type="text" id="moveSentTo" value="{{ invoice.sent_to or recipients }}" autocomplete="off"></label>
+  </div>
+  <div class="movefields" data-for="Paid" hidden>
+    <label>Paid on <input type="date" id="movePaidOn" value="{{ today_iso }}"></label>
+    <label><span>Payment reference <span class="subtle">— optional</span></span>
+      <input type="text" id="moveRef" maxlength="200" placeholder="e.g. transfer 88213"></label>
+  </div>
+  <label class="decline-note"><span>Note <span class="subtle">— optional, kept in the history</span></span>
+    <textarea id="moveNote" rows="2" maxlength="300"></textarea>
+  </label>
+  <div class="zdlg-actions">
+    <button type="button" class="btn" id="moveCancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="moveOk">Confirm</button>
+  </div>
+</dialog>
+{% endif %}
 {% endblock %}

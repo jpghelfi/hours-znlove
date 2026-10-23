@@ -69,6 +69,10 @@
           <a href="/people" class="{{ nav.people }}"><b>People</b><small>who may sign in · admins · approvers</small></a>
         </div>
       </details>
+      {% elif user and is_accountant(user) %}
+      {# the accountant isn't an admin, so the Admin menu never shows — but
+         invoices are the one page that's theirs #}
+      <a href="/invoices" class="{{ nav.invoices }}">Invoices</a>
       {% endif %}
     </nav>
     {% endif %}
@@ -127,6 +131,10 @@
       <a href="/projects/roles" class="{{ nav.roles }}">Project owners</a>
       <a href="/plan" class="{{ nav.plan }}">Plan</a>
       <a href="/people" class="{{ nav.people }}">People</a>
+    </div>
+    {% elif user and is_accountant(user) %}
+    <div class="sheet-group"><div class="sheet-title">Billing</div>
+      <a href="/invoices" class="{{ nav.invoices }}">Invoices</a>
     </div>
     {% endif %}
     <button type="button" class="btn sheet-close" onclick="document.getElementById('moreSheet').close()">Close</button>
