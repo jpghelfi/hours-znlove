@@ -90,6 +90,16 @@ def _():
     assert ops.alloc_title_prop() == "Allocations"   # next call reads again
 
 
+@check("a failed read after the TTL keeps the last names that worked")
+def _():
+    reset()
+    stub_schema(SCHEMA)
+    assert ops.alloc_title_prop() == "Allocations"
+    ops._alloc_person_cache["at"] = -1e9              # expire it
+    stub_schema(fail=True)
+    assert ops.alloc_title_prop() == "Allocations"    # not the 'Allocation' default
+
+
 if __name__ == "__main__":
     print(f"\n{len(_FAILS)} failed\n" if _FAILS else "\nall passed\n")
     for f in _FAILS:
