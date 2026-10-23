@@ -231,6 +231,7 @@ Underneath, `ops.set_allocation_range` walks the weekdays of the range and does 
 ## Notion notes
 
 - Allocation rows live in the Allocations data source; the date property is still called **`Week`** for historical reasons, but it now holds an exact day.
+- **The people and title columns are resolved from the schema, not by name** (`_alloc_prop_names` → `alloc_person_prop` / `alloc_title_prop`, cached ~5 min). The title was renamed `Allocation` → `Allocations` in Notion on 2026-10-23 and every *new* booking (assign, paste, copy week, a drag onto an empty day) failed with "could not save allocation" while edits and deletes kept working, because only a create writes the title. `/api/allocation` now logs the underlying error instead of swallowing it.
 - Rows written before this rebuild sit on a Monday with the whole week's hours. They are left alone: they render as hours on that Monday until someone re-plans that week.
 - **People properties come back without names** — Notion returns `{"object": "user", "id": …}`. Any name shown to a user has to be resolved against the roster (`_person_name_map`, or the `people` list a route already loaded). This also fixed the Reports forecast, which used to label every planned row "(unassigned)".
 - `ops.planned_rows` still buckets allocations to their Monday, so Reports' planned-vs-actual totals are unchanged whether a week was planned as one legacy row or five day rows.
