@@ -836,7 +836,11 @@ def _alloc_prop_names() -> dict:
         # a database has exactly one title property, so this can't be ambiguous
         title = next((k for k, v in props.items() if v.get("type") == "title"), title)
     except Exception:
-        logging.exception("Could not read the Allocations schema; assuming 'Person'.")
+        # Not cached: a guess pinned for the TTL would fail every new booking
+        # for five minutes after one Notion blip, if a column has been renamed.
+        logging.exception("Could not read the Allocations schema; assuming "
+                          "'Person' and 'Allocation'.")
+        return {"name": name, "title": title}
     with _alloc_person_lock:
         _alloc_person_cache.update(at=now, name=name, title=title)
     return {"name": name, "title": title}
