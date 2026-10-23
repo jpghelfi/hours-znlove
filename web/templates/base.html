@@ -21,6 +21,7 @@
 {% block nav_schedule %}{% endblock %}{% block nav_reports %}{% endblock %}{% block nav_project %}{% endblock %}
 {% block nav_budgets %}{% endblock %}{% block nav_assignments %}{% endblock %}{% block nav_invoices %}{% endblock %}
 {% block nav_plan %}{% endblock %}{% block nav_roles %}{% endblock %}{% block nav_people %}{% endblock %}
+{% block nav_tools %}{% endblock %}
 {%- endset -%}
 {#- Which page is on: each page overrides one nav_* block with "active".
     Rendering them here once gives the grouped menus and the phone tab bar a
@@ -32,9 +33,9 @@
   'budgets': self.nav_budgets()|trim, 'assignments': self.nav_assignments()|trim,
   'invoices': self.nav_invoices()|trim, 'plan': self.nav_plan()|trim,
   'roles': self.nav_roles()|trim,
-  'people': self.nav_people()|trim } -%}
+  'people': self.nav_people()|trim, 'tools': self.nav_tools()|trim } -%}
 {%- set on_reports = nav.reports or nav.project or nav.budgets -%}
-{%- set on_admin = nav.assignments or nav.roles or nav.invoices or nav.plan or nav.people -%}
+{%- set on_admin = nav.assignments or nav.roles or nav.invoices or nav.plan or nav.people or nav.tools -%}
   <header class="topbar">
     {# The public plan page (/p/<token>) wears the shell without the menu: a
        link holder isn't a user, and nothing on that page may lead into the app. #}
@@ -67,6 +68,7 @@
           <a href="/projects/roles" class="{{ nav.roles }}"><b>Project owners</b><small>PM and account manager per project</small></a>
           <a href="/plan" class="{{ nav.plan }}"><b>Plan</b><small>a project's week or month · timeline · share link</small></a>
           <a href="/people" class="{{ nav.people }}"><b>People</b><small>who may sign in · admins · approvers</small></a>
+          <a href="/tools" class="{{ nav.tools }}"><b>Tools</b><small>software catalog · who has what</small></a>
         </div>
       </details>
       {% endif %}
@@ -83,6 +85,7 @@
       <div class="menu-list menu-end">
         <div class="menu-who"><b>{{ user.name }}</b>{% if user.email %}<small>{{ user.email }}</small>{% endif %}</div>
         <button type="button" id="themeBtn" onclick="toggleTheme()"><span class="theme-ico">🌙</span> <span class="theme-lbl">Dark mode</span></button>
+        {% if not is_admin %}<a href="/tools" class="{{ nav.tools }}">My tools</a>{% endif %}
         <form method="post" action="/logout" class="logout-form"><button type="submit">Log out</button></form>
       </div>
     </details>
@@ -114,6 +117,7 @@
     </div>
     <div class="sheet-group"><div class="sheet-title">Plan</div>
       <a href="/schedule" class="{{ nav.schedule }}">Schedule</a>
+      <a href="/tools" class="{{ nav.tools }}">Tools</a>
     </div>
     {% if is_admin %}
     <div class="sheet-group"><div class="sheet-title">Reports</div>

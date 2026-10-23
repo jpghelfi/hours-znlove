@@ -3989,3 +3989,158 @@ def project_by_share_token(token: str) -> dict | None:
         _share_cache.clear()
     _share_cache[token] = (now, found)
     return found
+
+
+# ---- tools catalog -------------------------------------------------------
+#
+# Which software the team uses (Slack, Google account, Claude…) and who has
+# each. One row per tool in the Tools db (src/setup_tools_db.py); its holders
+# are the row's `People` property — the shape a project's members already
+# have — so the whole catalog, assignments included, is one query.
+
+TOOLS_DS = _ids.get("tools_ds_id")   # optional: unset until set up
+
+TOOL_TEXT_FIELDS = {"category": "Category", "notes": "Notes"}
+MAX_TOOL_TEXT = 2000   # one Notion rich-text object holds 2000 characters
+
+
+def tools_enabled() -> bool:
+    return bool(TOOLS_DS)
+
+
+def _tool_from_page(page: dict) -> dict:
+    """A Tools row as the app uses it. Every read goes through .get(), so a
+    column renamed in Notion reads as empty instead of 500ing (the
+    alloc_person_prop lesson)."""
+    props = page.get("properties") or {}
+    return {
+        "id": page["id"],
+        "name": _rt_text(props.get("Tool", {}).get("title")) or "(untitled)",
+        "category": _plain(props, "Category"),
+        "url": (props.get("URL", {}).get("url") or "").strip(),
+        "notes": _plain(props, "Notes"),
+        "user_ids": [p["id"] for p in props.get("People", {}).get("people", [])],
+        "active": bool(props.get("Active", {}).get("checkbox", True)),
+    }
+
+
+def list_tools() -> list[dict]:
+    """Every tool, active first, then by category (uncategorised last) and name."""
+    if not TOOLS_DS:
+        return []
+    tools = [_tool_from_page(p) for p in _query_all({"data_source_id": TOOLS_DS, "page_size": 100})]
+    tools.sort(key=lambda t: (not t["active"], not t["category"], t["category"].lower(), t["name"].lower()))
+    return tools
+
+
+def _tool_page(tool_id: str) -> dict:
+    """Retrieve a page and refuse it unless it's a Tools row (ids come from
+    the browser)."""
+    if not TOOLS_DS:
+        raise ValueError("the Tools database isn't configured")
+    page = _notion.pages.retrieve(tool_id)
+    if _bare((page.get("parent") or {}).get("data_source_id")) != _bare(TOOLS_DS):
+        raise ValueError("not a Tools row")
+    return page
+
+
+def _tool_name(name: str) -> str:
+    name = " ".join((name or "").split())
+    if not name:
+        raise ValueError("a tool needs a name")
+    if len(name) > MAX_PERSON_NAME:
+        raise ValueError(f"keep the name under {MAX_PERSON_NAME} characters")
+    return name
+
+
+def _tool_text(text: str) -> str:
+    text = (text or "").strip()
+    if len(text) > MAX_TOOL_TEXT:
+        raise ValueError(f"keep it under {MAX_TOOL_TEXT} characters")
+    return text
+
+
+def _tool_url(url: str) -> str:
+    """A bare `slack.com` gains its scheme, so the catalog's link opens."""
+    url = _tool_text(url)
+    if url and not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+    return url
+
+
+def _text_prop(text: str) -> list:
+    return [{"type": "text", "text": {"content": text}}] if text else []
+
+
+def create_tool(name: str, category: str = "", url: str = "", notes: str = "") -> dict:
+    """Add a tool to the catalog. Refuses a second active tool of the same
+    name (case/punctuation-blind, _norm) — two "Slack" rows would split its
+    holders across both."""
+    if not TOOLS_DS:
+        raise ValueError("the Tools database isn't configured")
+    name, category, notes, url = _tool_name(name), _tool_text(category), _tool_text(notes), _tool_url(url)
+    with _write_lock:
+        dup = next((t for t in list_tools() if t["active"] and _norm(t["name"]) == _norm(name)), None)
+        if dup:
+            raise ValueError(f"{dup['name']} is already in the catalog")
+        page = _notion.pages.create(
+            parent={"type": "data_source_id", "data_source_id": TOOLS_DS},
+            properties={
+                "Tool": {"title": _text_prop(name)},
+                "Category": {"rich_text": _text_prop(category)},
+                "URL": {"url": url or None},
+                "Notes": {"rich_text": _text_prop(notes)},
+                "Active": {"checkbox": True},
+            },
+        )
+    return {"ok": True, "tool": _tool_from_page(page)}
+
+
+def update_tool(tool_id: str, field: str, value) -> dict:
+    """Change one field of a tool: name, category, url, notes or active
+    (unticking Active retires it — the row and its holders stay on record)."""
+    if field == "name":
+        value = _tool_name(value)
+        prop = {"Tool": {"title": _text_prop(value)}}
+    elif field in TOOL_TEXT_FIELDS:
+        value = _tool_text(value)
+        prop = {TOOL_TEXT_FIELDS[field]: {"rich_text": _text_prop(value)}}
+    elif field == "url":
+        value = _tool_url(value)
+        prop = {"URL": {"url": value or None}}
+    elif field == "active":
+        value = bool(value)
+        prop = {"Active": {"checkbox": value}}
+    else:
+        raise ValueError(f"unknown field {field!r}")
+    _tool_page(tool_id)
+    _notion.pages.update(tool_id, properties=prop)
+    return {"ok": True, "field": field, "value": value}
+
+
+def toggle_holders(current: list, user_id: str, on: bool) -> list:
+    """The People array after giving (on) or taking (off) a tool — pure, so
+    it's tested without Notion. Ids compare dash/case-blind; order is kept."""
+    kept = [i for i in current if _bare(i) != _bare(user_id)]
+    return kept + [user_id] if on else kept
+
+
+def assign_tool(tool_id: str, user_id: str, on: bool) -> dict:
+    """Give or take one tool for one person.
+
+    Notion can only replace a people property whole, so this is
+    read-modify-write under _write_lock — two quick clicks in the matrix would
+    otherwise each write back a list missing the other's change. Giving a tool
+    requires someone on the roster (the id comes from the browser); taking one
+    away doesn't, so a former member can still be cleaned off.
+    """
+    if on and not any(_bare(p["id"]) == _bare(user_id) for p in list_people()):
+        raise ValueError("that person isn't on the roster")
+    with _write_lock:
+        page = _tool_page(tool_id)
+        current = [p["id"] for p in page["properties"].get("People", {}).get("people", [])]
+        holders = toggle_holders(current, user_id, on)
+        if holders != current:
+            _notion.pages.update(tool_id, properties={
+                "People": {"people": [{"object": "user", "id": i} for i in holders]}})
+    return {"ok": True, "on": bool(on), "count": len(holders)}

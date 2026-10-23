@@ -14,7 +14,7 @@ import math
 import os
 import secrets
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Query, Request
@@ -2836,6 +2836,106 @@ def api_people_add(request: Request, a: PersonAdd):
     except Exception:
         logging.exception("Adding %s to the People db failed", a.user_id)
         return JSONResponse({"ok": False, "error": "could not add"}, status_code=400)
+
+
+# ---- the tools catalog (/tools) ------------------------------------------
+
+@app.get("/tools", response_class=HTMLResponse)
+def tools_page(request: Request, view: str = "catalog"):
+    """The software the team uses and who has each — readable by everyone
+    (so anyone can look up what they've been given), editable by admins."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    is_admin = auth.is_admin(user)
+    tools = ops.list_tools()
+    people = ops.list_people()
+    names = {_bare_id(p["id"]): p["name"] for p in people}
+    me = _bare_id(user.get("id"))
+    for t in tools:
+        held = {_bare_id(i) for i in t["user_ids"]}
+        t["held"] = held
+        # holders sorted by name; someone off the roster is still named, greyed
+        t["holders"] = sorted(
+            ({"id": i, "name": names.get(_bare_id(i)), "former": _bare_id(i) not in names}
+             for i in t["user_ids"]),
+            key=lambda h: (h["former"], (h["name"] or "").lower()))
+        t["mine"] = me in held
+    active = [t for t in tools if t["active"]]
+    return templates.TemplateResponse(request, "tools.html", {
+        "user": user,
+        "is_admin": is_admin,
+        "configured": ops.tools_enabled(),
+        "view": "people" if view == "people" else "catalog",
+        "tools": active,
+        "retired": [t for t in tools if not t["active"]],
+        "mine": [t for t in active if t["mine"]],
+        "people": [{**p, "bare": _bare_id(p["id"]),
+                    "tool_count": sum(_bare_id(p["id"]) in t["held"] for t in active)}
+                   for p in people],
+        "categories": sorted({t["category"] for t in tools if t["category"]}, key=str.lower),
+    })
+
+
+class ToolNew(BaseModel):
+    name: str
+    category: str = ""
+    url: str = ""
+    notes: str = ""
+
+
+@app.post("/api/tools/create")
+def api_tools_create(request: Request, t: ToolNew):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.create_tool(t.name, t.category, t.url, t.notes))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Creating tool %r failed", t.name)
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
+
+
+class ToolField(BaseModel):
+    tool_id: str
+    field: str        # "name" | "category" | "url" | "notes" | "active"
+    value: Union[str, bool]
+
+
+@app.post("/api/tools/update")
+def api_tools_update(request: Request, f: ToolField):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.update_tool(f.tool_id, f.field, f.value))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Saving %s on tool %s failed", f.field, f.tool_id)
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
+
+
+class ToolAssign(BaseModel):
+    tool_id: str
+    user_id: str
+    on: bool
+
+
+@app.post("/api/tools/assign")
+def api_tools_assign(request: Request, a: ToolAssign):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.assign_tool(a.tool_id, a.user_id, a.on))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Assigning tool %s to %s failed", a.tool_id, a.user_id)
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
 
 
 class Alloc(BaseModel):
