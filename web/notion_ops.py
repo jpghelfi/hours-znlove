@@ -4013,11 +4013,14 @@ def _tool_from_page(page: dict) -> dict:
     column renamed in Notion reads as empty instead of 500ing (the
     alloc_person_prop lesson)."""
     props = page.get("properties") or {}
+    url = (props.get("URL", {}).get("url") or "").strip()
     return {
         "id": page["id"],
         "name": _rt_text(props.get("Tool", {}).get("title")) or "(untitled)",
         "category": _plain(props, "Category"),
-        "url": (props.get("URL", {}).get("url") or "").strip(),
+        # the app only writes http(s), but Notion itself takes any scheme —
+        # a javascript: link typed there must not become a clickable href
+        "url": url if re.match(r"^https?://", url, re.I) else "",
         "notes": _plain(props, "Notes"),
         "user_ids": [p["id"] for p in props.get("People", {}).get("people", [])],
         "active": bool(props.get("Active", {}).get("checkbox", True)),
@@ -4079,21 +4082,28 @@ def create_tool(name: str, category: str = "", url: str = "", notes: str = "") -
     if not TOOLS_DS:
         raise ValueError("the Tools database isn't configured")
     name, category, notes, url = _tool_name(name), _tool_text(category), _tool_text(notes), _tool_url(url)
-    with _write_lock:
-        dup = next((t for t in list_tools() if t["active"] and _norm(t["name"]) == _norm(name)), None)
-        if dup:
-            raise ValueError(f"{dup['name']} is already in the catalog")
-        page = _notion.pages.create(
-            parent={"type": "data_source_id", "data_source_id": TOOLS_DS},
-            properties={
-                "Tool": {"title": _text_prop(name)},
-                "Category": {"rich_text": _text_prop(category)},
-                "URL": {"url": url or None},
-                "Notes": {"rich_text": _text_prop(notes)},
-                "Active": {"checkbox": True},
-            },
-        )
+    # outside _write_lock on purpose: that lock also guards every grid save,
+    # and two admins adding the same tool in the same second is a fair race
+    _refuse_duplicate(name)
+    page = _notion.pages.create(
+        parent={"type": "data_source_id", "data_source_id": TOOLS_DS},
+        properties={
+            "Tool": {"title": _text_prop(name)},
+            "Category": {"rich_text": _text_prop(category)},
+            "URL": {"url": url or None},
+            "Notes": {"rich_text": _text_prop(notes)},
+            "Active": {"checkbox": True},
+        },
+    )
     return {"ok": True, "tool": _tool_from_page(page)}
+
+
+def _refuse_duplicate(name: str, except_id: str = "") -> None:
+    """Refuse a name another active tool already has (case/punctuation-blind)."""
+    dup = next((t for t in list_tools() if t["active"] and _norm(t["name"]) == _norm(name)
+                and _bare(t["id"]) != _bare(except_id)), None)
+    if dup:
+        raise ValueError(f"{dup['name']} is already in the catalog")
 
 
 def update_tool(tool_id: str, field: str, value) -> dict:
@@ -4113,7 +4123,12 @@ def update_tool(tool_id: str, field: str, value) -> dict:
         prop = {"Active": {"checkbox": value}}
     else:
         raise ValueError(f"unknown field {field!r}")
-    _tool_page(tool_id)
+    page = _tool_page(tool_id)
+    # a rename, or restoring a retired tool, mustn't make a second "Slack"
+    if field == "name":
+        _refuse_duplicate(value, except_id=tool_id)
+    elif field == "active" and value:
+        _refuse_duplicate(_tool_from_page(page)["name"], except_id=tool_id)
     _notion.pages.update(tool_id, properties=prop)
     return {"ok": True, "field": field, "value": value}
 

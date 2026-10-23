@@ -191,6 +191,42 @@ def _():
     assert fake.pages.updates == []
 
 
+@check("renaming onto another active tool's name is refused")
+def _():
+    fake = FakeNotion({"t2": tool_page("t2", "Slak")}, rows=[tool_page("t1", "Slack"), tool_page("t2", "Slak")])
+    try:
+        with_fake(fake, lambda: ops.update_tool("t2", "name", "slack"))
+        raise AssertionError("should refuse")
+    except ValueError:
+        pass
+    assert fake.pages.updates == []
+
+
+@check("renaming a tool to its own name (new casing) is fine")
+def _():
+    fake = FakeNotion({"t1": tool_page("t1", "Slack")}, rows=[tool_page("t1", "Slack")])
+    with_fake(fake, lambda: ops.update_tool("t1", "name", "SLACK"))
+    assert len(fake.pages.updates) == 1
+
+
+@check("restoring a retired tool whose name is taken again is refused")
+def _():
+    old = tool_page("t1", "Slack", active=False)
+    fake = FakeNotion({"t1": old}, rows=[old, tool_page("t2", "Slack")])
+    try:
+        with_fake(fake, lambda: ops.update_tool("t1", "active", True))
+        raise AssertionError("should refuse")
+    except ValueError:
+        pass
+    assert fake.pages.updates == []
+
+
+@check("a non-http link set in Notion reads as no link")
+def _():
+    t = ops._tool_from_page({"id": "t1", "properties": {"URL": {"url": "javascript:alert(1)"}}})
+    assert t["url"] == ""
+
+
 @check("retiring writes only Active")
 def _():
     fake = FakeNotion({"t1": tool_page("t1", "Slack")})

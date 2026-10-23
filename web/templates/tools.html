@@ -124,7 +124,7 @@
   <tfoot>
     <tr>
       <th>People</th>
-      {% for t in tools %}<th class="col-flag col-total" data-tool="{{ t.id }}">{{ t.holders|length }}</th>{% endfor %}
+      {% for t in tools %}<th class="col-flag col-total" data-tool="{{ t.id }}">{{ t.holders | rejectattr('former') | list | length }}</th>{% endfor %}
       <th></th>
     </tr>
   </tfoot>
@@ -289,13 +289,14 @@ async function toggleCell(cb) {
   td.classList.remove('saved', 'err'); td.classList.add('saving');
   cb.disabled = true;
   try {
-    const data = await assign(td.dataset.tool, tr.dataset.user, on);
+    await assign(td.dataset.tool, tr.dataset.user, on);
     td.classList.remove('saving'); td.classList.add('saved');
     setTimeout(() => td.classList.remove('saved'), 800);
     const total = tr.querySelector('.row-total');
     total.textContent = String(+total.textContent + (on ? 1 : -1));
     const col = document.querySelector('tfoot [data-tool="' + td.dataset.tool + '"]');
-    if (col) col.textContent = data.count;
+    // counts roster rows only, like the ticks above it (former holders aren't drawn)
+    if (col) col.textContent = String(+col.textContent + (on ? 1 : -1));
   } catch (e) {
     cb.checked = !on;
     td.classList.remove('saving'); td.classList.add('err');
