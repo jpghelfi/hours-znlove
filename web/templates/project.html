@@ -806,6 +806,7 @@ function newGoal() {
   // once there is a goal to close
   document.getElementById('goalStatusWrap').hidden = true;
   document.getElementById('goalDel').hidden = true;
+  document.getElementById('goalArchive').hidden = true;
   document.getElementById('goalDlgTitle').textContent = 'New goal';
   // saveGoal() files whatever is ticked as soon as the goal exists, so the
   // button has to admit to both halves of what it does
@@ -829,6 +830,8 @@ function editGoal(btn) {
   document.getElementById('goalStatus').value = btn.dataset.status || 'Open';
   document.getElementById('goalStatusWrap').hidden = false;
   document.getElementById('goalDel').hidden = false;
+  // a closed goal has nothing to archive; reopening it is the Status select
+  document.getElementById('goalArchive').hidden = btn.dataset.status !== 'Open';
   document.getElementById('goalDlgTitle').textContent = 'Edit goal';
   document.getElementById('goalGo').textContent = 'Save goal';
   // suggestions are for naming a new goal, not for renaming a used one
@@ -838,6 +841,13 @@ function editGoal(btn) {
 }
 
 function closeGoalDlg() { document.getElementById('goalDlg').close(); }
+
+// Archive is Status: Done in one click — the goal leaves the picker and every
+// period it has no hours in, and keeps its rows where it does
+function archiveGoal() {
+  document.getElementById('goalStatus').value = 'Done';
+  saveGoal();
+}
 
 let elsewhereLoaded = false;
 async function loadElsewhere() {
@@ -1052,6 +1062,8 @@ document.addEventListener('DOMContentLoaded', function () {
     <button type="button" class="btn danger" id="goalDel" hidden onclick="deleteGoal()">Delete</button>
     <span class="pop-spacer"></span>
     <button type="button" class="btn" onclick="closeGoalDlg()">Cancel</button>
+    <button type="button" class="btn" id="goalArchive" hidden onclick="archiveGoal()"
+            title="Mark Done: hidden from now on, kept in past periods">Archive</button>
     <button type="button" class="primary" id="goalGo" onclick="saveGoal()">Create goal</button>
   </div>
 </dialog>
