@@ -337,13 +337,13 @@ def _():
         assert auth.is_approver({"id": "u2"}) and not auth.is_admin({"id": "u2"})
 
 
-@check("access_ids returns three sets even with no People db")
+@check("access_ids returns four sets even with no People db")
 def _():
     old = ops.PEOPLE_DS
     ops.PEOPLE_DS = None
     try:
         ids = ops.access_ids()
-        assert set(ids) == {"allowed", "admins", "approvers"}
+        assert set(ids) == {"allowed", "admins", "approvers", "accountants"}
         assert all(v == set() for v in ids.values())
     finally:
         ops.PEOPLE_DS = old

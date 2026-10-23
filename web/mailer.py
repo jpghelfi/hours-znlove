@@ -279,9 +279,28 @@ def send_report(to: list[str], subject: str, body: str,
 # The body-only senders, each with its own switch. Keyed so send_plain can name
 # the right variable when it refuses — "set BUDGET_ALERTS_ENABLED=1" is useless
 # advice to someone waiting on an absence email.
+def invoice_status_email_enabled() -> bool:
+    """Whether the accountant is emailed when an invoice is approved
+    (INVOICE_STATUS_EMAIL_ENABLED). Internal, unlike INVOICE_EMAIL_ENABLED —
+    which mails clients — so the two never arm each other."""
+    return os.environ.get("INVOICE_STATUS_EMAIL_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def invoice_status_transport() -> str:
+    return _transport_for(invoice_status_email_enabled())
+
+
+def accountant_recipients() -> list[str]:
+    """Who hears that an invoice is ready to send (INVOICE_ACCOUNTANT_TO)."""
+    return _split(os.environ.get("INVOICE_ACCOUNTANT_TO", ""))
+
+
 _PLAIN_CHANNELS = {
     "budget": ("BUDGET_ALERTS_ENABLED", budget_alerts_enabled, budget_transport),
     "absence": ("ABSENCE_EMAIL_ENABLED", absence_email_enabled, absence_transport),
+    "invoice_status": ("INVOICE_STATUS_EMAIL_ENABLED", invoice_status_email_enabled,
+                       invoice_status_transport),
 }
 
 

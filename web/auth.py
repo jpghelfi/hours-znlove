@@ -84,6 +84,26 @@ def is_approver(user: dict | None) -> bool:
     return bool(email) and email.strip().lower() in _approver_emails()
 
 
+def _accountant_emails() -> set[str]:
+    return {e.strip().lower() for e in os.environ.get("ACCOUNTANT_EMAILS", "").split(",")
+            if e.strip()}
+
+
+def is_accountant(user: dict | None) -> bool:
+    """May this person take an approved invoice to sent and paid? The People
+    db's `Accountant` tick; ACCOUNTANT_EMAILS is the fallback. Admins pass too —
+    an admin can do everything the accountant can — so callers ask one
+    question rather than two."""
+    if not user:
+        return False
+    if is_admin(user):
+        return True
+    uid, email = user.get("id"), user.get("email")
+    if uid and uid in ops.access_ids().get("accountants", set()):
+        return True
+    return bool(email) and email.strip().lower() in _accountant_emails()
+
+
 def _cfg(key: str) -> str:
     val = os.environ.get(key)
     if not val:

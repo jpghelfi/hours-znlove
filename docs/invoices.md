@@ -262,12 +262,86 @@ logged rather than failing the request, since the client already has the
 invoice and a 502 would only invite a second send. Nothing is queued or
 retried.
 
+## The lifecycle: approved, sent, paid
+
+An invoice now carries a **Status** that tracks it until the money arrives:
+
+| Status | Means | Who moves it here |
+|---|---|---|
+| **Draft** | saved from the export screen, still being worked on | an admin (every new invoice) |
+| **Approved** | checked and handed to the accountant ("Ready for accountant" on the list) | an admin |
+| **Sent** | the client has it — by ✉ Send to client, or the accountant's own system | the accountant (or an admin) |
+| **Paid** | the money arrived — paid-on date and an optional payment reference | the accountant (or an admin) |
+| **Void** | cancelled; the number stays used, nothing is deleted | an admin |
+
+**Overdue** isn't stored: it's a Sent invoice whose `Due` date has passed,
+derived on read so it can't go stale. `Due` is set when the invoice is marked
+sent — typed in the dialog, defaulting to send date + `INVOICE_DUE_DAYS`
+(30 when that's unset; the PDF's own "Due" line still only prints when it's set).
+
+**The accountant is a People-db checkbox** (`Accountant`, added on boot by
+`ensure_accountant_property`, toggled on `/people`, `auth.is_accountant`,
+`ACCOUNTANT_EMAILS` as the env fallback) — deliberately not Admin, for the reason
+`Approves absences` isn't: they need the bills, not the team's reports.
+`is_accountant` answers yes for admins, so "admins can do everything" is one
+check. An accountant who isn't an admin gets an **Invoices** link in the top bar
+and sees only Approved, Sent and Paid invoices: a draft isn't theirs until an
+admin approves it, and a hand-typed URL to one redirects to the list. Their
+invoice page is read-only — the bill box shows what was approved, the PDF
+downloads as-is, and ✉ Send to client sends exactly that.
+
+**Who may make which move is one table** (`ops.INVOICE_FLOW`) checked by
+`ops.can_move_invoice`, re-checked under the write lock by
+`ops.set_invoice_status` (`POST /api/invoice/status`), and used to draw only the
+buttons a viewer may press. Every forward step has an undo — Back to draft,
+Undo sent, Undo paid, Reopen a void — and undoing clears what the step wrote
+(due date, paid-on, reference). Nothing skips ahead: a draft can't be marked
+paid, a paid invoice can't be voided (undo the payment first).
+
+**Approval locks the content in two stages.** Draft and Approved are editable by
+an admin, but editing an Approved invoice — re-saving it from the export screen
+or changing its lines/hours/amount — sends it **back to Draft**, because the
+approval covered what was approved. Sent, Paid and Void are locked outright
+(`InvoiceLocked`, a 409): the export screen's Save is disabled and says why,
+and the bill box goes read-only. To correct a bill that has gone out, undo the
+send first; the history records that you did.
+
+**History** is one rich-text property, a line per change
+(`2026-10-23 14:05 · Paid 2026-10-20 (wire 88213) · Angie — note`), capped at the
+last 60 lines and shown folded on the invoice page. Notion's own page history
+is still underneath it.
+
+**The list** gets a Status column, a Total (with tax), a Due/paid column and
+filter chips with counts (`?status=`, repeatable, the stage names above plus
+Overdue), counted before the pick so every chip says what it would show.
+
+**Rows filed before the lifecycle** have no Status: one with `Sent at` reads as
+**Sent** (and has no due date, so it never reads overdue), anything else as
+**Draft**. Nothing was backfilled — mark old ones paid from their page. A
+legacy Sent row is therefore locked (re-saving it from the export screen is
+refused until its send is undone) and has no due date, so it never reads
+overdue.
+
+**Emailing never refuses after the fact.** `mark_invoice_sent` runs once Gmail
+has accepted, under the write lock: it moves Draft/Approved to Sent (an admin
+emailing a draft is recorded as "sent without approval"), but a bill marked
+Paid or Void in the meantime keeps its status and only gains the history line.
+If that write fails, the send is logged, not failed — the client has the bill,
+and a 502 would invite a second one.
+
+**Telling the accountant**: approving emails `INVOICE_ACCOUNTANT_TO` when
+`INVOICE_STATUS_EMAIL_ENABLED=1` (its own switch — internal, unlike
+`INVOICE_EMAIL_ENABLED`, which mails clients). Logged and swallowed like the
+budget alert; the "Ready for accountant" chip is the real queue.
+
+Tests: `tests/test_invoice_flow.py` (18 checks, no Notion).
+
 ## Not in scope
 
-No line-item discounts, no multi-currency conversion, no payment status
-(draft / sent / paid — `Sent at` is as far as it goes), no PDF logo. A logo is
-one image and an env var whenever it's wanted; the rest are decisions nobody
-has needed to make yet.
+No line-item discounts, no multi-currency conversion, no partial payments
+(Paid is all-or-nothing; a note in the history covers the odd instalment), no
+PDF logo. A logo is one image and an env var whenever it's wanted; the rest are
+decisions nobody has needed to make yet.
 
 ## Verified
 

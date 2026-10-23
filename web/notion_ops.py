@@ -90,6 +90,21 @@ def ensure_approver_property() -> None:
         _notion.data_sources.update(PEOPLE_DS, properties={APPROVER_PROP: {"checkbox": {}}})
 
 
+# Who takes an invoice from "approved" to "sent" and "paid". Its own checkbox
+# for the reason approvers have one: the accountant is usually not an admin,
+# and must not become one just to mark a bill paid.
+ACCOUNTANT_PROP = "Accountant"
+
+
+def ensure_accountant_property() -> None:
+    """Make sure the People db has an `Accountant` checkbox; add if missing."""
+    if not PEOPLE_DS:
+        return
+    ds = _notion.data_sources.retrieve(PEOPLE_DS)
+    if ACCOUNTANT_PROP not in ds["properties"]:
+        _notion.data_sources.update(PEOPLE_DS, properties={ACCOUNTANT_PROP: {"checkbox": {}}})
+
+
 # ---- reads -------------------------------------------------------------
 
 
@@ -179,12 +194,14 @@ def workspace_names() -> dict:
 # cached briefly rather than re-queried each call; Notion edits take effect
 # within _ACCESS_TTL seconds.
 _ACCESS_TTL = 60.0
-_access_cache: dict = {"at": 0.0, "allowed": None, "admins": None, "approvers": None}
+_access_cache: dict = {"at": 0.0, "allowed": None, "admins": None, "approvers": None,
+                       "accountants": None}
 _access_lock = threading.Lock()
 
 
-def _access_from_db() -> tuple[set, set, set]:
-    """Return (allowed_ids, admin_ids, approver_ids) from the People db.
+def _access_from_db() -> tuple[set, set, set, set]:
+    """Return (allowed_ids, admin_ids, approver_ids, accountant_ids) from the
+    People db.
 
     allowed = every Active row's linked Notion user; admins = those also ticked
     Admin; approvers = those also ticked `Approves absences` (an inactive row
@@ -194,6 +211,7 @@ def _access_from_db() -> tuple[set, set, set]:
     allowed: set = set()
     admins: set = set()
     approvers: set = set()
+    accountants: set = set()
     kwargs = {
         "data_source_id": PEOPLE_DS, "page_size": 100,
         "filter": {"property": "Active", "checkbox": {"equals": True}},
@@ -211,26 +229,29 @@ def _access_from_db() -> tuple[set, set, set]:
                 admins.add(uid)
             if props.get(APPROVER_PROP, {}).get("checkbox", False):
                 approvers.add(uid)
+            if props.get(ACCOUNTANT_PROP, {}).get("checkbox", False):
+                accountants.add(uid)
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
-    return allowed, admins, approvers
+    return allowed, admins, approvers, accountants
 
 
 def access_ids() -> dict:
-    """Cached {"allowed": set, "admins": set, "approvers": set} of Notion user
+    """Cached {"allowed", "admins", "approvers", "accountants"} sets of Notion user
     ids from the People db. Returns empty sets (so callers fall back to the env
     allowlists) when the People db isn't configured or the query fails, rather
     than 500ing a login."""
     if not PEOPLE_DS:
-        return {"allowed": set(), "admins": set(), "approvers": set()}
+        return {"allowed": set(), "admins": set(), "approvers": set(), "accountants": set()}
     now = time.monotonic()
     with _access_lock:
         if _access_cache["allowed"] is not None and now - _access_cache["at"] < _ACCESS_TTL:
             return {"allowed": _access_cache["allowed"], "admins": _access_cache["admins"],
-                    "approvers": _access_cache["approvers"]}
+                    "approvers": _access_cache["approvers"],
+                    "accountants": _access_cache["accountants"]}
     try:
-        allowed, admins, approvers = _access_from_db()
+        allowed, admins, approvers, accountants = _access_from_db()
     except Exception:
         logging.exception(
             "People access query failed — check PEOPLE_DS_ID. Falling back to the "
@@ -239,10 +260,12 @@ def access_ids() -> dict:
         )
         # Cache the empty result too: a persistent misconfig would otherwise
         # re-query Notion on every is_admin call. Env admins still get through.
-        allowed, admins, approvers = set(), set(), set()
+        allowed, admins, approvers, accountants = set(), set(), set(), set()
     with _access_lock:
-        _access_cache.update(at=now, allowed=allowed, admins=admins, approvers=approvers)
-    return {"allowed": allowed, "admins": admins, "approvers": approvers}
+        _access_cache.update(at=now, allowed=allowed, admins=admins, approvers=approvers,
+                             accountants=accountants)
+    return {"allowed": allowed, "admins": admins, "approvers": approvers,
+            "accountants": accountants}
 
 
 def invalidate_access_cache() -> None:
@@ -252,7 +275,8 @@ def invalidate_access_cache() -> None:
     process's cache — another worker (or a hand edit in Notion) still waits
     out _ACCESS_TTL."""
     with _access_lock:
-        _access_cache.update(at=0.0, allowed=None, admins=None, approvers=None)
+        _access_cache.update(at=0.0, allowed=None, admins=None, approvers=None,
+                             accountants=None)
         _roster_cache.update(at=0.0, rows=None)
 
 
@@ -263,7 +287,8 @@ def invalidate_access_cache() -> None:
 # page. Writes address a row by its page id (which comes from the browser, so
 # every write checks the page really sits in the People data source first).
 
-PEOPLE_FLAGS = {"active": "Active", "admin": "Admin", "approver": APPROVER_PROP}
+PEOPLE_FLAGS = {"active": "Active", "admin": "Admin", "approver": APPROVER_PROP,
+                "accountant": ACCOUNTANT_PROP}
 
 
 class LastAdmin(Exception):
@@ -281,6 +306,7 @@ def _roster_row(page: dict) -> dict:
         "active": bool(props.get("Active", {}).get("checkbox")),
         "admin": bool(props.get("Admin", {}).get("checkbox")),
         "approver": bool(props.get(APPROVER_PROP, {}).get("checkbox")),
+        "accountant": bool(props.get(ACCOUNTANT_PROP, {}).get("checkbox")),
     }
 
 
@@ -351,7 +377,7 @@ def _people_page(page_id: str) -> dict:
 
 
 def set_person_flag(page_id: str, field: str, value: bool) -> dict:
-    """Tick or untick Active / Admin / Approves absences on one People row."""
+    """Tick or untick Active / Admin / Approves absences / Accountant on one People row."""
     if field not in PEOPLE_FLAGS:
         raise ValueError(f"unknown field {field!r}")
     with _write_lock:
@@ -1937,6 +1963,18 @@ def ensure_invoice_properties() -> None:
         missing[CLIENT_NOTE_PROP] = {"rich_text": {}}
     if LINES_PROP not in have:
         missing[LINES_PROP] = {"rich_text": {}}
+    # the lifecycle: approved by an admin, then sent and paid by the accountant
+    if STATUS_PROP not in have:
+        missing[STATUS_PROP] = {"select": {"options": [
+            {"name": name, "color": color} for name, color in _STATUS_COLORS.items()]}}
+    if DUE_PROP not in have:
+        missing[DUE_PROP] = {"date": {}}
+    if PAID_ON_PROP not in have:
+        missing[PAID_ON_PROP] = {"date": {}}
+    if PAYMENT_REF_PROP not in have:
+        missing[PAYMENT_REF_PROP] = {"rich_text": {}}
+    if HISTORY_PROP not in have:
+        missing[HISTORY_PROP] = {"rich_text": {}}
     if missing:
         _notion.data_sources.update(INVOICES_DS, properties=missing)
 
@@ -1958,6 +1996,185 @@ CLIENT_NOTE_PROP = "Client note"   # printed on the PDF, unlike `Note`, which is
 LINES_PROP = "Lines"
 MAX_BILL_LINES = 20
 MAX_LINE_CHARS = 200
+
+# ---- the invoice lifecycle ----------------------------------------------
+#
+# Draft → Approved → Sent → Paid, plus Void. An admin prepares and approves;
+# from Approved on the bill belongs to the accountant, who marks it sent (by
+# this app's email or their own system) and then paid. Admins can do all of it.
+# Five fixed names, never a sixth: a Notion select invents an option for any
+# name it's handed (the trap create_ticket documents).
+STATUS_PROP = "Status"
+DUE_PROP = "Due"
+PAID_ON_PROP = "Paid on"
+PAYMENT_REF_PROP = "Payment ref"
+HISTORY_PROP = "History"   # one line per status change: when · what · who — note
+
+DRAFT, APPROVED, SENT, PAID, VOID = "Draft", "Approved", "Sent", "Paid", "Void"
+_STATUS_COLORS = {DRAFT: "gray", APPROVED: "blue", SENT: "yellow", PAID: "green", VOID: "red"}
+INVOICE_STATUSES = tuple(_STATUS_COLORS)
+
+# What the content of a bill may still change in. Once it has gone out the
+# document is what the client holds; correcting it means moving it back first,
+# which the history then records.
+EDITABLE_STATUSES = {DRAFT, APPROVED}
+# What the accountant sees: a draft isn't theirs until an admin approves it,
+# and a voided bill is nothing to chase.
+ACCOUNTANT_STATUSES = {APPROVED, SENT, PAID}
+
+# (from, to) → who may make the move. "accountant" includes admins
+# (auth.is_accountant says yes to an admin), "admin" doesn't include the
+# accountant. Every forward step has its undo, because the commonest status
+# change after "paid" is "no, that was the other invoice".
+INVOICE_FLOW = {
+    (DRAFT, APPROVED): "admin",
+    (APPROVED, DRAFT): "admin",
+    (APPROVED, SENT): "accountant",
+    (SENT, APPROVED): "accountant",
+    (SENT, PAID): "accountant",
+    (PAID, SENT): "accountant",
+    (DRAFT, VOID): "admin",
+    (APPROVED, VOID): "admin",
+    (SENT, VOID): "admin",
+    (VOID, DRAFT): "admin",
+}
+MAX_PAYMENT_REF = 200
+MAX_STATUS_NOTE = 300
+_MAX_HISTORY_LINES = 60
+
+
+class InvoiceLocked(Exception):
+    """The invoice has gone out (or been voided), so its content is fixed."""
+
+
+def invoice_due_days() -> int:
+    """Days from sending to due, for tracking. INVOICE_DUE_DAYS when set (the
+    PDF prints a due date from the same number), 30 otherwise — an unpaid bill
+    needs *some* date to become overdue on."""
+    try:
+        days = int(float(os.environ.get("INVOICE_DUE_DAYS") or 0))
+    except ValueError:
+        days = 0
+    return days if days > 0 else 30
+
+
+def can_move_invoice(current: str, new: str, admin: bool, accountant: bool) -> str | None:
+    """Why this move is refused, or None when it's allowed."""
+    if new not in INVOICE_STATUSES:
+        return "that isn't an invoice status"
+    if current == new:
+        return f"it is already {new.lower()}"
+    who = INVOICE_FLOW.get((current, new))
+    if not who:
+        return f"a {current.lower()} invoice can't be marked {new.lower()}"
+    if admin:
+        return None
+    if who == "accountant" and accountant:
+        return None
+    return "only an admin can do that" if who == "admin" else "only the accountant can do that"
+
+
+def _invoice_status(props: dict) -> str:
+    """The row's status. Rows filed before the lifecycle have none: one that
+    was emailed reads as Sent, anything else as Draft — nothing was ever
+    approved, so nothing is pretended to have been."""
+    name = ((props.get(STATUS_PROP) or {}).get("select") or {}).get("name") or ""
+    if name in INVOICE_STATUSES:
+        return name
+    sent = ((props.get(SENT_AT_PROP) or {}).get("date") or {}).get("start")
+    return SENT if sent else DRAFT
+
+
+def _history_text(existing: str, line: str) -> list:
+    lines = [l for l in (existing or "").split("\n") if l.strip()] + [line]
+    text = "\n".join(lines[-_MAX_HISTORY_LINES:])
+    return [{"text": {"content": text[i:i + _CHUNK]}} for i in range(0, len(text), _CHUNK)]
+
+
+def _history_line(what: str, actor: str, note: str = "") -> str:
+    stamp = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+    line = f"{stamp} · {what} · {actor or 'someone'}"
+    note = " ".join((note or "").split())[:MAX_STATUS_NOTE]
+    return f"{line} — {note}" if note else line
+
+
+def _date_or_none(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    try:
+        return dt.date.fromisoformat(str(raw)[:10]).isoformat()
+    except ValueError:
+        raise ValueError(f"{raw!r} isn't a date")
+
+
+def set_invoice_status(invoice_id: str, new: str, actor: str = "", *, admin: bool = False,
+                       accountant: bool = False, sent_on: str | None = None,
+                       due: str | None = None, sent_to: str | None = None,
+                       paid_on: str | None = None, payment_ref: str | None = None,
+                       note: str = "") -> dict:
+    """Move one invoice along Draft → Approved → Sent → Paid (or back).
+
+    The status is re-read under the write lock, so two people pressing
+    "Mark paid" at once can't both write — the second sees Paid and is
+    refused. Moving back clears what the forward step wrote (the due date, the
+    payment), while the history keeps the record that it happened.
+    """
+    with _write_lock:
+        invoice = get_invoice(invoice_id)
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        current = invoice["status"]
+        refused = can_move_invoice(current, new, admin, accountant)
+        if refused:
+            raise PermissionError(refused)
+        props: dict = {STATUS_PROP: {"select": {"name": new}}}
+        what = new
+        if new == SENT and current == APPROVED:
+            day = _date_or_none(sent_on) or dt.date.today().isoformat()
+            due_day = _date_or_none(due) or (
+                dt.date.fromisoformat(day) + dt.timedelta(days=invoice_due_days())).isoformat()
+            if due_day < day:
+                raise ValueError("the due date is before the day it was sent")
+            if not invoice.get("sent_at"):
+                props[SENT_AT_PROP] = {"date": {"start": day}}
+            props[DUE_PROP] = {"date": {"start": due_day}}
+            if sent_to:
+                props[SENT_TO_PROP] = {"rich_text": [{"text": {"content": sent_to[:1900]}}]}
+            what = f"Sent (due {due_day})"
+        elif new == PAID:
+            day = _date_or_none(paid_on) or dt.date.today().isoformat()
+            ref = " ".join((payment_ref or "").split())[:MAX_PAYMENT_REF]
+            props[PAID_ON_PROP] = {"date": {"start": day}}
+            props[PAYMENT_REF_PROP] = {"rich_text": [{"text": {"content": ref}}]}
+            what = f"Paid {day}" + (f" ({ref})" if ref else "")
+        elif current == PAID:              # Paid → Sent: the payment was a mistake
+            props[PAID_ON_PROP] = {"date": None}
+            props[PAYMENT_REF_PROP] = {"rich_text": []}
+            what = "Payment undone"
+        elif current == SENT and new == APPROVED:   # wasn't sent after all
+            props[SENT_AT_PROP] = {"date": None}
+            props[DUE_PROP] = {"date": None}
+            what = "Send undone"
+        props[HISTORY_PROP] = {"rich_text": _history_text(
+            "\n".join(invoice.get("history") or []), _history_line(what, actor, note))}
+        _notion.pages.update(invoice_id, properties=props)
+        page = _notion.pages.retrieve(invoice_id)
+    return _invoice_row(page, _project_name_map(), _person_name_map())
+
+
+def _content_change_props(status: str, history: list, actor: str) -> dict:
+    """Refuse a content edit on a bill that has gone out, and send an approved
+    one back to Draft: approval covered what was approved, not what it was
+    edited into afterwards."""
+    if status not in EDITABLE_STATUSES:
+        raise InvoiceLocked(f"this invoice is {status.lower()} — move it back to Draft "
+                            "before changing what it bills")
+    if status != APPROVED:
+        return {}
+    return {STATUS_PROP: {"select": {"name": DRAFT}},
+            HISTORY_PROP: {"rich_text": _history_text(
+                "\n".join(history or []),
+                _history_line("Edited — back to Draft", actor))}}
 
 
 _NUMBER_RE = re.compile(r"(\d{4})-(\d+)\s*$")
@@ -2055,6 +2272,11 @@ def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
         "lines": bill_lines(_plain(props, LINES_PROP)),
         "sent_to": _plain(props, SENT_TO_PROP),
         "sent_at": ((props.get(SENT_AT_PROP, {}).get("date") or {}).get("start") or "")[:19],
+        "status": _invoice_status(props),
+        "due": ((props.get(DUE_PROP, {}).get("date") or {}).get("start") or "")[:10],
+        "paid_on": ((props.get(PAID_ON_PROP, {}).get("date") or {}).get("start") or "")[:10],
+        "payment_ref": _plain(props, PAYMENT_REF_PROP),
+        "history": [l for l in _plain(props, HISTORY_PROP).split("\n") if l.strip()],
     }
 
 
@@ -2109,7 +2331,7 @@ def get_invoice(invoice_id: str) -> dict | None:
 def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed: float,
                  issued: str, note: str = "", person_id: str | None = None,
                  adjustments: dict | None = None, rate: float = 0.0,
-                 currency: str = "", client_note: str = "") -> dict:
+                 currency: str = "", client_note: str = "", actor: str = "") -> dict:
     """File (or correct) the invoice for one project and one month.
 
     Upserts on (project, month), the same discipline as set_cell: saving July
@@ -2158,6 +2380,21 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
             ]},
         })
         keep = matches[0] if matches else None
+        if keep:
+            # raises before anything is written — including the fold below.
+            # Every duplicate is checked, not just the one kept: folding away a
+            # sent row would quietly un-send that month.
+            for m in matches[1:]:
+                if _invoice_status(m.get("properties") or {}) not in EDITABLE_STATUSES:
+                    raise InvoiceLocked("this month has an invoice that has already gone "
+                                        "out — open it and undo that first")
+            kp = keep.get("properties") or {}
+            props.update(_content_change_props(
+                _invoice_status(kp),
+                [l for l in _plain(kp, HISTORY_PROP).split("\n") if l.strip()], actor))
+        else:
+            props[STATUS_PROP] = {"select": {"name": DRAFT}}
+            props[HISTORY_PROP] = {"rich_text": _history_text("", _history_line("Drafted", actor))}
         for extra in matches[1:]:   # duplicates from an old race: fold into one
             _notion.pages.update(extra["id"], archived=True)
         # a number is assigned once and then kept: correcting July's hours must
@@ -2175,23 +2412,45 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
     return dict(_invoice_row(page, pname, _person_name_map()), replaced=bool(keep))
 
 
-def mark_invoice_sent(invoice_id: str, recipients: list[str]) -> dict:
-    """Record that this invoice went out, and to whom.
+def mark_invoice_sent(invoice_id: str, recipients: list[str], actor: str = "") -> dict:
+    """Record that this invoice went out by email, and to whom.
 
     Written only after Gmail has accepted the message, so the row can't claim a
     send that failed. The parent check is get_invoice's, for the same reason:
-    the id comes from a browser.
+    the id comes from a browser. Moves the status to Sent and starts the due
+    clock the first time; a resend keeps the due date it already has.
+
+    The email has already gone when this runs, so it can't refuse — but it
+    re-reads under the write lock and never drags a bill that was marked paid
+    or voided in the meantime back to Sent; the history says what happened.
+    An admin emailing a draft skips approval, and the history says that too.
     """
-    invoice = get_invoice(invoice_id)
-    if not invoice:
-        raise ValueError("that isn't an invoice")
     to = ", ".join(recipients)[:1900]
-    _notion.pages.update(invoice_id, properties={
-        SENT_TO_PROP: {"rich_text": [{"text": {"content": to}}]},
-        SENT_AT_PROP: {"date": {"start": dt.datetime.now().astimezone().isoformat(
-            timespec="seconds")}},
-    })
-    return dict(invoice, sent_to=to)
+    with _write_lock:
+        invoice = get_invoice(invoice_id)
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        current = invoice["status"]
+        what = f"Emailed to {to}"
+        if current == DRAFT:
+            what += " (sent without approval)"
+        elif current in (PAID, VOID):
+            what += f" while {current.lower()} — status left as it was"
+        props = {
+            SENT_TO_PROP: {"rich_text": [{"text": {"content": to}}]},
+            SENT_AT_PROP: {"date": {"start": dt.datetime.now().astimezone().isoformat(
+                timespec="seconds")}},
+            HISTORY_PROP: {"rich_text": _history_text(
+                "\n".join(invoice.get("history") or []), _history_line(what, actor))},
+        }
+        if current not in (PAID, VOID):
+            props[STATUS_PROP] = {"select": {"name": SENT}}
+            if not invoice.get("due"):
+                props[DUE_PROP] = {"date": {"start": (
+                    dt.date.today() + dt.timedelta(days=invoice_due_days())).isoformat()}}
+        _notion.pages.update(invoice_id, properties=props)
+    return dict(invoice, sent_to=to,
+                status=current if current in (PAID, VOID) else SENT)
 
 
 def bill_lines(raw: str) -> list[str]:
@@ -2204,7 +2463,8 @@ def bill_lines(raw: str) -> list[str]:
     return out[:MAX_BILL_LINES]
 
 
-def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: float) -> dict:
+def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: float,
+                     actor: str = "") -> dict:
     """Record what the bill says: its detail lines, its hours and its amount.
 
     These are the sender's numbers, typed over the defaults on the invoice page
@@ -2213,19 +2473,25 @@ def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: fl
     saying what was logged. Written before the send, so a send that fails
     doesn't lose the edits; the parent check is get_invoice's.
     """
-    invoice = get_invoice(invoice_id)
-    if not invoice:
-        raise ValueError("that isn't an invoice")
     lines = bill_lines("\n".join(lines))
     text = "\n".join(lines)
-    _notion.pages.update(invoice_id, properties={
+    props = {
         LINES_PROP: {"rich_text": [{"text": {"content": text[i:i + _CHUNK]}}
                                    for i in range(0, len(text), _CHUNK)]},
         "Hours billed": {"number": round(float(hours), 2)},
         AMOUNT_PROP: {"number": round(float(amount), 2)},
-    })
+    }
+    # under the lock, so a "mark sent" landing between the read and the write
+    # can't let an edit through onto a bill that has just gone out
+    with _write_lock:
+        invoice = get_invoice(invoice_id)
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        props.update(_content_change_props(invoice["status"], invoice.get("history"), actor))
+        _notion.pages.update(invoice_id, properties=props)
     return dict(invoice, lines=lines, hours_billed=round(float(hours), 2),
-                amount=round(float(amount), 2))
+                amount=round(float(amount), 2),
+                status=DRAFT if STATUS_PROP in props else invoice["status"])
 
 
 def entry_task(props: dict) -> dict:

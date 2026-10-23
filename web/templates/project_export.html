@@ -42,7 +42,10 @@
     Already invoiced on <strong>{{ existing_invoice.issued }}</strong> for
     <strong>{{ '%g'|format(existing_invoice.hours_billed) }}</strong> h
     {%- if existing_invoice.saved_by %} by {{ existing_invoice.saved_by }}{% endif %}.
-    Saving replaces that record.
+    {% if invoice_locked %}It is <strong>{{ existing_invoice.status|lower }}</strong>, so it
+    can't be replaced — <a href="/invoices/{{ existing_invoice.id }}">open the invoice</a> to
+    undo that first.{% elif existing_invoice.status == 'Approved' %}It's approved; saving
+    replaces that record and sends it back to Draft for approval.{% else %}Saving replaces that record.{% endif %}
   </div>
   {% endif %}
   <div class="sendbox-grid">
@@ -74,7 +77,8 @@
   <div class="sendbox-actions">
     <div class="subtle">Records the month against {{ label }} — it doesn't send anything</div>
     <div class="sendbox-btns">
-      <button type="button" class="btn btn-primary" id="invbtn" onclick="saveInvoice()">
+      <button type="button" class="btn btn-primary" id="invbtn" onclick="saveInvoice()"
+              {{ 'disabled' if invoice_locked }}>
         {{ 'Update invoice' if existing_invoice else 'Save invoice' }}</button>
     </div>
   </div>
@@ -362,7 +366,7 @@ async function saveInvoice() {
       box.textContent = (i.replaced ? 'Invoice updated: ' : 'Invoiced: ') + i.hours_billed
         + ' h billed of ' + i.hours_tracked + ' h tracked, issued ' + i.issued + '.';
       const a = document.createElement('a');
-      a.href = '/invoices'; a.textContent = ' See all invoices →';
+      a.href = '/invoices/' + i.id; a.textContent = ' Open it to approve for the accountant →';
       box.appendChild(a);
       btn.textContent = 'Update invoice';
     } else {

@@ -85,6 +85,9 @@ def asset_v(name: str) -> str:
 
 
 templates.env.globals["asset_v"] = asset_v
+# base.html asks this for the menu: the accountant isn't an admin, but needs
+# the Invoices link the Admin menu would otherwise be the only way to.
+templates.env.globals["is_accountant"] = lambda user: auth.is_accountant(user)
 
 
 @app.middleware("http")
@@ -104,6 +107,7 @@ def _startup() -> None:
     ops.ensure_person_property()
     ops.ensure_admin_property()
     ops.ensure_approver_property()
+    ops.ensure_accountant_property()
     ops.ensure_absence_properties()
     ops.ensure_task_properties()
     ops.ensure_invoice_properties()
@@ -1617,6 +1621,7 @@ def project_export_page(request: Request, project: list[str] = Query(default=[])
         "period": period, "rng": rng, "start_iso": rng["from"],
         "label": _export_label(sel, sel_ids, sc["partners"]),
         "can_invoice": can_invoice, "existing_invoice": existing,
+        "invoice_locked": bool(existing and existing["status"] not in ops.EDITABLE_STATUSES),
         "billing": billing, "tax": invoice_pdf.company() if can_invoice else {},
         "today_iso": dt.date.today().isoformat(),
         "groups": groups, "total": round(sum(r["hours"] for r in rows), 2),
@@ -1708,7 +1713,10 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
                                  issued.isoformat(), req.note[:500], user.get("id"),
                                  adjustments=_invoice_adjustments(req.rows, logged),
                                  rate=rate, currency=currency,
-                                 client_note=req.client_note[:500])
+                                 client_note=req.client_note[:500],
+                                 actor=_actor(user))
+    except ops.InvoiceLocked as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
     except Exception:
         logging.exception("Saving the invoice for %s %s failed", project["name"], req.month)
         return JSONResponse({"ok": False, "error": "could not save that invoice"},
@@ -1805,19 +1813,57 @@ def _mark_stale(rows: list[dict]) -> None:
         r["stale"] = abs(now - round(r["hours_tracked"], 2)) >= 0.01
 
 
+def _actor(user: dict) -> str:
+    return user.get("name") or user.get("email") or ""
+
+
+def _invoice_viewer(user: dict) -> Optional[str]:
+    """"admin", "accountant", or None for someone who may not see invoices."""
+    if auth.is_admin(user):
+        return "admin"
+    if auth.is_accountant(user):
+        return "accountant"
+    return None
+
+
+def _visible_invoice(user: dict, invoice: Optional[dict]) -> bool:
+    """An admin sees every invoice; the accountant only those an admin has
+    approved — a draft isn't theirs yet, and a voided one is nothing to do."""
+    viewer = _invoice_viewer(user)
+    if not invoice or not viewer:
+        return False
+    return viewer == "admin" or invoice["status"] in ops.ACCOUNTANT_STATUSES
+
+
+def _invoice_stage(r: dict, today: dt.date) -> str:
+    """The status a list filters on: Sent splits into Overdue once its due
+    date has passed, because "awaiting payment" and "late" are different
+    phone calls."""
+    if r["status"] == ops.SENT and r.get("due") and r["due"] < today.isoformat():
+        return "Overdue"
+    return r["status"]
+
+
+# The list's filter chips, in the order a bill moves through them.
+INVOICE_STAGES = ("Draft", "Approved", "Sent", "Overdue", "Paid", "Void")
+
+
 @app.get("/invoices", response_class=HTMLResponse)
 def invoices_page(request: Request, project: list[str] = Query(default=[]),
-                  partner: list[str] = Query(default=[])):
-    """What we've billed, newest month first (admins).
+                  partner: list[str] = Query(default=[]),
+                  status: list[str] = Query(default=[])):
+    """What we've billed, newest month first (admins and the accountant).
 
     Shows tracked next to billed so the gap is visible, and flags a month whose
     logged hours have moved since it was invoiced — which happens whenever
-    somebody logs late.
+    somebody logs late. Each row carries where it is in the lifecycle, and
+    `?status=` (repeatable) narrows to those stages.
     """
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user):
+    viewer = _invoice_viewer(user)
+    if not viewer:
         return RedirectResponse(url="/", status_code=303)
     all_projects = ops.list_projects(include_members=True, active_only=False)
     partners = _partner_picks(partner, ops.list_partners(all_projects))
@@ -1833,6 +1879,22 @@ def invoices_page(request: Request, project: list[str] = Query(default=[]),
     if sel_ids and not sel:          # several picked: filter the one read in memory
         keep = set(sel_ids)
         rows = [r for r in rows if r["project_id"] in keep]
+    if viewer != "admin":
+        rows = [r for r in rows if r["status"] in ops.ACCOUNTANT_STATUSES]
+    today = dt.date.today()
+    for r in rows:
+        r["stage"] = _invoice_stage(r, today)
+        r["total"] = invoice_pdf.totals(r["hours_billed"], r.get("rate") or 0,
+                                        invoice_pdf.bill_amount(r))["total"]
+        r["money"] = invoice_pdf.money(r["total"], r.get("currency")) if r["total"] else ""
+    # counted before the status pick narrows the list, so every chip says how
+    # many it would show
+    stage_counts = {k: sum(1 for r in rows if r["stage"] == k) for k in INVOICE_STAGES}
+    stages = [k for k in INVOICE_STAGES
+              if viewer == "admin" or k not in (ops.DRAFT, ops.VOID)]
+    status_sel = [s for s in status if s in stages]
+    if status_sel:
+        rows = [r for r in rows if r["stage"] in set(status_sel)]
     _mark_stale(rows)
     for r in rows:
         month = _parse_date(r["month"])
@@ -1841,7 +1903,8 @@ def invoices_page(request: Request, project: list[str] = Query(default=[]),
     # what the "New invoice" picker opens on.
     last_month = dt.date.today().replace(day=1) - dt.timedelta(days=1)
     return templates.TemplateResponse(request, "invoices.html", {
-        "user": user, "is_admin": True,
+        "user": user, "is_admin": viewer == "admin",
+        "stages": stages, "stage_counts": stage_counts, "status_sel": status_sel,
         "projects": projects, "sel": sel, "sel_ids": sel_ids,
         "partners": ops.list_partners(all_projects), "partner_selected": partners,
         "rows": rows, "default_month": last_month.strftime("%Y-%m"),
@@ -1909,7 +1972,7 @@ class InvoiceBill(BaseModel):
     amount: Optional[float] = None
 
 
-def _apply_bill(req: InvoiceBill, invoice: dict) -> dict | JSONResponse:
+def _apply_bill(req: InvoiceBill, invoice: dict, actor: str = "") -> dict | JSONResponse:
     """Write the sender's lines / hours / amount onto the invoice, when any
     were sent, and hand back the row as it now reads. A refusal is a
     JSONResponse the caller returns as-is."""
@@ -1932,7 +1995,9 @@ def _apply_bill(req: InvoiceBill, invoice: dict) -> dict | JSONResponse:
     if unchanged:
         return invoice
     try:
-        return ops.set_invoice_bill(invoice["id"], lines, hours, amount)
+        return ops.set_invoice_bill(invoice["id"], lines, hours, amount, actor=actor)
+    except ops.InvoiceLocked as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
     except Exception:
@@ -1958,13 +2023,14 @@ def api_invoice_bill(request: Request, req: InvoiceBill):
     invoice = ops.get_invoice(req.invoice_id)
     if not invoice:
         return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
-    saved = _apply_bill(req, invoice)
+    saved = _apply_bill(req, invoice, _actor(user))
     if isinstance(saved, JSONResponse):
         return saved
     sums = invoice_pdf.totals(saved["hours_billed"], saved.get("rate") or 0,
                               invoice_pdf.bill_amount(saved))
     return JSONResponse({"ok": True, "lines": saved["lines"], "hours": saved["hours_billed"],
-                         "amount": sums["subtotal"], "total": sums["total"]})
+                         "amount": sums["subtotal"], "total": sums["total"],
+                         "status": saved["status"]})
 
 
 @app.get("/invoices/{invoice_id}.pdf")
@@ -1978,10 +2044,10 @@ def invoice_pdf_download(request: Request, invoice_id: str):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user):
+    if not _invoice_viewer(user):
         return RedirectResponse(url="/", status_code=303)
     invoice = ops.get_invoice(invoice_id)
-    if not invoice:
+    if not _visible_invoice(user, invoice):
         return RedirectResponse(url="/invoices", status_code=303)
     pdf, fname, _ = _invoice_document(invoice)
     from fastapi.responses import Response
@@ -2012,8 +2078,10 @@ def api_invoice_send(request: Request, req: InvoiceSend):
     user = _require_login(request)
     if not user:
         return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
-    if not auth.is_admin(user):
-        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    viewer = _invoice_viewer(user)
+    if not viewer:
+        return JSONResponse({"ok": False, "error": "admins and the accountant only"},
+                            status_code=403)
     if not _same_origin(request):
         return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
     if not mailer.invoice_email_enabled():
@@ -2025,14 +2093,24 @@ def api_invoice_send(request: Request, req: InvoiceSend):
                              + ", ".join(mailer.invoice_missing_vars())
                              + " to the environment"}, status_code=503)
     invoice = ops.get_invoice(req.invoice_id)
-    if not invoice:
+    if not _visible_invoice(user, invoice):
         return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
+    # A paid or voided bill doesn't go out again; the accountant sends only
+    # what an admin has approved (or resends what's already gone).
+    sendable = ({ops.DRAFT, ops.APPROVED, ops.SENT} if viewer == "admin"
+                else {ops.APPROVED, ops.SENT})
+    if invoice["status"] not in sendable:
+        return JSONResponse({"ok": False, "error": f"this invoice is {invoice['status'].lower()}"
+                             " — it can't be sent"}, status_code=409)
 
     # the lines / hours / amount on screen are written first, so the PDF that
-    # goes out is built from the row — and a send that fails keeps the edits
-    invoice = _apply_bill(req, invoice)
-    if isinstance(invoice, JSONResponse):
-        return invoice
+    # goes out is built from the row — and a send that fails keeps the edits.
+    # The accountant's screen has no such fields: what an admin approved is
+    # what goes.
+    if viewer == "admin" and invoice["status"] in ops.EDITABLE_STATUSES:
+        invoice = _apply_bill(req, invoice, _actor(user))
+        if isinstance(invoice, JSONResponse):
+            return invoice
     pdf, fname, client = _invoice_document(invoice)
     try:
         to = mailer.clean_recipients(req.to or client.get("client_email") or "")
@@ -2056,7 +2134,7 @@ def api_invoice_send(request: Request, req: InvoiceSend):
         return JSONResponse({"ok": False, "error": mailer.explain(e)}, status_code=502)
 
     try:
-        ops.mark_invoice_sent(invoice["id"], to)
+        ops.mark_invoice_sent(invoice["id"], to, _actor(user))
     except Exception:
         # the client has the invoice; failing the request now would invite a
         # second send, so the log is the right place for this
@@ -2090,10 +2168,10 @@ def invoice_xlsx(request: Request, invoice_id: str):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user):
+    if not _invoice_viewer(user):
         return RedirectResponse(url="/", status_code=303)
     invoice = ops.get_invoice(invoice_id)
-    if not invoice:
+    if not _visible_invoice(user, invoice):
         return RedirectResponse(url="/invoices", status_code=303)
     rows, rng = _invoice_export_rows(invoice)
     month = _parse_date(invoice["month"])
@@ -2114,10 +2192,10 @@ def invoice_detail(request: Request, invoice_id: str):
     user = _require_login(request)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not auth.is_admin(user):
+    if not _invoice_viewer(user):
         return RedirectResponse(url="/", status_code=303)
     invoice = ops.get_invoice(invoice_id)
-    if not invoice:
+    if not _visible_invoice(user, invoice):
         return RedirectResponse(url="/invoices", status_code=303)
 
     month = _parse_date(invoice["month"])
@@ -2156,7 +2234,16 @@ def invoice_detail(request: Request, invoice_id: str):
         "mail_missing": mailer.invoice_missing_vars(),
         "mail_cc": mailer.invoice_cc(),
         "sender": mailer.sender(),
-        "user": user, "is_admin": True,
+        "user": user, "is_admin": auth.is_admin(user),
+        "can_edit": auth.is_admin(user) and invoice["status"] in ops.EDITABLE_STATUSES,
+        "can_send": invoice["status"] in ({ops.DRAFT, ops.APPROVED, ops.SENT}
+                                          if auth.is_admin(user)
+                                          else {ops.APPROVED, ops.SENT}),
+        "moves": _invoice_moves(user, invoice),
+        "stage": _invoice_stage(invoice, dt.date.today()),
+        "today_iso": dt.date.today().isoformat(),
+        "default_due": (dt.date.today()
+                        + dt.timedelta(days=ops.invoice_due_days())).isoformat(),
         "invoice": invoice, "days": days, "rng": rng,
         # every line on screen, not just the billed ones the clipboard gets
         "has_goals": any(r.get("goal") for r in rows),
@@ -2173,6 +2260,98 @@ def invoice_detail(request: Request, invoice_id: str):
                    and abs(round(invoice["hours_billed"], 2)
                            - round(invoice["hours_tracked"], 2)) >= 0.01),
     })
+
+
+# The buttons a status bar offers, keyed by the move they make. Only moves the
+# viewer may make are drawn — the endpoint re-checks every one regardless.
+_MOVE_LABELS = {
+    (ops.DRAFT, ops.APPROVED): ("Approve for the accountant", "primary"),
+    (ops.APPROVED, ops.DRAFT): ("Back to draft", ""),
+    (ops.APPROVED, ops.SENT): ("Mark as sent", "primary"),
+    (ops.SENT, ops.APPROVED): ("Undo sent", ""),
+    (ops.SENT, ops.PAID): ("Mark as paid", "primary"),
+    (ops.PAID, ops.SENT): ("Undo paid", ""),
+    (ops.DRAFT, ops.VOID): ("Void", "danger"),
+    (ops.APPROVED, ops.VOID): ("Void", "danger"),
+    (ops.SENT, ops.VOID): ("Void", "danger"),
+    (ops.VOID, ops.DRAFT): ("Reopen as draft", ""),
+}
+
+
+def _invoice_moves(user: dict, invoice: dict) -> list[dict]:
+    admin, accountant = auth.is_admin(user), auth.is_accountant(user)
+    out = []
+    for (frm, to), (label, kind) in _MOVE_LABELS.items():
+        if frm == invoice["status"] and not ops.can_move_invoice(frm, to, admin, accountant):
+            out.append({"to": to, "label": label, "kind": kind})
+    return out
+
+
+class InvoiceStatus(BaseModel):
+    invoice_id: str
+    status: str
+    sent_on: str = ""
+    due: str = ""
+    sent_to: str = ""
+    paid_on: str = ""
+    payment_ref: str = ""
+    note: str = ""
+
+
+@app.post("/api/invoice/status")
+def api_invoice_status(request: Request, req: InvoiceStatus):
+    """Move an invoice along its lifecycle: an admin approves it, the
+    accountant marks it sent and then paid, and every step can be undone.
+    Who may make which move lives in ops.INVOICE_FLOW, checked again here
+    under the write lock rather than trusting the button that was drawn."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not _invoice_viewer(user):
+        return JSONResponse({"ok": False, "error": "admins and the accountant only"},
+                            status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    if not _visible_invoice(user, ops.get_invoice(req.invoice_id)):
+        return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
+    try:
+        row = ops.set_invoice_status(
+            req.invoice_id, req.status, _actor(user),
+            admin=auth.is_admin(user), accountant=auth.is_accountant(user),
+            sent_on=req.sent_on or None, due=req.due or None, sent_to=req.sent_to.strip(),
+            paid_on=req.paid_on or None, payment_ref=req.payment_ref, note=req.note)
+    except PermissionError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Moving invoice %s to %s failed", req.invoice_id, req.status)
+        return JSONResponse({"ok": False, "error": "Notion refused the change — try again"},
+                            status_code=502)
+    if row["status"] == ops.APPROVED and req.status == ops.APPROVED:
+        _maybe_tell_accountant(row, request)
+    return JSONResponse({"ok": True, "status": row["status"]})
+
+
+def _maybe_tell_accountant(invoice: dict, request: Request) -> None:
+    """A courtesy email to the accountant when a bill is approved, if its own
+    switch is on (INVOICE_STATUS_EMAIL_ENABLED). Logged and swallowed like the
+    budget alert: the list's Approved chip is the real queue, and an approval
+    must never fail because a notice couldn't go out."""
+    to = mailer.accountant_recipients()
+    if not (to and mailer.invoice_status_email_enabled()):
+        return
+    month = _parse_date(invoice["month"])
+    period = month.strftime("%B %Y") if month else invoice["month"]
+    number = f" {invoice['number']}" if invoice.get("number") else ""
+    link = str(request.base_url).rstrip("/") + f"/invoices/{invoice['id']}"
+    body = (f"Invoice{number} for {invoice['project']}, {period} "
+            f"({invoice['hours_billed']:g} h) is approved and ready to send.\n\n{link}\n")
+    try:
+        mailer.send_plain(to, f"Ready to send: invoice{number} — {invoice['project']} — {period}",
+                          body, channel="invoice_status")
+    except Exception:
+        logging.exception("Could not tell the accountant about invoice %s", invoice["id"])
 
 
 class EmailRequest(ExportRequest):
@@ -2776,7 +2955,7 @@ def _people_write_guard(request: Request) -> Optional[JSONResponse]:
 
 class PersonFlag(BaseModel):
     page_id: str
-    field: str        # "active" | "admin" | "approver"
+    field: str        # "active" | "admin" | "approver" | "accountant"
     value: bool
 
 

@@ -46,6 +46,7 @@
       <th class="col-flag" title="May sign in, and appears on the roster">Active</th>
       <th class="col-flag" title="Team-wide reports, exports and these admin pages">Admin</th>
       <th class="col-flag" title="May approve or decline absence requests">Approves absences</th>
+      <th class="col-flag" title="Sees approved invoices and marks them sent and paid">Accountant</th>
     </tr>
   </thead>
   <tbody>
@@ -63,17 +64,17 @@
         {% elif m %}{{ m.name }}{% if m.email %} · {{ m.email }}{% endif %}
         {% else %}<span title="Not a current workspace member">not in the workspace</span>{% endif %}
       </td>
-      {% for field in ['active', 'admin', 'approver'] %}
+      {% for field in ['active', 'admin', 'approver', 'accountant'] %}
       <td class="assign-cell col-flag">
         <input type="checkbox" data-field="{{ field }}" {{ 'checked' if r[field] }}
-               aria-label="{{ {'active': 'Active', 'admin': 'Admin', 'approver': 'Approves absences'}[field] }} · {{ r.name }}"
+               aria-label="{{ {'active': 'Active', 'admin': 'Admin', 'approver': 'Approves absences', 'accountant': 'Accountant'}[field] }} · {{ r.name }}"
                onchange="saveFlag(this)">
       </td>
       {% endfor %}
     </tr>
     {% endfor %}
     {% if not roster %}
-    <tr class="empty"><td colspan="5">Nobody on the roster yet.</td></tr>
+    <tr class="empty"><td colspan="6">Nobody on the roster yet.</td></tr>
     {% endif %}
   </tbody>
 </table>
@@ -102,7 +103,7 @@ async function saveFlag(cb) {
   const tr = cb.closest('tr'), td = cb.closest('td');
   const field = cb.dataset.field, value = cb.checked;
   // locking yourself out is allowed (another admin exists) but worth a pause
-  if (!value && tr.dataset.self && field !== 'approver') {
+  if (!value && tr.dataset.self && field !== 'approver' && field !== 'accountant') {
     const ok = await zConfirm(field === 'active'
         ? "Untick your own Active? You'll be signed out within a minute."
         : "Remove your own Admin? You'll lose this page and the reports.",

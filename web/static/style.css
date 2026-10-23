@@ -1137,6 +1137,34 @@ dialog.pop .tpick-hint { margin: -6px 0 12px; }
 /* width:auto beats the global `input, select { width: 100% }`, which would
    otherwise push the month picker onto a line of its own */
 .newinv select, .newinv input[type=month] { width: auto; max-width: 190px; }
+/* the invoice lifecycle: a status pill per row, filter chips above the list,
+   and a step bar on the detail page — one colour per stage everywhere, so
+   "blue" means waiting for the accountant on every screen */
+.chip.stage-draft { background: var(--head); color: var(--muted); }
+.chip.stage-approved { background: var(--chart-track); color: var(--ink); }
+.chip.stage-sent { background: var(--saving); color: var(--ink); }
+.chip.stage-overdue { background: var(--err); color: var(--err-ink); }
+.chip.stage-paid { background: var(--okbg); color: var(--ok); }
+.chip.stage-void { background: var(--head); color: var(--muted); text-decoration: line-through; }
+.invstages { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.invstages a.chip { text-decoration: none; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+.invstages a.chip b { margin-left: 4px; color: var(--muted); }
+.invstages a.chip.chip-on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--chart-track); }
+.invstatus { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.invsteps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.invstep { font-size: 13px; font-weight: 600; color: var(--muted); padding: 4px 10px;
+           border: 1px solid var(--line); border-radius: 999px; }
+.invstep.is-done { color: var(--ok); border-color: var(--ok); }
+.invstep.is-done::before { content: "✓ "; }
+.invstep.is-on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.invstep.is-void.is-on { background: var(--err); color: var(--err-ink); border-color: var(--err); }
+.invfacts { flex: 1 1 260px; }
+.invmoves { margin-left: auto; }
+.invhistory { flex-basis: 100%; font-size: 13px; color: var(--muted); }
+.invhistory summary { cursor: pointer; font-weight: 600; }
+.invhistory ol { margin: 6px 0 0; padding-left: 18px; }
+.movefields { display: grid; gap: 10px; margin-bottom: 10px; }
+.movefields[hidden] { display: none; }
 /* invoice detail: a line billed at less than it was logged, and one billed at
    nothing — the second reads as struck through rather than merely faded, since
    "not on this bill" is a different statement from "small" */
