@@ -2955,7 +2955,7 @@ def _people_write_guard(request: Request) -> Optional[JSONResponse]:
 
 class PersonFlag(BaseModel):
     page_id: str
-    field: str        # "active" | "admin" | "approver"
+    field: str        # "active" | "admin" | "approver" | "accountant"
     value: bool
 
 

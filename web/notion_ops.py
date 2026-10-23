@@ -2381,7 +2381,13 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
         })
         keep = matches[0] if matches else None
         if keep:
-            # raises before anything is written — including the fold below
+            # raises before anything is written — including the fold below.
+            # Every duplicate is checked, not just the one kept: folding away a
+            # sent row would quietly un-send that month.
+            for m in matches[1:]:
+                if _invoice_status(m.get("properties") or {}) not in EDITABLE_STATUSES:
+                    raise InvoiceLocked("this month has an invoice that has already gone "
+                                        "out — open it and undo that first")
             kp = keep.get("properties") or {}
             props.update(_content_change_props(
                 _invoice_status(kp),
@@ -2413,25 +2419,38 @@ def mark_invoice_sent(invoice_id: str, recipients: list[str], actor: str = "") -
     send that failed. The parent check is get_invoice's, for the same reason:
     the id comes from a browser. Moves the status to Sent and starts the due
     clock the first time; a resend keeps the due date it already has.
+
+    The email has already gone when this runs, so it can't refuse — but it
+    re-reads under the write lock and never drags a bill that was marked paid
+    or voided in the meantime back to Sent; the history says what happened.
+    An admin emailing a draft skips approval, and the history says that too.
     """
-    invoice = get_invoice(invoice_id)
-    if not invoice:
-        raise ValueError("that isn't an invoice")
     to = ", ".join(recipients)[:1900]
-    props = {
-        SENT_TO_PROP: {"rich_text": [{"text": {"content": to}}]},
-        SENT_AT_PROP: {"date": {"start": dt.datetime.now().astimezone().isoformat(
-            timespec="seconds")}},
-        STATUS_PROP: {"select": {"name": SENT}},
-        HISTORY_PROP: {"rich_text": _history_text(
-            "\n".join(invoice.get("history") or []),
-            _history_line(f"Emailed to {to}", actor))},
-    }
-    if not invoice.get("due"):
-        props[DUE_PROP] = {"date": {"start": (
-            dt.date.today() + dt.timedelta(days=invoice_due_days())).isoformat()}}
-    _notion.pages.update(invoice_id, properties=props)
-    return dict(invoice, sent_to=to, status=SENT)
+    with _write_lock:
+        invoice = get_invoice(invoice_id)
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        current = invoice["status"]
+        what = f"Emailed to {to}"
+        if current == DRAFT:
+            what += " (sent without approval)"
+        elif current in (PAID, VOID):
+            what += f" while {current.lower()} — status left as it was"
+        props = {
+            SENT_TO_PROP: {"rich_text": [{"text": {"content": to}}]},
+            SENT_AT_PROP: {"date": {"start": dt.datetime.now().astimezone().isoformat(
+                timespec="seconds")}},
+            HISTORY_PROP: {"rich_text": _history_text(
+                "\n".join(invoice.get("history") or []), _history_line(what, actor))},
+        }
+        if current not in (PAID, VOID):
+            props[STATUS_PROP] = {"select": {"name": SENT}}
+            if not invoice.get("due"):
+                props[DUE_PROP] = {"date": {"start": (
+                    dt.date.today() + dt.timedelta(days=invoice_due_days())).isoformat()}}
+        _notion.pages.update(invoice_id, properties=props)
+    return dict(invoice, sent_to=to,
+                status=current if current in (PAID, VOID) else SENT)
 
 
 def bill_lines(raw: str) -> list[str]:
@@ -2454,9 +2473,6 @@ def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: fl
     saying what was logged. Written before the send, so a send that fails
     doesn't lose the edits; the parent check is get_invoice's.
     """
-    invoice = get_invoice(invoice_id)
-    if not invoice:
-        raise ValueError("that isn't an invoice")
     lines = bill_lines("\n".join(lines))
     text = "\n".join(lines)
     props = {
@@ -2465,8 +2481,14 @@ def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: fl
         "Hours billed": {"number": round(float(hours), 2)},
         AMOUNT_PROP: {"number": round(float(amount), 2)},
     }
-    props.update(_content_change_props(invoice["status"], invoice.get("history"), actor))
-    _notion.pages.update(invoice_id, properties=props)
+    # under the lock, so a "mark sent" landing between the read and the write
+    # can't let an edit through onto a bill that has just gone out
+    with _write_lock:
+        invoice = get_invoice(invoice_id)
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        props.update(_content_change_props(invoice["status"], invoice.get("history"), actor))
+        _notion.pages.update(invoice_id, properties=props)
     return dict(invoice, lines=lines, hours_billed=round(float(hours), 2),
                 amount=round(float(amount), 2),
                 status=DRAFT if STATUS_PROP in props else invoice["status"])

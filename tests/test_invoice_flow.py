@@ -278,6 +278,22 @@ def _():
     assert ops.DUE_PROP not in f.props
 
 
+@check("an email landing after a bill was marked paid doesn't un-pay it")
+def _():
+    with fake_notion(page(status="Paid")) as f:
+        out = ops.mark_invoice_sent("inv1", ["client@example.com"], "Angie")
+    assert ops.STATUS_PROP not in f.props and out["status"] == "Paid"
+    assert "while paid" in f.props[ops.HISTORY_PROP]["rich_text"][0]["text"]["content"]
+
+
+@check("an admin emailing a draft is recorded as skipping approval")
+def _():
+    with fake_notion(page(status="Draft")) as f:
+        ops.mark_invoice_sent("inv1", ["client@example.com"], "JP")
+    assert f.props[ops.STATUS_PROP] == {"select": {"name": "Sent"}}
+    assert "without approval" in f.props[ops.HISTORY_PROP]["rich_text"][0]["text"]["content"]
+
+
 @check("the status bar only offers moves this viewer may make")
 def _():
     old = ops.access_ids

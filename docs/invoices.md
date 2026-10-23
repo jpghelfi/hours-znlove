@@ -317,7 +317,17 @@ Overdue), counted before the pick so every chip says what it would show.
 
 **Rows filed before the lifecycle** have no Status: one with `Sent at` reads as
 **Sent** (and has no due date, so it never reads overdue), anything else as
-**Draft**. Nothing was backfilled — mark old ones paid from their page.
+**Draft**. Nothing was backfilled — mark old ones paid from their page. A
+legacy Sent row is therefore locked (re-saving it from the export screen is
+refused until its send is undone) and has no due date, so it never reads
+overdue.
+
+**Emailing never refuses after the fact.** `mark_invoice_sent` runs once Gmail
+has accepted, under the write lock: it moves Draft/Approved to Sent (an admin
+emailing a draft is recorded as "sent without approval"), but a bill marked
+Paid or Void in the meantime keeps its status and only gains the history line.
+If that write fails, the send is logged, not failed — the client has the bill,
+and a 502 would invite a second one.
 
 **Telling the accountant**: approving emails `INVOICE_ACCOUNTANT_TO` when
 `INVOICE_STATUS_EMAIL_ENABLED=1` (its own switch — internal, unlike
