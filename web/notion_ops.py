@@ -804,26 +804,26 @@ def week_grid(monday: dt.date, person_id: str) -> dict:
 
 ALLOC_DS = _ids.get("allocations_ds_id")
 
-_alloc_person_cache: dict = {"at": 0.0, "name": None}
+_alloc_person_cache: dict = {"at": 0.0, "name": None, "title": None}
 _alloc_person_lock = threading.Lock()
 _ALLOC_PROP_TTL = 300.0  # seconds
 
 
-def alloc_person_prop() -> str:
-    """Name of the Allocations people property — "Person" unless it's been
-    renamed in Notion.
+def _alloc_prop_names() -> dict:
+    """{"name": the people property, "title": the title property} of
+    Allocations, resolved from the schema and cached briefly.
 
-    The API addresses properties by name, so renaming that column in the Notion
-    UI used to 500 every page that reads or writes an allocation (the schedule,
-    the reports forecast). Resolve the name from the data source's schema
-    instead — preferring "Person", else the one people-typed property — and
-    cache it briefly, since this is consulted on every allocation read/write.
+    The API addresses properties by name, so renaming a column in the Notion
+    UI breaks whatever writes it by name: the people column once 500ed the
+    schedule and the reports forecast, and the title column (renamed
+    `Allocations`) made every *new* booking fail while edits kept working.
+    Prefer the expected name, else the one property of that type.
     """
     now = time.monotonic()
     with _alloc_person_lock:
         if _alloc_person_cache["name"] and now - _alloc_person_cache["at"] < _ALLOC_PROP_TTL:
-            return _alloc_person_cache["name"]
-    name = "Person"
+            return dict(_alloc_person_cache)
+    name, title = "Person", "Allocation"
     try:
         props = _notion.data_sources.retrieve(data_source_id=ALLOC_DS)["properties"]
         if "Person" not in props:
@@ -833,11 +833,34 @@ def alloc_person_prop() -> str:
                 logging.warning(
                     "Allocations has no 'Person' property — using the people property "
                     "%r instead. Rename it back to 'Person' in Notion.", name)
+        # a database has exactly one title property, so this can't be ambiguous
+        title = next((k for k, v in props.items() if v.get("type") == "title"), title)
     except Exception:
-        logging.exception("Could not read the Allocations schema; assuming 'Person'.")
+        # Never cached: a guess pinned for the TTL would fail every new booking
+        # for five minutes after one Notion blip, if a column has been renamed.
+        # The last names that worked beat the defaults, for the same reason.
+        logging.exception("Could not read the Allocations schema; using the last "
+                          "known names, else 'Person' and 'Allocation'.")
+        with _alloc_person_lock:
+            if _alloc_person_cache["name"]:
+                return {"name": _alloc_person_cache["name"],
+                        "title": _alloc_person_cache["title"]}
+        return {"name": name, "title": title}
     with _alloc_person_lock:
-        _alloc_person_cache.update(at=now, name=name)
-    return name
+        _alloc_person_cache.update(at=now, name=name, title=title)
+    return {"name": name, "title": title}
+
+
+def alloc_person_prop() -> str:
+    """Name of the Allocations people property — "Person" unless it's been
+    renamed in Notion (see _alloc_prop_names)."""
+    return _alloc_prop_names()["name"]
+
+
+def alloc_title_prop() -> str:
+    """Name of the Allocations title property — "Allocation" unless it's been
+    renamed in Notion (see _alloc_prop_names)."""
+    return _alloc_prop_names()["title"]
 
 
 def alloc_rows(date_from: str, date_to: str, person_id: str | None = None) -> list[dict]:
@@ -1155,7 +1178,7 @@ def _set_allocation_locked(person_id: str, project_id: str, date_iso: str, hours
         _notion.pages.create(
             parent={"type": "data_source_id", "data_source_id": ALLOC_DS},
             properties={
-                "Allocation": {"title": [{"text": {"content": f"{pmap.get(project_id,'?')} — {date_iso}"}}]},
+                alloc_title_prop(): {"title": [{"text": {"content": f"{pmap.get(project_id,'?')} — {date_iso}"}}]},
                 person_prop: {"people": [{"id": person_id}]},
                 "Project": {"relation": [{"id": project_id}]},
                 "Week": {"date": {"start": date_iso}},

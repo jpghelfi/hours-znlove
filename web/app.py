@@ -2891,6 +2891,8 @@ def api_allocation(request: Request, alloc: Alloc):
         res = ops.set_allocation_range(alloc.person_id, alloc.project_id,
                                        day.isoformat(), end.isoformat(), alloc.hours)
     except Exception:
+        logging.exception("Saving allocation %s/%s %s..%s failed",
+                          alloc.person_id, alloc.project_id, day, end)
         return JSONResponse({"ok": False, "error": "could not save allocation"}, status_code=400)
     # Changing a booking's project (or its person) is a delete plus a write,
     # not an edit: the pair *is* the Notion row's identity. Deliberately after
