@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+{% block title %}Tools · Hours Tracker{% endblock %}
+{% block nav_tools %}active{% endblock %}
+{% block content %}
+<div class="week-head">
+  <div>
+    <h1>Tools</h1>
+    <div class="subtle">The software we use, and who has each.{% if is_admin %} Click a name in a tool's row to take it away, or tick boxes in <b>By person</b>.{% endif %}</div>
+  </div>
+  {% if configured and is_admin %}
+  <button type="button" class="primary" onclick="openTool()">＋ New tool</button>
+  {% endif %}
+</div>
+
+<div id="assign-notice" class="assign-notice" role="alert" hidden></div>
+
+{% if not configured %}
+<p class="subtle">The Tools database isn't configured (<code>TOOLS_DS_ID</code>). Run <code>src/setup_tools_db.py</code> first.</p>
+{% else %}
+
+{% if mine %}
+<div class="card tools-mine">
+  <span class="seg-label">Your tools</span>
+  {% for t in mine %}
+  {% if t.url %}<a class="chip chip-role" href="{{ t.url }}" target="_blank" rel="noopener">{{ t.name }} ↗</a>
+  {% else %}<span class="chip chip-role">{{ t.name }}</span>{% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="filters">
+  <span class="seg" role="group" aria-label="View">
+    <span class="seg-opts">
+      <a class="seg-opt {{ 'is-on' if view == 'catalog' }}" href="/tools">Catalog</a>
+      <a class="seg-opt {{ 'is-on' if view == 'people' }}" href="/tools?view=people">By person</a>
+    </span>
+  </span>
+</div>
+
+{% if view == 'catalog' %}
+<div class="grid-wrap">
+<table class="grid tools-grid">
+  <thead>
+    <tr>
+      <th>Tool</th>
+      <th>Category</th>
+      <th class="col-notes">Notes</th>
+      <th>People</th>
+      {% if is_admin %}<th class="col-edit" aria-label="Edit"></th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in tools %}
+    <tr data-tool="{{ t.id }}">
+      <td class="tool-name">
+        {% if t.url %}<a href="{{ t.url }}" target="_blank" rel="noopener">{{ t.name }}</a>{% else %}<b>{{ t.name }}</b>{% endif %}
+      </td>
+      <td class="subtle">{{ t.category or '—' }}</td>
+      <td class="subtle col-notes">{{ t.notes }}</td>
+      <td><div class="tool-holders">
+        <span class="chip chip-assign" title="People with this tool">{{ t.holders|length }}</span>
+        {% for h in t.holders %}
+        {% if is_admin %}
+        <button type="button" class="holder{{ ' is-former' if h.former }}" data-user="{{ h.id }}"
+                title="Take {{ t.name }} away from {{ h.name or 'this former member' }}"
+                onclick="unassign(this)">{{ h.name or 'former member' }} ×</button>
+        {% else %}
+        <span class="holder{{ ' is-former' if h.former }}">{{ h.name or 'former member' }}</span>
+        {% endif %}
+        {% endfor %}
+        {% if is_admin %}
+        {% set left = people | rejectattr('bare', 'in', t.held) | list %}
+        {% if left %}
+        <select class="tool-add" aria-label="Give {{ t.name }} to…" onchange="assignFromSelect(this)">
+          <option value="">＋ add…</option>
+          {% for p in left %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+        </select>
+        {% endif %}
+        {% endif %}
+      </div></td>
+      {% if is_admin %}
+      <td class="col-edit"><button type="button" class="btn" onclick="openTool('{{ t.id }}')">Edit</button></td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+    {% if not tools %}
+    <tr class="empty"><td colspan="{{ 5 if is_admin else 4 }}">No tools in the catalog yet.{% if is_admin %} Add the first with <b>＋ New tool</b>.{% endif %}</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+{% else %}
+{# people × tools: the quickest way to set someone up — tick across a row #}
+<div class="grid-wrap">
+<table class="grid assign-grid tools-matrix">
+  <thead>
+    <tr>
+      <th>Person</th>
+      {% for t in tools %}<th class="col-flag" title="{{ t.category }}">{{ t.name }}</th>{% endfor %}
+      <th class="col-flag">Total</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in people %}
+    <tr data-user="{{ p.id }}">
+      <td>{{ p.name }}</td>
+      {% for t in tools %}
+      {% set on = p.bare in t.held %}
+      <td class="assign-cell col-flag" data-tool="{{ t.id }}">
+        {% if is_admin %}
+        <input type="checkbox" {{ 'checked' if on }} aria-label="{{ t.name }} · {{ p.name }}" onchange="toggleCell(this)">
+        {% elif on %}✓{% endif %}
+      </td>
+      {% endfor %}
+      <td class="col-flag row-total">{{ p.tool_count }}</td>
+    </tr>
+    {% endfor %}
+    {% if not people %}
+    <tr class="empty"><td colspan="{{ tools|length + 2 }}">Nobody on the roster.</td></tr>
+    {% endif %}
+  </tbody>
+  {% if tools %}
+  <tfoot>
+    <tr>
+      <th>People</th>
+      {% for t in tools %}<th class="col-flag col-total" data-tool="{{ t.id }}">{{ t.holders | rejectattr('former') | list | length }}</th>{% endfor %}
+      <th></th>
+    </tr>
+  </tfoot>
+  {% endif %}
+</table>
+</div>
+{% endif %}
+
+{% if retired %}
+<details class="tools-retired">
+  <summary class="subtle">Retired ({{ retired|length }})</summary>
+  <ul>
+    {% for t in retired %}
+    <li data-tool="{{ t.id }}"><b>{{ t.name }}</b>{% if t.category %} <span class="subtle">· {{ t.category }}</span>{% endif %}
+      <span class="subtle">· {{ t.holders|length }} had it</span>
+      {% if is_admin %}<button type="button" class="btn" onclick="setActive('{{ t.id }}', true)">Restore</button>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block modals %}
+{% if configured and is_admin %}
+{# create and edit share one dialog; no <form>, see _task_dialog.html #}
+<dialog id="toolDlg" class="pop">
+  <div class="pop-head">
+    <strong id="tdTitle">New tool</strong>
+    <button type="button" class="pop-x" onclick="toolDlg.close()" aria-label="Close">×</button>
+  </div>
+  <label>Name <input id="tdName" type="text" maxlength="100" placeholder="Slack" autocomplete="off"></label>
+  <label><span>Category <span class="subtle">— optional</span></span>
+    <input id="tdCat" type="text" list="toolCats" maxlength="100" placeholder="Communication" autocomplete="off">
+    <datalist id="toolCats">{% for c in categories %}<option value="{{ c }}">{% endfor %}</datalist>
+  </label>
+  <label><span>Link <span class="subtle">— optional</span></span>
+    <input id="tdUrl" type="text" maxlength="500" placeholder="https://slack.com" autocomplete="off">
+  </label>
+  <label><span>Notes <span class="subtle">— optional: plan, admin, how to get access</span></span>
+    <textarea id="tdNotes" rows="3"></textarea>
+  </label>
+  <div class="pop-err" id="tdErr" hidden></div>
+  <div class="pop-actions">
+    <button type="button" class="danger" id="tdRetire" onclick="retireTool()">Retire</button>
+    <button type="button" class="btn" onclick="toolDlg.close()">Cancel</button>
+    <button type="button" class="primary" id="tdGo" onclick="saveTool()">Add tool</button>
+  </div>
+</dialog>
+{% endif %}
+
+<script>
+{% if configured and is_admin %}
+const TOOL_DATA = {
+  {% for t in tools %}{{ t.id | tojson }}: {{ {'name': t.name, 'category': t.category, 'url': t.url, 'notes': t.notes} | tojson }},{% endfor %}
+};
+const toolDlg = document.getElementById('toolDlg');
+let editing = null;
+
+let noticeTimer = null;
+function showNotice(msg) {
+  const el = document.getElementById('assign-notice');
+  el.textContent = msg; el.hidden = false;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+async function postJSON(url, body) {
+  const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify(body)});
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!data.ok) throw new Error(data.error || "Couldn't save — check your connection.");
+  return data;
+}
+
+const FIELDS = {name: 'tdName', category: 'tdCat', url: 'tdUrl', notes: 'tdNotes'};
+
+function openTool(id) {
+  editing = id || null;
+  const t = id ? TOOL_DATA[id] : {name: '', category: '', url: '', notes: ''};
+  for (const [f, el] of Object.entries(FIELDS)) document.getElementById(el).value = t[f] || '';
+  document.getElementById('tdTitle').textContent = id ? 'Edit ' + t.name : 'New tool';
+  document.getElementById('tdGo').textContent = id ? 'Save' : 'Add tool';
+  document.getElementById('tdRetire').hidden = !id;
+  document.getElementById('tdErr').hidden = true;
+  toolDlg.showModal();
+  document.getElementById('tdName').focus();
+}
+document.getElementById('tdName').addEventListener('keydown', e => { if (e.key === 'Enter') saveTool(); });
+
+async function saveTool() {
+  const vals = {};
+  for (const [f, el] of Object.entries(FIELDS)) vals[f] = document.getElementById(el).value.trim();
+  const err = document.getElementById('tdErr'), go = document.getElementById('tdGo');
+  if (!vals.name) { err.textContent = 'A tool needs a name.'; err.hidden = false; return; }
+  go.disabled = true; err.hidden = true;
+  try {
+    if (!editing) {
+      await postJSON('/api/tools/create', vals);
+    } else {
+      // only the fields that changed, so an edit can't clobber another tab's
+      const before = TOOL_DATA[editing];
+      for (const f of Object.keys(FIELDS)) {
+        if (vals[f] !== (before[f] || '')) await postJSON('/api/tools/update', {tool_id: editing, field: f, value: vals[f]});
+      }
+    }
+    location.reload();
+  } catch (e) {
+    err.textContent = e.message; err.hidden = false;
+  } finally {
+    go.disabled = false;
+  }
+}
+
+async function setActive(id, value) {
+  try {
+    await postJSON('/api/tools/update', {tool_id: id, field: 'active', value});
+    location.reload();
+  } catch (e) { showNotice(e.message); }
+}
+
+async function retireTool() {
+  const name = TOOL_DATA[editing].name;
+  if (!await zConfirm(name + ' leaves the catalog. Who had it stays on record, and it can be restored.',
+                      {title: 'Retire ' + name + '?', ok: 'Retire', danger: true})) return;
+  toolDlg.close();
+  setActive(editing, false);
+}
+
+async function assign(toolId, userId, on) {
+  return postJSON('/api/tools/assign', {tool_id: toolId, user_id: userId, on});
+}
+
+async function assignFromSelect(sel) {
+  if (!sel.value) return;
+  sel.disabled = true;
+  try {
+    await assign(sel.closest('tr').dataset.tool, sel.value, true);
+    location.reload();
+  } catch (e) {
+    showNotice(e.message); sel.value = ''; sel.disabled = false;
+  }
+}
+
+async function unassign(btn) {
+  const tool = TOOL_DATA[btn.closest('tr').dataset.tool].name;
+  if (!await zConfirm('Take ' + tool + ' away from ' + btn.textContent.replace(/ ×$/, '') + '?',
+                      {title: 'Remove access', ok: 'Remove', danger: true})) return;
+  btn.disabled = true;
+  try {
+    await assign(btn.closest('tr').dataset.tool, btn.dataset.user, false);
+    location.reload();
+  } catch (e) {
+    showNotice(e.message); btn.disabled = false;
+  }
+}
+
+async function toggleCell(cb) {
+  const td = cb.closest('td'), tr = cb.closest('tr'), on = cb.checked;
+  td.classList.remove('saved', 'err'); td.classList.add('saving');
+  cb.disabled = true;
+  try {
+    await assign(td.dataset.tool, tr.dataset.user, on);
+    td.classList.remove('saving'); td.classList.add('saved');
+    setTimeout(() => td.classList.remove('saved'), 800);
+    const total = tr.querySelector('.row-total');
+    total.textContent = String(+total.textContent + (on ? 1 : -1));
+    const col = document.querySelector('tfoot [data-tool="' + td.dataset.tool + '"]');
+    // counts roster rows only, like the ticks above it (former holders aren't drawn)
+    if (col) col.textContent = String(+col.textContent + (on ? 1 : -1));
+  } catch (e) {
+    cb.checked = !on;
+    td.classList.remove('saving'); td.classList.add('err');
+    showNotice(e.message);
+  } finally {
+    cb.disabled = false;
+  }
+}
+{% endif %}
+</script>
+{% endblock %}
