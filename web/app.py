@@ -1988,10 +1988,14 @@ def _apply_bill(req: InvoiceBill, invoice: dict, actor: str = "") -> dict | JSON
     if not lines:
         return JSONResponse({"ok": False, "error": "the bill needs at least one line of detail"},
                             status_code=400)
-    unchanged = (lines == [l for l in (invoice.get("lines") or []) if l]
-                 and abs(hours - invoice["hours_billed"]) < 0.005
-                 and invoice.get("amount") is not None
-                 and abs(amount - invoice["amount"]) < 0.005)
+    # Compared against what the page *showed* — the stored values, or the
+    # defaults it prefills when none are stored yet — not the raw row. An
+    # invoice with no saved lines or amount otherwise looked edited on every
+    # PDF download, and an approved one silently fell back to Draft.
+    shown = _invoice_doc(invoice)
+    unchanged = (lines == [l for l in shown["lines"] if l]
+                 and abs(hours - shown["hours_billed"]) < 0.005
+                 and abs(amount - shown["amount"]) < 0.005)
     if unchanged:
         return invoice
     try:

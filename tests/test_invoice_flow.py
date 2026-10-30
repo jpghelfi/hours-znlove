@@ -294,6 +294,30 @@ def _():
     assert "without approval" in f.props[ops.HISTORY_PROP]["rich_text"][0]["text"]["content"]
 
 
+@check("downloading the PDF of an approved invoice with nothing typed doesn't un-approve it")
+def _():
+    # The bug: no stored lines/amount, so the page's prefilled defaults looked
+    # like an edit, and the save-before-download sent it back to Draft.
+    invoice = {"id": "inv1", "project_id": "p1", "project": "Eloquence", "month": "2026-10-01",
+               "hours_tracked": 15.5, "hours_billed": 15.5, "rate": 0, "amount": None,
+               "currency": "USD", "lines": [], "status": "Approved", "history": []}
+    shown = webapp._invoice_doc(invoice)
+    calls = []
+    old = ops.set_invoice_bill
+    ops.set_invoice_bill = lambda *a, **k: calls.append((a, k))
+    try:
+        req = webapp.InvoiceBill(invoice_id="inv1", lines="\n".join(shown["lines"]),
+                                 hours=15.5, amount=shown["amount"])
+        out = webapp._apply_bill(req, dict(invoice))
+        assert calls == [] and out["status"] == "Approved", (calls, out)
+        # a real edit still writes
+        req = webapp.InvoiceBill(invoice_id="inv1", lines="Something else", hours=15.5, amount=0)
+        webapp._apply_bill(req, dict(invoice))
+        assert len(calls) == 1
+    finally:
+        ops.set_invoice_bill = old
+
+
 @check("the status bar only offers moves this viewer may make")
 def _():
     old = ops.access_ids

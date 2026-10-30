@@ -374,10 +374,13 @@ async function downloadPdf() {
   btn.disabled = true;
   try {
     const saved = await saveBill();
-    if (saved.status === 'Draft' && {{ (invoice.status == 'Approved')|tojson }}) {
-      say('Saved — the edit sent this invoice back to Draft. Approve it again when it\'s right.', true);
-    }
     window.location.href = '/invoices/{{ invoice.id }}.pdf';
+    if (saved.status !== {{ invoice.status|tojson }}) {
+      // the edit moved the status (approved → draft): redraw the status bar
+      // rather than leave buttons on screen the server will now refuse
+      say('Saved — the edit sent this invoice back to Draft. Approve it again when it\'s right.', true);
+      setTimeout(() => window.location.reload(), 2500);
+    }
   } catch (e) {
     say('Not saved: ' + e.message, false);
   }
