@@ -105,6 +105,21 @@ def ensure_accountant_property() -> None:
         _notion.data_sources.update(PEOPLE_DS, properties={ACCOUNTANT_PROP: {"checkbox": {}}})
 
 
+# A person's working day, in hours. Blank = the app-wide default
+# (DAY_TARGET_HOURS, 8): it sets their capacity on /schedule and /dashboard.
+HOURS_PROP = "Hours per day"
+MAX_HOURS_PER_DAY = 24.0
+
+
+def ensure_hours_property() -> None:
+    """Make sure the People db has an `Hours per day` number; add if missing."""
+    if not PEOPLE_DS:
+        return
+    ds = _notion.data_sources.retrieve(PEOPLE_DS)
+    if HOURS_PROP not in ds["properties"]:
+        _notion.data_sources.update(PEOPLE_DS, properties={HOURS_PROP: {"number": {}}})
+
+
 # ---- reads -------------------------------------------------------------
 
 
@@ -150,7 +165,8 @@ def _people_from_db() -> list[dict]:
             title = props.get("Name", {}).get("title", [])
             name = title[0]["plain_text"].strip() if title else ""
             uid = linked[0]["id"]
-            people.setdefault(uid, {"id": uid, "name": name or linked[0].get("name") or "(unnamed)"})
+            people.setdefault(uid, {"id": uid, "name": name or linked[0].get("name") or "(unnamed)",
+                                    "hours_per_day": (props.get(HOURS_PROP) or {}).get("number")})
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
@@ -307,6 +323,7 @@ def _roster_row(page: dict) -> dict:
         "admin": bool(props.get("Admin", {}).get("checkbox")),
         "approver": bool(props.get(APPROVER_PROP, {}).get("checkbox")),
         "accountant": bool(props.get(ACCOUNTANT_PROP, {}).get("checkbox")),
+        "hours_per_day": (props.get(HOURS_PROP) or {}).get("number"),
     }
 
 
@@ -404,6 +421,19 @@ def rename_person(page_id: str, name: str) -> dict:
             "Name": {"title": [{"type": "text", "text": {"content": name}}]}})
     invalidate_access_cache()
     return {"ok": True, "name": name}
+
+
+def set_person_hours(page_id: str, hours: float | None) -> dict:
+    """Set one People row's hours per day; None clears it back to the default."""
+    if hours is not None:
+        hours = float(hours)
+        if not (0 < hours <= MAX_HOURS_PER_DAY):
+            raise ValueError(f"hours per day must be above 0 and at most {MAX_HOURS_PER_DAY:g}")
+    with _write_lock:
+        _people_page(page_id)
+        _notion.pages.update(page_id, properties={HOURS_PROP: {"number": hours}})
+    invalidate_access_cache()
+    return {"ok": True, "hours": hours}
 
 
 class AlreadyOnRoster(Exception):

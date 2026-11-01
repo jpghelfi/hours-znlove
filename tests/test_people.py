@@ -235,6 +235,34 @@ def _():
             pass
 
 
+@check("hours per day writes the number, clears with None, drops the cache")
+def _():
+    with installed([row("r1", "u1")]) as fake:
+        prime_cache()
+        assert ops.set_person_hours("r1", 6.5)["hours"] == 6.5
+        assert ops.set_person_hours("r1", None)["hours"] is None
+        assert fake.updates == [("r1", {"Hours per day": {"number": 6.5}}),
+                                ("r1", {"Hours per day": {"number": None}})]
+        assert ops._access_cache["allowed"] is None
+
+
+@check("hours per day refuses 0, negatives, over 24 and non-People pages — before writing")
+def _():
+    with installed([row("r1", "u1")]) as fake:
+        for bad in (0, -1, 24.5):
+            try:
+                ops.set_person_hours("r1", bad)
+                raise AssertionError(f"expected ValueError for {bad}")
+            except ValueError:
+                pass
+        try:
+            ops.set_person_hours("elsewhere", 6)
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+        assert fake.updates == []
+
+
 @check("add creates an Active row linked to the member")
 def _():
     with installed([]) as fake:
@@ -305,6 +333,7 @@ def _():
             r = c.post("/api/people/flag", json={"page_id": "r1", "field": "admin", "value": False})
             assert r.status_code == 403
             assert c.post("/api/people/add", json={"user_id": "cccc-3333"}).status_code == 403
+            assert c.post("/api/people/hours", json={"page_id": "r1", "hours": 6}).status_code == 403
             assert fake.updates == [] and fake.creates == []
     finally:
         ops.access_ids = old_ids

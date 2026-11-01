@@ -16,7 +16,7 @@
     <h1>Schedule</h1>
     <div class="subtle">
       {%- if view == 'days' and is_admin -%}
-        Week of {{ start_iso }} — click a day to book a project, {{ '%g'|format(cap) }}h a day, weekends off
+        Week of {{ start_iso }} — click a day to book a project, {{ '%g'|format(cap) }}h a day unless set per person, weekends off
       {%- elif view == 'days' -%}
         Week of {{ start_iso }} — what you're booked on, {{ '%g'|format(cap) }}h a day, weekends off
       {%- elif is_admin -%}
@@ -144,7 +144,10 @@
   </thead>
   <tbody>
   {% for r in rows %}
-    <tr data-row="{{ r.id }}">
+    {# the row's own capacity (a person's Hours per day); scoped to this loop
+       iteration, so the page-level `cap` above stays the default #}
+    {% set cap = r.cap %}
+    <tr data-row="{{ r.id }}" data-cap="{{ r.cap }}">
       <td class="col-project col-person">{{ r.name }}</td>
       {% for c in cols %}
       {% set d = r.days[c.iso] %}
@@ -417,11 +420,12 @@ function openPop(cell, pill) {
   // about the person being booked, so just offer a full day.
   const booked = parseFloat(cell.dataset.total) || 0;
   const mine = pill ? parseFloat(pill.dataset.hours) : 0;
-  const free = Math.max(0, CAP - (booked - mine));
+  const rcap = rowCap(cell);
+  const free = Math.max(0, rcap - (booked - mine));
   const hours = document.getElementById('pop-hours');
-  hours.value = pill ? fmt(mine) : fmt(BY === 'person' ? (free || CAP) : CAP);
+  hours.value = pill ? fmt(mine) : fmt(BY === 'person' ? (free || rcap) : rcap);
   document.getElementById('pop-free').textContent =
-    BY === 'person' ? fmt(free) + 'h free of ' + fmt(CAP) : fmt(booked) + 'h booked that day';
+    BY === 'person' ? fmt(free) + 'h free of ' + fmt(rcap) : fmt(booked) + 'h booked that day';
   const through = document.getElementById('pop-through');
   through.value = date; through.min = date;
   document.getElementById('pop-del').hidden = !POP.editing;
@@ -590,7 +594,14 @@ function patchCell(row, date, personId, projectId, label, hours, swatch) {
 /* The cell's own numbers — total, capacity meter, empty state — read back off
    whatever pills it is left holding. Split out of patchCell because clearing a
    cell or a whole day column removes pills without going through it. */
+// a person row carries its own capacity (their Hours per day); CAP is the default
+function rowCap(cell) {
+  const tr = cell.closest('tr');
+  return (tr && parseFloat(tr.dataset.cap)) || CAP;
+}
+
 function refreshCell(cell) {
+  const CAP = rowCap(cell);
   const pills = cell.querySelector('.pills');
   let total = 0;
   pills.querySelectorAll('.pill').forEach(p => total += parseFloat(p.dataset.hours) || 0);

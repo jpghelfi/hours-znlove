@@ -37,6 +37,7 @@ services:
       # Slack incoming webhook for error alerts (docs/error-alerts.md). Unset = off.
       - key: SLACK_ALERT_WEBHOOK_URL
         sync: false
+      # default only: a person's own Hours per day (People db) wins on /schedule
       - key: WEEK_TARGET_HOURS
         value: "40"
       - key: NOTION_OAUTH_CLIENT_ID

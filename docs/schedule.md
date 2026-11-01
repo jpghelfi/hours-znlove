@@ -207,6 +207,8 @@ variable rather than letting the CSS guess.
 
 `DAY_TARGET_HOURS` (default `8`) is the per-day capacity. Each person's day cell shows a meter: under capacity is green, exactly at capacity blue, over capacity red. `WEEK_TARGET_HOURS` still overrides the number used by the weeks rollup, so existing deploys keep their weekly target.
 
+**A person's own `Hours per day` (People db, edited on `/people`) wins over both.** In the People grouping each row carries its capacity (`r.cap`, and `data-cap` on the `<tr>` for the JS meter and the popover's "h free of"): Days = their hours/day, Weeks = hours/day × 5. Only people *without* a value fall back to `DAY_TARGET_HOURS` / `WEEK_TARGET_HOURS` — the env is the default, never an override, because `render.yaml` pins `WEEK_TARGET_HOURS=40` and "env wins" would make the column dead in production. Project and partner rows keep the default. With nobody set, the page is unchanged. The rule lives in `web/dashboard.py` (`day_cap`/`week_cap`), shared with `/dashboard`.
+
 ### Colors
 
 Each project gets one of eight palette slots from a hash of its id (`_swatch` in `web/app.py`, `--s0…--s7` in `style.css`, with light and dark values). A project therefore keeps the same color across days, across both groupings, and across page loads — no state to store.

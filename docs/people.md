@@ -18,6 +18,14 @@ phone's More sheet) does it in the app.
   like `/assignments`' checkboxes (`POST /api/people/flag`) and snap back with
   the server's reason if the save fails. Unticking your **own** Active or Admin
   asks first (`zConfirm`), since it ends your access.
+- **Hours / day** (`POST /api/people/hours` → `ops.set_person_hours`): the
+  person's working day, a number property `Hours per day` on the People db
+  (added on boot by `ensure_hours_property`, read through `.get()`). Blank =
+  the default (`DAY_TARGET_HOURS`, 8), shown as the placeholder; clearing the
+  field writes blank back. Must be above 0 and at most 24 — 0 is refused on
+  purpose, since "doesn't track time" is a different fact from "works 0 h".
+  It sets that person's capacity on `/schedule` (`docs/schedule.md`) and on
+  `/dashboard`'s utilization (`docs/dashboard.md`).
 - **Inline rename** (`POST /api/people/rename`): the row title is the name the
   app shows everywhere. Whitespace is collapsed; blank is refused.
 - **Add person** (`POST /api/people/add`): a picker of Notion **workspace
