@@ -246,6 +246,13 @@ def _():
         assert ops._access_cache["allowed"] is None
 
 
+@check("No time tracking is a plain flag write")
+def _():
+    with installed([row("r1", "u1", admin=True)]) as fake:
+        ops.set_person_flag("r1", "no_tracking", True)
+        assert fake.updates == [("r1", {"No time tracking": {"checkbox": True}})]
+
+
 @check("hours per day refuses 0, negatives, over 24 and non-People pages — before writing")
 def _():
     with installed([row("r1", "u1")]) as fake:

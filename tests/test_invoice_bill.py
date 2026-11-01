@@ -59,6 +59,24 @@ def pdf_text(data: bytes) -> str:
     return data.decode("latin-1").replace("\\(", "(").replace("\\)", ")")
 
 
+# ---- the due date -------------------------------------------------------
+
+@check("the PDF prints the stored due date, not issued + terms")
+def _():
+    old = os.environ.get("INVOICE_DUE_DAYS")
+    os.environ["INVOICE_DUE_DAYS"] = "30"
+    try:
+        txt = pdf_text(invoice_pdf.build(dict(INVOICE, due="2026-11-15")))
+        assert "15 Nov 2026" in txt and "01 Oct 2026" not in txt
+        # with nothing stored, the terms still fill it in
+        assert "01 Oct 2026" in pdf_text(invoice_pdf.build(dict(INVOICE, due="")))
+    finally:
+        if old is None:
+            os.environ.pop("INVOICE_DUE_DAYS", None)
+        else:
+            os.environ["INVOICE_DUE_DAYS"] = old
+
+
 # ---- the line parser ----------------------------------------------------
 
 @check("bill_lines: one per line, blanks and surrounding whitespace dropped")

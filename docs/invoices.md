@@ -277,7 +277,17 @@ An invoice now carries a **Status** that tracks it until the money arrives:
 **Overdue** isn't stored: it's a Sent invoice whose `Due` date has passed,
 derived on read so it can't go stale. `Due` is set when the invoice is marked
 sent — typed in the dialog, defaulting to send date + `INVOICE_DUE_DAYS`
-(30 when that's unset; the PDF's own "Due" line still only prints when it's set).
+(30 when that's unset). **The PDF prints that same `Due`**: the stored date once
+there is one, and before the first send the date the send will store (today +
+`invoice_due_days()`, filled in by `_invoice_doc`) — so the file a client gets
+on the first ✉ Send agrees with what overdue tracking uses.
+
+**A status move saves the bill first** (`moveInvoice` in `invoice_detail.html`):
+if the lines/hours/amount differ from the last save, they're saved before the
+status POST — Approve used to approve the stored bill and drop the edits on
+screen. Saving an Approved bill drops it to Draft, so a move after that is
+abandoned with a message (or, if Draft was the target, simply done). Void skips
+the save.
 
 **The accountant is a People-db checkbox** (`Accountant`, added on boot by
 `ensure_accountant_property`, toggled on `/people`, `auth.is_accountant`,

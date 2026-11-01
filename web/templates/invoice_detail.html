@@ -363,6 +363,7 @@ async function saveBill() {
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || 'unknown error');
+  SAVED_BILL = JSON.stringify(billPayload());   // what's stored now, for moveInvoice
   return data;
 }
 
@@ -477,11 +478,39 @@ function moveDialog(to) {
   });
 }
 
+/* What the bill box held at the last save (or page load) — a move compares
+   against it, because the status endpoint only carries status fields:
+   approving with unsaved edits on screen used to approve the *old* bill and
+   drop the edits. saveBill() refreshes it. */
+let SAVED_BILL = JSON.stringify(billPayload());
+
 async function moveInvoice(btn) {
   const to = btn.dataset.to;
   const fields = await moveDialog(to);
   if (!fields) return;
   btn.disabled = true;
+  if (CAN_EDIT && to !== 'Void' && JSON.stringify(billPayload()) !== SAVED_BILL) {
+    let saved;
+    try {
+      saved = await saveBill();
+    } catch (e) {
+      zAlert('Your edits couldn\'t be saved, so nothing was changed: ' + e.message, {title: 'Not changed'});
+      btn.disabled = false;
+      return;
+    }
+    if (saved.status === to) {
+      // the save already moved it there (an edited Approved bill drops to Draft)
+      window.location.reload();
+      return;
+    }
+    if (saved.status !== {{ invoice.status|tojson }}) {
+      // saving an approved bill sends it back to Draft — say so rather than
+      // attempt a move the server would now refuse
+      say('Your edits were saved, which sent this invoice back to Draft. Approve it again when it\'s right.', true);
+      setTimeout(() => window.location.reload(), 2500);
+      return;
+    }
+  }
   try {
     const res = await fetch('/api/invoice/status', {
       method: 'POST', headers: {'Content-Type': 'application/json'},

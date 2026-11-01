@@ -178,8 +178,11 @@ def _human_date(iso: str) -> str:
 def _meta_table(invoice: dict, co: dict, st: dict, width: float) -> Table:
     """Number / issued / due / period, right-aligned beside the company name."""
     issued = invoice.get("issued") or ""
-    due = ""
-    if co["due_days"] and issued:
+    # A due date stored on the invoice (chosen when it was marked sent) is the
+    # one overdue tracking uses, so the bill must print that one; the terms
+    # only fill in a date that was never set.
+    due = (invoice.get("due") or "")[:10]
+    if not due and co["due_days"] and issued:
         try:
             due = (dt.date.fromisoformat(issued[:10])
                    + dt.timedelta(days=co["due_days"])).isoformat()

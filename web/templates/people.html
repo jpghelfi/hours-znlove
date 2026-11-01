@@ -48,6 +48,7 @@
       <th class="col-flag" title="Team-wide reports, exports and these admin pages">Admin</th>
       <th class="col-flag" title="May approve or decline absence requests">Approves absences</th>
       <th class="col-flag" title="Sees approved invoices and marks them sent and paid">Accountant</th>
+      <th class="col-flag" title="Isn't expected to log hours — left out of the dashboard's utilization and missing time">No time tracking</th>
     </tr>
   </thead>
   <tbody>
@@ -73,17 +74,17 @@
                aria-label="Hours per day · {{ r.name }}" onchange="saveHours(this)"
                onkeydown="if (event.key === 'Enter') this.blur(); if (event.key === 'Escape') { this.value = this.dataset.prev; this.blur(); }">
       </td>
-      {% for field in ['active', 'admin', 'approver', 'accountant'] %}
+      {% for field in ['active', 'admin', 'approver', 'accountant', 'no_tracking'] %}
       <td class="assign-cell col-flag">
         <input type="checkbox" data-field="{{ field }}" {{ 'checked' if r[field] }}
-               aria-label="{{ {'active': 'Active', 'admin': 'Admin', 'approver': 'Approves absences', 'accountant': 'Accountant'}[field] }} · {{ r.name }}"
+               aria-label="{{ {'active': 'Active', 'admin': 'Admin', 'approver': 'Approves absences', 'accountant': 'Accountant', 'no_tracking': 'No time tracking'}[field] }} · {{ r.name }}"
                onchange="saveFlag(this)">
       </td>
       {% endfor %}
     </tr>
     {% endfor %}
     {% if not roster %}
-    <tr class="empty"><td colspan="7">Nobody on the roster yet.</td></tr>
+    <tr class="empty"><td colspan="8">Nobody on the roster yet.</td></tr>
     {% endif %}
   </tbody>
 </table>
@@ -112,7 +113,7 @@ async function saveFlag(cb) {
   const tr = cb.closest('tr'), td = cb.closest('td');
   const field = cb.dataset.field, value = cb.checked;
   // locking yourself out is allowed (another admin exists) but worth a pause
-  if (!value && tr.dataset.self && field !== 'approver' && field !== 'accountant') {
+  if (!value && tr.dataset.self && (field === 'active' || field === 'admin')) {
     const ok = await zConfirm(field === 'active'
         ? "Untick your own Active? You'll be signed out within a minute."
         : "Remove your own Admin? You'll lose this page and the reports.",
