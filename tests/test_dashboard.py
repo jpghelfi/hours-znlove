@@ -67,6 +67,15 @@ def _():
     assert out[2]["forecast_pct"] is None and not out[2]["forecast_over"]
 
 
+@check("add_forecast paces on elapsed-day hours only, never below what's logged")
+def _():
+    rows = [{"id": "p", "tracked": 14, "budget": {"hours": 50}},   # 4 h of it logged today
+            {"id": "q", "tracked": 30, "budget": {"hours": 50}}]   # 30 h dated ahead
+    out = d.add_forecast(rows, 5, 22, {"p": 10, "q": 1})
+    assert out[0]["forecast"] == 44 and not out[0]["forecast_over"]
+    assert out[1]["forecast"] == 30
+
+
 @check("a 0 h budget doesn't divide by zero")
 def _():
     out = d.add_forecast([{"tracked": 2, "budget": {"hours": 0}}], 5, 22)

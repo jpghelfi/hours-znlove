@@ -31,10 +31,18 @@ def forecast(used: float, elapsed: int, total: int) -> Optional[float]:
     return used / elapsed * total
 
 
-def add_forecast(rows: list, elapsed: int, total: int) -> list:
-    """Lay a forecast over /budgets' rows (order kept: they're trouble-first)."""
+def add_forecast(rows: list, elapsed: int, total: int,
+                 used_to_date: Optional[dict] = None) -> list:
+    """Lay a forecast over /budgets' rows (order kept: they're trouble-first).
+
+    The pace is hours logged on *elapsed* days only (`used_to_date`, by project
+    id), so today's half-logged hours don't inflate it — the same window the
+    denominator counts. Without the map, a row's whole `tracked` is used."""
     for r in rows:
-        f = forecast(r["tracked"], elapsed, total)
+        used = r["tracked"] if used_to_date is None else used_to_date.get(r["id"], 0.0)
+        f = forecast(used, elapsed, total)
+        if f is not None and elapsed < total:
+            f = max(f, r["tracked"])   # never forecast below what's already logged
         b = r.get("budget")
         r["forecast"] = f
         cap = b["hours"] if b else None

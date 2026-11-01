@@ -4129,24 +4129,31 @@ def dashboard_page(request: Request, start: Optional[str] = None):
         except Exception:
             logging.exception("Reading the pending-absence queue failed")
 
+    # `tracked` is the whole month (what Budgets and Billing show); the pace
+    # and utilization only count entries on elapsed days, the window their
+    # denominators cover — today's half-logged hours would otherwise inflate both.
     tracked: dict = {}
+    tracked_to_date: dict = {}
     hours_by_person: dict = {}
     logged_by_person: dict = {}
     for e in entries:
         h = e["hours"] or 0
+        day = dt.date.fromisoformat(e["date"]) if e.get("date") else None
+        done = day is not None and day < today
         if e["project_id"]:
             tracked[e["project_id"]] = tracked.get(e["project_id"], 0.0) + h
-        if e["person_id"]:
+            if done:
+                tracked_to_date[e["project_id"]] = tracked_to_date.get(e["project_id"], 0.0) + h
+        if e["person_id"] and done:
             hours_by_person[e["person_id"]] = hours_by_person.get(e["person_id"], 0.0) + h
-            if h > 0 and e.get("date"):
-                logged_by_person.setdefault(e["person_id"], set()).add(
-                    dt.date.fromisoformat(e["date"]))
+            if h > 0:
+                logged_by_person.setdefault(e["person_id"], set()).add(day)
     absent_by_person = {pid: set(days) for pid, days in _absence_days(absences, rng).items()}
 
     name_map = {p["id"]: p["name"] for p in people}
     active = [p for p in projects if p.get("active", True)]
     rows = dashboard.add_forecast(_budget_rows(active, tracked, name_map),
-                                  len(elapsed), len(all_days))
+                                  len(elapsed), len(all_days), tracked_to_date)
     budgeted = [r for r in rows if r["budget"]]
     unbudgeted = [r for r in rows if not r["budget"] and r["tracked"]]
     over = [r for r in budgeted if r["status"] in ("over", "over_cap", "blocked")]

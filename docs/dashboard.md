@@ -31,6 +31,9 @@ month at a time with the shared `←` · This month · `→` trio and a month pi
 - **Elapsed = weekdays from the 1st through yesterday.** Today is still being
   logged: counting it understates pace and flags everyone who hasn't logged
   yet. A future month has none (sections say so); a past month has all.
+- **Only hours dated before today count toward pace and utilization** (the
+  same window the denominators cover); Budget's "Used" and Billing still show
+  the whole month. A forecast never reads below what's already logged.
 - **Forecast** = used ÷ elapsed weekdays × weekdays in the month; for a past
   month it's just used; with nothing elapsed it's "—". It's flagged when it
   passes the budget (a 0 h budget with any hours always is).
