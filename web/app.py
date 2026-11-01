@@ -1947,6 +1947,11 @@ def _invoice_doc(invoice: dict) -> dict:
                period_label=month.strftime("%B %Y") if month else invoice["month"])
     doc["lines"] = [l for l in (doc.get("lines") or []) if l] or invoice_pdf.default_lines(doc)
     doc["amount"] = invoice_pdf.bill_amount(doc)
+    if not doc.get("due"):
+        # not sent yet: print the date the send will store (mark_invoice_sent:
+        # today + invoice_due_days()), so the file a client is emailed on the
+        # first send agrees with what overdue tracking then uses
+        doc["due"] = (dt.date.today() + dt.timedelta(days=ops.invoice_due_days())).isoformat()
     return doc
 
 
