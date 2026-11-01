@@ -111,6 +111,36 @@ The invoice id comes out of a URL, so `get_invoice` refuses any page whose
 parent isn't the Invoices data source: a project row or a time entry pasted
 into the path lands back on the list, not on a half-rendered invoice.
 
+### Editing it line by line
+
+While an invoice is editable (Draft, or Approved — which an edit drops back to
+Draft), every line in that table is an input: its **billed hours** and its
+**comment**, the wording the client reads in the workbook. That's how the PM
+shapes the bill before approving it for the accountant. **Save line edits**
+(`POST /api/invoice/lines` → `ops.set_invoice_lines`) stores only what differs
+from what was logged — hours in `Adjustments`, wording in a second JSON
+property, `Line comments` (`{entry id: text}`, added on boot by
+`ensure_invoice_properties`, chunked the same way). The Time Entries are never
+written. The endpoint re-reads the month and refuses an entry id outside it,
+starts from the stored maps (a line the page didn't send keeps its edit) and
+drops overrides for entries that have since left the month.
+
+Saving the lines **moves `Hours billed` by exactly what the edited lines
+moved** (not to the month's sum), and the amount with it while the amount was
+still hours × rate — a hand-typed amount is kept. A wording-only edit leaves
+both alone, so an entry logged after invoicing or a total typed over the lines
+is never quietly re-billed. The export screen's comment edits are stored the
+same way when an invoice is first saved (`_invoice_comments`), so wording typed
+there survives into the invoice instead of lasting one request. **Re-invoicing
+from the export screen is a correction and rewrites both maps from that
+screen** — which starts from the logged wording, so line edits made on the
+invoice page are replaced, exactly as its hour adjustments always were. `_invoiced_rows` lays the comments over the
+logged ones (`description` = as billed, `logged_description` = as logged, shown
+in the input's tooltip), so the detail page, the workbook and the clipboard
+copy all read the billed wording. Every button that builds a file or moves the
+status — PDF, Excel, Send, Approve — saves pending line edits first; Copy to
+Sheets asks you to save, and leaving the page with unsaved lines asks first.
+
 ### Sending it on
 
 Two buttons on the invoice, both carrying the **billed** hours with the lines

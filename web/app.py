@@ -1696,8 +1696,9 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
     rng = _period_range("monthly", month)
-    logged = {e["id"]: e["hours"] for e in _period_entries(project, [project["id"]], rng)
-              if e.get("id")}
+    month_entries = _period_entries(project, [project["id"]], rng)
+    logged = {e["id"]: e["hours"] for e in month_entries if e.get("id")}
+    logged_desc = {e["id"]: e.get("description") or "" for e in month_entries if e.get("id")}
     tracked = sum(logged.values())
     billed = sum(r["hours"] for r in rows)
     # A negative rate is the only value that could turn a bill into a credit
@@ -1716,7 +1717,8 @@ def api_save_invoice(request: Request, req: InvoiceRequest):
                                  adjustments=_invoice_adjustments(req.rows, logged),
                                  rate=rate, currency=currency,
                                  client_note=req.client_note[:500],
-                                 actor=_actor(user))
+                                 actor=_actor(user),
+                                 comments=_invoice_comments(req.rows, logged_desc))
     except ops.InvoiceLocked as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
     except Exception:
@@ -1758,12 +1760,34 @@ def _invoiced_rows(invoice: dict, entries: list[dict]) -> list[dict]:
     reason the list can flag an invoice whose month has moved.
     """
     adj = {ops._bare(k): v for k, v in (invoice.get("adjustments") or {}).items()}
+    said = {ops._bare(k): v for k, v in (invoice.get("comments") or {}).items()}
     rows = []
     for e in sorted(entries, key=lambda e: (e["date"], e["person"].lower())):
-        billed = adj.get(ops._bare(e.get("id") or ""), e["hours"])
+        key = ops._bare(e.get("id") or "")
+        billed = adj.get(key, e["hours"])
+        logged_desc = e.get("description") or ""
+        desc = said.get(key, logged_desc)
         rows.append(dict(e, tracked=e["hours"], billed=billed,
-                         changed=abs(billed - e["hours"]) >= 0.01))
+                         changed=abs(billed - e["hours"]) >= 0.01,
+                         # `description` is what the invoice says; the logged
+                         # wording stays alongside for the detail page
+                         description=desc, logged_description=logged_desc,
+                         reworded=desc != logged_desc))
     return rows
+
+
+def _invoice_comments(raw_rows: list, logged_desc: dict) -> dict:
+    """{entry id: comment} for the lines whose wording differs from what was
+    logged — the comment counterpart of _invoice_adjustments."""
+    out = {}
+    for r in raw_rows:
+        entry_id = str(r.get("id") or "")
+        if entry_id not in logged_desc or "description" not in r:
+            continue
+        text = str(r.get("description") or "").strip()[:ops.MAX_LINE_COMMENT]
+        if text != (logged_desc[entry_id] or "").strip():
+            out[entry_id] = text
+    return out
 
 
 def _invoiced_days(rows: list[dict]) -> list[dict]:
@@ -2042,6 +2066,101 @@ def api_invoice_bill(request: Request, req: InvoiceBill):
     return JSONResponse({"ok": True, "lines": saved["lines"], "hours": saved["hours_billed"],
                          "amount": sums["subtotal"], "total": sums["total"],
                          "status": saved["status"]})
+
+
+class InvoiceLines(BaseModel):
+    invoice_id: str
+    rows: list[dict] = Field(default_factory=list)   # [{id, hours, description}]
+
+
+@app.post("/api/invoice/lines")
+def api_invoice_lines(request: Request, req: InvoiceLines):
+    """Save each line's billed hours and wording, edited on the invoice page.
+
+    Entry ids come from the browser, so the month's entries are re-read and
+    anything outside that set is refused — which also pins every line to this
+    invoice's project and month. Only what differs from what was logged is
+    stored; the Time Entries themselves are never written.
+    """
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    invoice = ops.get_invoice(req.invoice_id)
+    if not invoice:
+        return JSONResponse({"ok": False, "error": "that isn't an invoice"}, status_code=404)
+    if invoice["status"] not in ops.EDITABLE_STATUSES:
+        return JSONResponse({"ok": False, "error": f"this invoice is {invoice['status'].lower()} — "
+                             "move it back to Draft before changing what it bills"},
+                            status_code=409)
+    month = _parse_date(invoice["month"])
+    if not month or not invoice["project_id"]:
+        return JSONResponse({"ok": False, "error": "this invoice has no month to edit"},
+                            status_code=400)
+    if len(req.rows) > _MAX_EXPORT_ROWS:
+        return JSONResponse({"ok": False, "error": "too many lines"}, status_code=400)
+    project = {"id": invoice["project_id"], "name": invoice["project"]}
+    entries = _period_entries(project, [project["id"]], _period_range("monthly", month))
+    by_id = {ops._bare(e["id"]): e for e in entries if e.get("id")}
+
+    # start from what's stored, so a line the page didn't send keeps its edit
+    adjustments = {ops._bare(k): v for k, v in (invoice.get("adjustments") or {}).items()}
+    comments = {ops._bare(k): v for k, v in (invoice.get("comments") or {}).items()}
+    # The bill's total moves by exactly what the edited lines moved — not to
+    # the sum of the month — so an entry logged after invoicing, or a total
+    # typed over the lines, isn't silently re-billed by a wording fix.
+    delta = 0.0
+    for r in req.rows:
+        key = ops._bare(str(r.get("id") or ""))
+        e = by_id.get(key)
+        if not e:
+            return JSONResponse({"ok": False, "error": "a line isn't one of this month's entries — "
+                                 "reload the page"}, status_code=400)
+        try:
+            hours = round(float(r.get("hours") or 0), 2)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "invalid hours"}, status_code=400)
+        if not (math.isfinite(hours) and 0 <= hours <= 24):
+            return JSONResponse({"ok": False, "error": "a line's hours must be between 0 and 24"},
+                                status_code=400)
+        delta += hours - round(adjustments.get(key, e["hours"]), 2)
+        if abs(hours - round(e["hours"], 2)) >= 0.01:
+            adjustments[key] = hours
+        else:
+            adjustments.pop(key, None)
+        text = str(r.get("description") or "").strip()[:ops.MAX_LINE_COMMENT]
+        if text != (e.get("description") or "").strip()[:ops.MAX_LINE_COMMENT]:
+            comments[key] = text
+        else:
+            comments.pop(key, None)
+    # only entries still in the month count; a stale override for a deleted
+    # entry would otherwise sit in the total forever
+    adjustments = {k: v for k, v in adjustments.items() if k in by_id}
+    comments = {k: v for k, v in comments.items() if k in by_id}
+    old_billed = round(float(invoice["hours_billed"] or 0), 2)
+    billed = max(0.0, round(old_billed + delta, 2))
+    # the amount follows the hours only while it was still hours × rate —
+    # a hand-typed amount is the sender's decision and stays
+    rate = float(invoice.get("rate") or 0)
+    old_amount = invoice_pdf.bill_amount(invoice)
+    auto = abs(old_amount - round(old_billed * rate, 2)) < 0.005
+    amount = round(billed * rate, 2) if (rate and auto and abs(delta) >= 0.005) else None
+    try:
+        saved = ops.set_invoice_lines(invoice["id"], adjustments, comments, billed, amount,
+                                      actor=_actor(user))
+    except ops.InvoiceLocked as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception:
+        logging.exception("Saving the lines of invoice %s failed", invoice["id"])
+        return JSONResponse({"ok": False, "error": "Notion refused the save — try again"},
+                            status_code=502)
+    return JSONResponse({"ok": True, "hours": saved["hours_billed"],
+                         "amount": invoice_pdf.bill_amount(saved), "status": saved["status"]})
 
 
 @app.get("/invoices/{invoice_id}.pdf")
