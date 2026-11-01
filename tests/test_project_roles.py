@@ -90,42 +90,42 @@ def _():
     assert am_ids == set()
 
 
-# ---- _role_match -----------------------------------------------------------
+# ---- _scope_match -----------------------------------------------------------
 
-@check("_role_match: no pick in either role matches every project")
+@check("_scope_match: no pick in either role matches every project")
 def _():
-    assert webapp._role_match({"pm_id": None, "am_id": None}, set(), set()) is True
-    assert webapp._role_match({"pm_id": "u1", "am_id": "u2"}, set(), set()) is True
+    assert webapp._scope_match({"pm_id": None, "am_id": None}, set(), set()) is True
+    assert webapp._scope_match({"pm_id": "u1", "am_id": "u2"}, set(), set()) is True
 
 
-@check("_role_match: several picks within a role are OR")
+@check("_scope_match: several picks within a role are OR")
 def _():
     proj = {"pm_id": "u2", "am_id": None}
-    assert webapp._role_match(proj, {"u1", "u2"}, set()) is True
-    assert webapp._role_match(proj, {"u1"}, set()) is False
+    assert webapp._scope_match(proj, {"u1", "u2"}, set()) is True
+    assert webapp._scope_match(proj, {"u1"}, set()) is False
 
 
-@check("_role_match: the two roles combine with AND")
+@check("_scope_match: the two roles combine with AND")
 def _():
     proj = {"pm_id": "u1", "am_id": "u3"}
-    assert webapp._role_match(proj, {"u1"}, {"u3"}) is True
+    assert webapp._scope_match(proj, {"u1"}, {"u3"}) is True
     # right PM, wrong account manager -> excluded
-    assert webapp._role_match(proj, {"u1"}, {"u4"}) is False
+    assert webapp._scope_match(proj, {"u1"}, {"u4"}) is False
 
 
-@check("_role_match: a PM pick excludes a project with no PM, but leaving it unpicked keeps it")
+@check("_scope_match: a PM pick excludes a project with no PM, but leaving it unpicked keeps it")
 def _():
     proj = {"pm_id": None, "am_id": None}
-    assert webapp._role_match(proj, {"u1"}, set()) is False
-    assert webapp._role_match(proj, set(), set()) is True
+    assert webapp._scope_match(proj, {"u1"}, set()) is False
+    assert webapp._scope_match(proj, set(), set()) is True
 
 
-@check("_role_keep_ids is None with no picks, else the matching id set")
+@check("_scope_keep_ids is None with no picks, else the matching id set")
 def _():
     projects = [{"id": "a", "pm_id": "u1", "am_id": None},
                 {"id": "b", "pm_id": "u2", "am_id": None}]
-    assert webapp._role_keep_ids(projects, set(), set()) is None
-    assert webapp._role_keep_ids(projects, {"u1"}, set()) == {"a"}
+    assert webapp._scope_keep_ids(projects, set(), set()) is None
+    assert webapp._scope_keep_ids(projects, {"u1"}, set()) == {"a"}
 
 
 # ---- set_project_role -------------------------------------------------------

@@ -131,8 +131,10 @@ Semantics, chosen to read the way people say it out loud:
 Two small helpers in `web/app.py` do the resolving, next to `_project_picks` they mirror:
 
     _role_picks(people, pm, am) -> (pm_ids, am_ids)         # sets; unknown ids dropped
-    _role_match(project, pm_ids, am_ids) -> bool             # OR within a role, AND across
-    _role_keep_ids(projects, pm_ids, am_ids) -> set | None   # None means "no filter"
+    _scope_match(project, pm_ids, am_ids, partners=None) -> bool             # OR within, AND across
+    _scope_keep_ids(projects, pm_ids, am_ids, partners=None) -> set | None   # None means "no filter"
+
+(Named `_role_match`/`_role_keep_ids` until partners joined as a third dimension.)
 
 A shared `web/templates/_role_filter.html` renders both dropdowns — the third twin of
 `_people_filter.html` / `_project_filter.html`, same `.pfilter` markup and CSS classes so
@@ -149,7 +151,7 @@ Jinja macro doesn't inherit the include's context the way top-level template cod
 routes), so the two filters compose: an explicit project pick is validated against the
 already role-narrowed list, and a stale project id that fails the role filter degrades to
 the rollup exactly like an unknown id does. When there's no explicit `?project=` pick, the
-rollup's `keep_ids` falls back to the role filter's id set (`_role_keep_ids`) instead of
+rollup's `keep_ids` falls back to the role filter's id set (`_scope_keep_ids`) instead of
 showing every project — otherwise a PM filter with no project pick would narrow the picker
 but not the numbers on screen. The rollup is already one `entries_between` grouped in
 Python, so this costs no extra Notion round trip. The picks ride the same `qs_*` pattern
@@ -161,7 +163,7 @@ and before `_budget_rows`. This is the page where "who owns this overrun" gets a
 role columns are also *displayed* here.
 
 **`/reports`** (+ `/reports.csv`) — entry-centric, so the filter resolves to a set of
-project ids (`_role_keep_ids` over `list_projects(active_only=False)`, so a role pick still
+project ids (`_scope_keep_ids` over `list_projects(active_only=False)`, so a role pick still
 narrows entries logged against a project that's since gone inactive) and narrows the
 entries **and** the planned rows in memory, next to where the people pick already applies —
 `planned_rows()` grew a `project_id` field for exactly this, alongside the `project` name it
@@ -175,15 +177,12 @@ second id set and intersected with this one — see `docs/reports-filters.md`.
 
 `./.venv/bin/python tests/test_project_roles.py` — plain asserts, no pytest, no Notion
 calls. Covers `_role_from_props` parsing (missing column, a renamed one, two people in the
-column), `_role_picks`'s roster-validation and set semantics, `_role_match`'s OR-within /
+column), `_role_picks`'s roster-validation and set semantics, `_scope_match`'s OR-within /
 AND-across / no-pick-matches-everything rules, `set_project_role`'s two refusals (unknown
 role, off-roster person), the `/reports` narrowing end to end (a role pick drops
 entries and planned rows on the excluded project; no pick leaves everything in place),
 and the owners page's helpers: `_missing_pick`/`_missing_match` and `_off_roster_names`
 (no lookup when nothing is off the roster; a failed lookup labels rather than 500s).
-
-Five `_role_match`/`_role_keep_ids` checks fail on `main` already: those helpers were
-renamed `_scope_match`/`_scope_keep_ids` when partners landed and the tests weren't updated.
 
 ## Not built
 
