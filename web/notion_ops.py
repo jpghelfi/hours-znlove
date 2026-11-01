@@ -2569,6 +2569,24 @@ def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: fl
                 status=DRAFT if STATUS_PROP in props else invoice["status"])
 
 
+def delete_invoice(invoice_id: str) -> dict:
+    """Delete an invoice outright, whatever its status — a bill created by
+    mistake, filed against the wrong month, or simply not wanted any more.
+
+    Archived in Notion (it sits in Notion's trash, restorable from there), so
+    a delete is recoverable by hand. Unlike Void, which keeps a cancelled bill
+    on record, this takes the row off every list. The time entries behind it
+    are untouched. Its number leaves the sequence too: next_invoice_number
+    only sees live rows, so deleting the year's highest number frees it.
+    """
+    with _write_lock:
+        invoice = get_invoice(invoice_id)   # refuses anything outside the Invoices db
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        _notion.pages.update(invoice_id, archived=True)
+    return invoice
+
+
 def set_invoice_lines(invoice_id: str, adjustments: dict, comments: dict,
                       hours_billed: float, amount: float | None, actor: str = "") -> dict:
     """Record what each line of an invoice bills — its hours and its wording —
