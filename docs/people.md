@@ -14,7 +14,7 @@ phone's More sheet) does it in the app.
   first then by name). `list_people` and `access_ids` only ever read Active
   rows; this page has to see the inactive ones because reactivating someone is
   half the reason to open it.
-- **Four toggles per row** — Active, Admin, Approves absences, Accountant — that autosave
+- **Five toggles per row** — Active, Admin, Approves absences, Accountant, No time tracking — that autosave
   like `/assignments`' checkboxes (`POST /api/people/flag`) and snap back with
   the server's reason if the save fails. Unticking your **own** Active or Admin
   asks first (`zConfirm`), since it ends your access.
@@ -26,6 +26,11 @@ phone's More sheet) does it in the app.
   purpose, since "doesn't track time" is a different fact from "works 0 h".
   It sets that person's capacity on `/schedule` (`docs/schedule.md`) and on
   `/dashboard`'s utilization (`docs/dashboard.md`).
+- **No time tracking** (a fifth toggle, same `POST /api/people/flag`,
+  property added by `ensure_hours_property`): for someone on the roster who
+  isn't expected to log hours. Only `/dashboard` reads it — it drops them from
+  utilization and missing time. Opt-out because a new checkbox is unticked on
+  every existing row.
 - **Inline rename** (`POST /api/people/rename`): the row title is the name the
   app shows everywhere. Whitespace is collapsed; blank is refused.
 - **Add person** (`POST /api/people/add`): a picker of Notion **workspace

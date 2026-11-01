@@ -65,8 +65,10 @@ skipped when their databases aren't configured.
 
 ## Known limits
 
-- Roster members who never log hours (e.g. a founder) show as 0 % and with
-  every day missing. If that turns into noise, a `Tracks time` checkbox on
-  People is the fix — not an hours/day of 0, which the write refuses.
+- Roster members who don't log hours (a founder, a client contact) are ticked
+  **No time tracking** on `/people` and are left out of Utilization and
+  Missing time (named under the utilization table). Opt-out on purpose: a new
+  checkbox starts unticked on every row, so "Tracks time" would have emptied
+  both sections the day it shipped. Nothing else reads it.
 - "Today" is the server's date (UTC on Render), like every other page.
 - No planned-vs-tracked section: deliberately left out.

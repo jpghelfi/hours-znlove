@@ -112,12 +112,23 @@ MAX_HOURS_PER_DAY = 24.0
 
 
 def ensure_hours_property() -> None:
-    """Make sure the People db has an `Hours per day` number; add if missing."""
+    """Make sure the People db has `Hours per day` (number) and `No time
+    tracking` (checkbox); add whichever is missing."""
     if not PEOPLE_DS:
         return
     ds = _notion.data_sources.retrieve(PEOPLE_DS)
     if HOURS_PROP not in ds["properties"]:
         _notion.data_sources.update(PEOPLE_DS, properties={HOURS_PROP: {"number": {}}})
+    if NO_TRACKING_PROP not in ds["properties"]:
+        _notion.data_sources.update(PEOPLE_DS, properties={NO_TRACKING_PROP: {"checkbox": {}}})
+
+
+# Someone on the roster who isn't expected to log hours (a founder, a client
+# contact). Opt-out rather than "Tracks time", because a new checkbox starts
+# unticked on every row — the dashboard would otherwise drop everyone on the
+# deploy that added it. Ticked = left out of /dashboard's utilization and
+# missing time; nothing else changes (they can still log, still be booked).
+NO_TRACKING_PROP = "No time tracking"
 
 
 # ---- reads -------------------------------------------------------------
@@ -166,7 +177,8 @@ def _people_from_db() -> list[dict]:
             name = title[0]["plain_text"].strip() if title else ""
             uid = linked[0]["id"]
             people.setdefault(uid, {"id": uid, "name": name or linked[0].get("name") or "(unnamed)",
-                                    "hours_per_day": (props.get(HOURS_PROP) or {}).get("number")})
+                                    "hours_per_day": (props.get(HOURS_PROP) or {}).get("number"),
+                                    "no_tracking": bool((props.get(NO_TRACKING_PROP) or {}).get("checkbox"))})
         if not res.get("has_more"):
             break
         kwargs["start_cursor"] = res["next_cursor"]
@@ -304,7 +316,7 @@ def invalidate_access_cache() -> None:
 # every write checks the page really sits in the People data source first).
 
 PEOPLE_FLAGS = {"active": "Active", "admin": "Admin", "approver": APPROVER_PROP,
-                "accountant": ACCOUNTANT_PROP}
+                "accountant": ACCOUNTANT_PROP, "no_tracking": NO_TRACKING_PROP}
 
 
 class LastAdmin(Exception):
@@ -324,6 +336,7 @@ def _roster_row(page: dict) -> dict:
         "approver": bool(props.get(APPROVER_PROP, {}).get("checkbox")),
         "accountant": bool(props.get(ACCOUNTANT_PROP, {}).get("checkbox")),
         "hours_per_day": (props.get(HOURS_PROP) or {}).get("number"),
+        "no_tracking": bool((props.get(NO_TRACKING_PROP) or {}).get("checkbox")),
     }
 
 

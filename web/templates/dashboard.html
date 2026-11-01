@@ -137,7 +137,8 @@
   </table>
   <p class="subtle small">Under {{ util_marks[0] }}% reads as low, {{ util_marks[1] }}% or more as full,
     over {{ util_marks[2] }}% as over. Today isn't counted until it's over.
-    Change someone's hours per day on <a href="/people">People</a>.</p>
+    Change someone's hours per day on <a href="/people">People</a>.
+    {% if untracked %}Not shown (No time tracking): {{ untracked|join(', ') }}.{% endif %}</p>
   {% endif %}
 </div>
 

@@ -2981,7 +2981,7 @@ def _people_write_guard(request: Request) -> Optional[JSONResponse]:
 
 class PersonFlag(BaseModel):
     page_id: str
-    field: str        # "active" | "admin" | "approver" | "accountant"
+    field: str        # "active" | "admin" | "approver" | "accountant" | "no_tracking"
     value: bool
 
 
@@ -4151,6 +4151,9 @@ def dashboard_page(request: Request, start: Optional[str] = None):
     absent_by_person = {pid: set(days) for pid, days in _absence_days(absences, rng).items()}
 
     name_map = {p["id"]: p["name"] for p in people}
+    # People ticked "No time tracking" (People db) aren't expected to log, so
+    # they'd only ever read 0 % and every-day-missing
+    trackers = [p for p in people if not p.get("no_tracking")]
     active = [p for p in projects if p.get("active", True)]
     rows = dashboard.add_forecast(_budget_rows(active, tracked, name_map),
                                   len(elapsed), len(all_days), tracked_to_date)
@@ -4175,9 +4178,10 @@ def dashboard_page(request: Request, start: Optional[str] = None):
         "pending_n": len(pending), "over": over, "stages": stages,
         "invoices_on": ops.invoices_enabled(), "absences_on": ops.absences_enabled(),
         "budgeted": budgeted, "unbudgeted": unbudgeted,
-        "util": dashboard.utilization_rows(people, hours_by_person, absent_by_person,
+        "util": dashboard.utilization_rows(trackers, hours_by_person, absent_by_person,
                                            elapsed, all_days, _day_target()),
-        "missing": dashboard.missing_rows(people, logged_by_person, absent_by_person, elapsed),
+        "missing": dashboard.missing_rows(trackers, logged_by_person, absent_by_person, elapsed),
+        "untracked": [p["name"] for p in people if p.get("no_tracking")],
         "pipe": pipe,
         "util_marks": (dashboard.UTIL_LOW, dashboard.UTIL_FULL, dashboard.UTIL_OVER),
     })
