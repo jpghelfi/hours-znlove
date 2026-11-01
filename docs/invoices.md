@@ -125,11 +125,16 @@ written. The endpoint re-reads the month and refuses an entry id outside it,
 starts from the stored maps (a line the page didn't send keeps its edit) and
 drops overrides for entries that have since left the month.
 
-Saving the lines **rewrites `Hours billed` to their sum**, and the amount with
-it while the amount was still hours × rate — a hand-typed amount is kept. The
-export screen's comment edits are stored the same way when an invoice is first
-saved (`_invoice_comments`), so wording typed there survives into the invoice
-instead of lasting one request. `_invoiced_rows` lays the comments over the
+Saving the lines **moves `Hours billed` by exactly what the edited lines
+moved** (not to the month's sum), and the amount with it while the amount was
+still hours × rate — a hand-typed amount is kept. A wording-only edit leaves
+both alone, so an entry logged after invoicing or a total typed over the lines
+is never quietly re-billed. The export screen's comment edits are stored the
+same way when an invoice is first saved (`_invoice_comments`), so wording typed
+there survives into the invoice instead of lasting one request. **Re-invoicing
+from the export screen is a correction and rewrites both maps from that
+screen** — which starts from the logged wording, so line edits made on the
+invoice page are replaced, exactly as its hour adjustments always were. `_invoiced_rows` lays the comments over the
 logged ones (`description` = as billed, `logged_description` = as logged, shown
 in the input's tooltip), so the detail page, the workbook and the clipboard
 copy all read the billed wording. Every button that builds a file or moves the

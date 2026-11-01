@@ -2109,6 +2109,10 @@ def api_invoice_lines(request: Request, req: InvoiceLines):
     # start from what's stored, so a line the page didn't send keeps its edit
     adjustments = {ops._bare(k): v for k, v in (invoice.get("adjustments") or {}).items()}
     comments = {ops._bare(k): v for k, v in (invoice.get("comments") or {}).items()}
+    # The bill's total moves by exactly what the edited lines moved — not to
+    # the sum of the month — so an entry logged after invoicing, or a total
+    # typed over the lines, isn't silently re-billed by a wording fix.
+    delta = 0.0
     for r in req.rows:
         key = ops._bare(str(r.get("id") or ""))
         e = by_id.get(key)
@@ -2122,12 +2126,13 @@ def api_invoice_lines(request: Request, req: InvoiceLines):
         if not (math.isfinite(hours) and 0 <= hours <= 24):
             return JSONResponse({"ok": False, "error": "a line's hours must be between 0 and 24"},
                                 status_code=400)
+        delta += hours - round(adjustments.get(key, e["hours"]), 2)
         if abs(hours - round(e["hours"], 2)) >= 0.01:
             adjustments[key] = hours
         else:
             adjustments.pop(key, None)
         text = str(r.get("description") or "").strip()[:ops.MAX_LINE_COMMENT]
-        if text != (e.get("description") or "").strip():
+        if text != (e.get("description") or "").strip()[:ops.MAX_LINE_COMMENT]:
             comments[key] = text
         else:
             comments.pop(key, None)
@@ -2135,13 +2140,14 @@ def api_invoice_lines(request: Request, req: InvoiceLines):
     # entry would otherwise sit in the total forever
     adjustments = {k: v for k, v in adjustments.items() if k in by_id}
     comments = {k: v for k, v in comments.items() if k in by_id}
-    billed = round(sum(adjustments.get(k, e["hours"]) for k, e in by_id.items()), 2)
+    old_billed = round(float(invoice["hours_billed"] or 0), 2)
+    billed = max(0.0, round(old_billed + delta, 2))
     # the amount follows the hours only while it was still hours × rate —
     # a hand-typed amount is the sender's decision and stays
     rate = float(invoice.get("rate") or 0)
     old_amount = invoice_pdf.bill_amount(invoice)
-    auto = abs(old_amount - round(float(invoice["hours_billed"] or 0) * rate, 2)) < 0.005
-    amount = round(billed * rate, 2) if (rate and auto) else None
+    auto = abs(old_amount - round(old_billed * rate, 2)) < 0.005
+    amount = round(billed * rate, 2) if (rate and auto and abs(delta) >= 0.005) else None
     try:
         saved = ops.set_invoice_lines(invoice["id"], adjustments, comments, billed, amount,
                                       actor=_actor(user))

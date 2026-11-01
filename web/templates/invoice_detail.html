@@ -292,13 +292,14 @@
   {% if can_edit and days %}
   <div class="sendbox-btns linebar">
     <button type="button" class="btn btn-primary" id="linesbtn" onclick="saveLinesAndReload()" disabled>Save line edits</button>
-    <span class="subtle small" id="linesnote">Edit any line's billed hours or wording — saved on this invoice only, the logged entries don't change. The bill's total hours follow the lines.</span>
+    <span class="subtle small" id="linesnote">Edit any line's billed hours or wording — saved on this invoice only, the logged entries don't change. The bill's total hours move with any line whose hours you change.</span>
   </div>
   {% endif %}
 </div>
 
 <script>
 const SHEET_ROWS = {{ sheet_rows|tojson }};
+let SHEET_STALE = false;   // set once lines are saved without a reload
 
 /* Google publishes no URL that creates a spreadsheet holding your data, and
    this app sits behind a login so IMPORTDATA can't fetch from it either — so
@@ -405,7 +406,8 @@ function changedLines() {
   document.querySelectorAll('tr[data-line]').forEach(tr => {
     const h = tr.querySelector('.line-hours'), d = tr.querySelector('.line-desc');
     if (h.value !== h.dataset.saved || d.value !== d.dataset.saved) {
-      out.push({id: tr.dataset.line, hours: parseFloat(h.value) || 0, description: d.value});
+      out.push({id: tr.dataset.line, hours: parseFloat(h.value) || 0, description: d.value,
+                _h: h.value});   // the raw input, to mark saved exactly what was sent
     }
   });
   return out;
@@ -419,23 +421,32 @@ function lineEdited() {
 async function saveLines() {
   const rows = changedLines();
   if (!rows.length) return null;
+  const before = JSON.parse(SAVED_BILL), shown = billPayload();
   const res = await fetch('/api/invoice/lines', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({invoice_id: {{ invoice.id|tojson }}, rows: rows})
+    body: JSON.stringify({invoice_id: {{ invoice.id|tojson }},
+                          rows: rows.map(r => ({id: r.id, hours: r.hours, description: r.description}))})
   });
   let data = {};
   try { data = await res.json(); } catch (e) {}
   if (!data.ok) throw new Error(data.error || 'unknown error');
-  document.querySelectorAll('tr[data-line]').forEach(tr => {
-    tr.querySelectorAll('.line-hours, .line-desc').forEach(el => { el.dataset.saved = el.value; });
+  // mark saved exactly what was sent — an edit typed while this was in flight
+  // must still read as unsaved
+  rows.forEach(r => {
+    const tr = document.querySelector('tr[data-line="' + r.id + '"]');
+    if (!tr) return;
+    tr.querySelector('.line-hours').dataset.saved = r._h;
+    tr.querySelector('.line-desc').dataset.saved = r.description;
   });
-  // the server set the bill's hours (and maybe amount): show them, and count
-  // them as saved — without marking an unsaved edit to the bill's text saved
-  document.getElementById('hours').value = data.hours;
-  document.getElementById('amount').value = Number(data.amount).toFixed(2);
+  // the server set the bill's hours (and maybe amount). Record that as the
+  // stored state, but only overwrite a box the sender hadn't typed into —
+  // a hand-typed total or amount is then saved over it by saveBill()
+  if (shown.hours === before.hours) document.getElementById('hours').value = data.hours;
+  if (shown.amount === before.amount) document.getElementById('amount').value = Number(data.amount).toFixed(2);
   const s = JSON.parse(SAVED_BILL);
   s.hours = data.hours; s.amount = data.amount;
   SAVED_BILL = JSON.stringify(s);
+  SHEET_STALE = true;
   showBillTotal();
   lineEdited();
   return data;
@@ -647,6 +658,7 @@ async function moveInvoice(btn) {
 function copyToSheets() {
   // the rows below were drawn from the last save; edits on screen aren't in them
   if (CAN_EDIT && changedLines().length) { say('Save the line edits first.', false); return; }
+  if (SHEET_STALE) { say('Lines were saved since this page loaded — reload it, then copy.', false); return; }
   if (!SHEET_ROWS.length) { say('Nothing to copy — no line on this invoice was billed.', false); return; }
   if (!copyText(tsv())) {
     say('Could not reach the clipboard — download the Excel file instead.', false);

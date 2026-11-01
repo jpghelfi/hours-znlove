@@ -123,10 +123,24 @@ def _():
 
 @check("a line put back to what was logged stops being an edit; untouched lines keep theirs")
 def _():
-    with stubs(invoice(adjustments={"e1": 1.0, "e2": 2.0}, comments={"e1": "X"})) as s:
+    with stubs(invoice(adjustments={"e1": 1.0, "e2": 2.0}, comments={"e1": "X"},
+                       hours_billed=3.0)) as s:
         post([{"id": "e1", "hours": 4, "description": "homepage"}])
         adj, com, hours, _ = s.calls[0]
         assert adj == {"e2": 2.0} and com == {} and hours == 6.0
+
+
+@check("a wording-only edit leaves the total alone — late entries and typed totals aren't re-billed")
+def _():
+    # billed 5 h by hand against 7 h logged (e.g. a flat bill, or e2 logged late)
+    with stubs(invoice(hours_billed=5.0, amount=None)) as s:
+        post([{"id": "e1", "hours": 4, "description": "Homepage redesign"}])
+        adj, com, hours, amount = s.calls[0]
+        assert hours == 5.0 and amount is None and com == {"e1": "Homepage redesign"}
+    # and an hours edit moves it by exactly that line's change
+    with stubs(invoice(hours_billed=5.0, amount=None)) as s:
+        post([{"id": "e2", "hours": 1, "description": "fixes"}])
+        assert s.calls[0][2] == 3.0 and s.calls[0][3] == 300.0
 
 
 @check("an entry outside the month, bad hours, or a sent invoice are refused before writing")
