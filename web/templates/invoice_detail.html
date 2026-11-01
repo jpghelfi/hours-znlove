@@ -569,7 +569,7 @@ async function deleteInvoice() {
   const gone = ['Sent', 'Paid'].includes(status);
   const msg = (gone
       ? 'This invoice is ' + status.toLowerCase() + ' — the client already has it. '
-        + 'Deleting removes it from the app (its number ' + {{ (invoice.number or '')|tojson }} + ' may be reused); '
+        + 'Deleting removes it from the app (its number' + ({{ (invoice.number or '')|tojson }} ? ' ' + {{ (invoice.number or '')|tojson }} : '') + ' may be reused); '
         + 'Void keeps it on record instead.\n\n'
       : '')
     + 'It goes to Notion\'s trash, where it can still be restored. The logged hours aren\'t touched.';
@@ -586,7 +586,9 @@ async function deleteInvoice() {
     if (data.ok) { window.location.href = '/invoices'; return; }
     zAlert(data.error || 'unknown error', {title: 'Not deleted'});
   } catch (e) {
-    zAlert('Network error — nothing was deleted.', {title: 'Not deleted'});
+    // the archive may have landed before the connection dropped
+    zAlert('The connection dropped before Notion answered, so it may or may not have been deleted — check the invoice list.',
+           {title: 'Not sure it was deleted'});
   }
   btn.disabled = false;
 }
