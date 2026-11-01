@@ -1990,6 +1990,8 @@ def ensure_invoice_properties() -> None:
     missing = {}
     if _ADJ_PROP not in have:
         missing[_ADJ_PROP] = {"rich_text": {}}
+    if _COMMENTS_PROP not in have:
+        missing[_COMMENTS_PROP] = {"rich_text": {}}
     if NUMBER_PROP not in have:
         missing[NUMBER_PROP] = {"rich_text": {}}
     if INV_RATE_PROP not in have:
@@ -2255,6 +2257,13 @@ _ADJ_PROP = "Adjustments"
 _CHUNK = 1900
 
 
+# The same idea for what each line *says*: {entry id: comment as billed}, only
+# for lines whose comment was reworded for the client. The Time Entry keeps
+# what was logged; the invoice, its workbook and its detail page show this.
+_COMMENTS_PROP = "Line comments"
+MAX_LINE_COMMENT = 2000
+
+
 def _adjustments_to_rich_text(adjustments: dict) -> list:
     if not adjustments:
         return []
@@ -2264,6 +2273,26 @@ def _adjustments_to_rich_text(adjustments: dict) -> list:
         logging.warning("Invoice adjustments too large to store (%d chars)", len(blob))
         return []
     return [{"text": {"content": c}} for c in chunks]
+
+
+def _comments_from_props(props: dict) -> dict:
+    text = "".join(t.get("plain_text", "") for t in props.get(_COMMENTS_PROP, {}).get("rich_text") or [])
+    if not text:
+        return {}
+    try:
+        return {k: str(v) for k, v in json.loads(text).items()}
+    except (ValueError, TypeError, AttributeError):
+        logging.warning("Invoice line comments weren't readable JSON")
+        return {}
+
+
+def _comments_prop(comments: dict) -> dict:
+    """The Line comments property, refusing (rather than silently dropping) a
+    set too big to store — losing a reworded line is worse than a refused save."""
+    rt = _adjustments_to_rich_text(comments or {})
+    if comments and not rt:
+        raise ValueError("too much reworded text to store on one invoice")
+    return {_COMMENTS_PROP: {"rich_text": rt}}
 
 
 def _adjustments_from_props(props: dict) -> dict:
@@ -2297,6 +2326,7 @@ def _invoice_row(page: dict, pname: dict, people: dict) -> dict:
         "saved_by": people.get(saved[0]["id"], "") if saved else "",
         "note": "".join(t.get("plain_text", "") for t in note),
         "adjustments": _adjustments_from_props(props),
+        "comments": _comments_from_props(props),
         "url": page.get("url", ""),
         # the document's own fields — every one optional, since invoices filed
         # before the PDF existed have none of them
@@ -2374,7 +2404,8 @@ def get_invoice(invoice_id: str) -> dict | None:
 def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed: float,
                  issued: str, note: str = "", person_id: str | None = None,
                  adjustments: dict | None = None, rate: float = 0.0,
-                 currency: str = "", client_note: str = "", actor: str = "") -> dict:
+                 currency: str = "", client_note: str = "", actor: str = "",
+                 comments: dict | None = None) -> dict:
     """File (or correct) the invoice for one project and one month.
 
     Upserts on (project, month), the same discipline as set_cell: saving July
@@ -2408,6 +2439,7 @@ def save_invoice(project_id: str, month: str, hours_tracked: float, hours_billed
         # rewritten every save, so an entry billed back at its logged hours
         # stops being an adjustment instead of lingering as one
         _ADJ_PROP: {"rich_text": _adjustments_to_rich_text(adjustments or {})},
+        **_comments_prop(comments or {}),
     }
     if issued:
         props["Issued"] = {"date": {"start": issued}}
@@ -2535,6 +2567,39 @@ def set_invoice_bill(invoice_id: str, lines: list[str], hours: float, amount: fl
     return dict(invoice, lines=lines, hours_billed=round(float(hours), 2),
                 amount=round(float(amount), 2),
                 status=DRAFT if STATUS_PROP in props else invoice["status"])
+
+
+def set_invoice_lines(invoice_id: str, adjustments: dict, comments: dict,
+                      hours_billed: float, amount: float | None, actor: str = "") -> dict:
+    """Record what each line of an invoice bills — its hours and its wording —
+    edited line by line on the invoice page before it goes to the accountant.
+
+    Both maps hold only the lines that differ from what was logged and are
+    rewritten whole, like save_invoice's. `Hours billed` follows the lines
+    (they are what was billed); `amount` is passed only when it was still
+    hours × rate, so a hand-typed amount survives. The Time Entries are never
+    touched. Same lock and status rule as set_invoice_bill: an approved bill
+    goes back to Draft, a sent one is refused.
+    """
+    props = {
+        _ADJ_PROP: {"rich_text": _adjustments_to_rich_text(adjustments)},
+        **_comments_prop(comments),
+        "Hours billed": {"number": round(float(hours_billed), 2)},
+    }
+    if amount is not None:
+        props[AMOUNT_PROP] = {"number": round(float(amount), 2)}
+    with _write_lock:
+        invoice = get_invoice(invoice_id)
+        if not invoice:
+            raise ValueError("that isn't an invoice")
+        props.update(_content_change_props(invoice["status"], invoice.get("history"), actor))
+        _notion.pages.update(invoice_id, properties=props)
+    out = dict(invoice, adjustments=adjustments, comments=comments,
+               hours_billed=round(float(hours_billed), 2),
+               status=DRAFT if STATUS_PROP in props else invoice["status"])
+    if amount is not None:
+        out["amount"] = round(float(amount), 2)
+    return out
 
 
 def entry_task(props: dict) -> dict:

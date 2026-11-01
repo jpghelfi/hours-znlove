@@ -139,7 +139,7 @@
     </div>
     <div class="sendbox-btns">
       <button type="button" class="btn" onclick="copyToSheets()">⧉ Copy &amp; open Google Sheets</button>
-      <a class="btn" href="/invoices/{{ invoice.id }}.xlsx">⬇ Download Excel</a>
+      <a class="btn" href="/invoices/{{ invoice.id }}.xlsx" onclick="return downloadXlsx(event)">⬇ Download Excel</a>
       <button type="button" class="btn {{ '' if mail_ready else 'btn-primary' }}"
               id="pdfbtn" onclick="downloadPdf()">⬇ Download PDF</button>
       {% if mail_ready and can_send %}
@@ -234,16 +234,35 @@
         </td>
       </tr>
       {% for r in day.rows %}
-      <tr class="{{ 'row-unbilled' if not r.billed else '' }}">
+      <tr class="{{ 'row-unbilled' if not r.billed else '' }}"{% if can_edit and r.id %} data-line="{{ r.id }}"{% endif %}>
         <td class="left"></td>
         <td class="left">{{ r.person }}</td>
         <td class="tracked">{{ '%g'|format(r.tracked) }}</td>
+        {% if can_edit and r.id %}
+        {# each line is editable until the bill goes out: what it bills and how
+           it's worded for the client. Saved on the invoice only — the logged
+           entry keeps its own hours and comment (shown in the tooltip). #}
+        <td>
+          <input class="bnum line-hours {{ 'adjusted' if r.changed }}" type="number" min="0" max="24" step="0.25"
+                 inputmode="decimal" value="{{ '%g'|format(r.billed) }}" data-saved="{{ '%g'|format(r.billed) }}"
+                 aria-label="Billed hours · {{ r.person }} · {{ day.label }}"
+                 title="Logged: {{ '%g'|format(r.tracked) }} h" oninput="lineEdited()">
+        </td>
+        {% if has_goals %}<td class="left">{{ r.goal }}</td>{% endif %}
+        <td class="left desc">
+          <textarea class="line-desc {{ 'adjusted' if r.reworded }}" rows="1" maxlength="2000"
+                    data-saved="{{ r.description }}" aria-label="Comment · {{ r.person }} · {{ day.label }}"
+                    title="{{ 'Logged as: ' ~ r.logged_description if r.reworded else 'As logged' }}"
+                    oninput="lineEdited()">{{ r.description }}</textarea>
+        </td>
+        {% else %}
         <td>
           {%- if r.changed %}<strong class="adjusted">{{ '%g'|format(r.billed) }}</strong>
           {%- else %}{{ '%g'|format(r.billed) }}{% endif %}
         </td>
         {% if has_goals %}<td class="left">{{ r.goal }}</td>{% endif %}
         <td class="left desc">{{ r.description }}</td>
+        {% endif %}
         <td class="left">
           {%- if r.task_url %}<a class="tlink" href="{{ r.task_url }}" target="_blank"
              rel="noopener noreferrer">🔗 {{ r.task or 'Notion ticket' }}</a>{% endif %}
@@ -270,6 +289,12 @@
     {% endif %}
   </table>
   </div>
+  {% if can_edit and days %}
+  <div class="sendbox-btns linebar">
+    <button type="button" class="btn btn-primary" id="linesbtn" onclick="saveLinesAndReload()" disabled>Save line edits</button>
+    <span class="subtle small" id="linesnote">Edit any line's billed hours or wording — saved on this invoice only, the logged entries don't change. The bill's total hours follow the lines.</span>
+  </div>
+  {% endif %}
 </div>
 
 <script>
@@ -369,10 +394,99 @@ async function saveBill() {
 
 const CAN_EDIT = {{ can_edit|tojson }};
 
+/* ---- per-line edits ----------------------------------------------------
+   Each line's billed hours and wording. Only the lines that changed since
+   the last save are sent; the server re-reads the month and refuses any
+   entry that isn't in it. Saving the lines also rewrites the bill's total
+   hours (and the amount, while it was still hours × rate), so the bill box
+   is updated from the response. */
+function changedLines() {
+  const out = [];
+  document.querySelectorAll('tr[data-line]').forEach(tr => {
+    const h = tr.querySelector('.line-hours'), d = tr.querySelector('.line-desc');
+    if (h.value !== h.dataset.saved || d.value !== d.dataset.saved) {
+      out.push({id: tr.dataset.line, hours: parseFloat(h.value) || 0, description: d.value});
+    }
+  });
+  return out;
+}
+
+function lineEdited() {
+  const btn = document.getElementById('linesbtn');
+  if (btn) btn.disabled = changedLines().length === 0;
+}
+
+async function saveLines() {
+  const rows = changedLines();
+  if (!rows.length) return null;
+  const res = await fetch('/api/invoice/lines', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({invoice_id: {{ invoice.id|tojson }}, rows: rows})
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!data.ok) throw new Error(data.error || 'unknown error');
+  document.querySelectorAll('tr[data-line]').forEach(tr => {
+    tr.querySelectorAll('.line-hours, .line-desc').forEach(el => { el.dataset.saved = el.value; });
+  });
+  // the server set the bill's hours (and maybe amount): show them, and count
+  // them as saved — without marking an unsaved edit to the bill's text saved
+  document.getElementById('hours').value = data.hours;
+  document.getElementById('amount').value = Number(data.amount).toFixed(2);
+  const s = JSON.parse(SAVED_BILL);
+  s.hours = data.hours; s.amount = data.amount;
+  SAVED_BILL = JSON.stringify(s);
+  showBillTotal();
+  lineEdited();
+  return data;
+}
+
+/* For the buttons that build a file or move the bill: save line edits first,
+   so what goes out is what's on screen. False means stop (and it said why). */
+async function saveLinesFirst() {
+  if (!CAN_EDIT || !changedLines().length) return true;
+  try {
+    const saved = await saveLines();
+    if (saved && saved.status !== {{ invoice.status|tojson }}) {
+      say('Line edits saved, which sent this invoice back to Draft. Approve it again when it\'s right.', true);
+      setTimeout(() => window.location.reload(), 2500);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    say('Line edits not saved: ' + e.message, false);
+    return false;
+  }
+}
+
+async function saveLinesAndReload() {
+  const btn = document.getElementById('linesbtn');
+  btn.disabled = true;
+  try {
+    await saveLines();
+    window.location.reload();
+  } catch (e) {
+    say('Line edits not saved: ' + e.message, false);
+    lineEdited();
+  }
+}
+
+async function downloadXlsx(ev) {
+  if (!CAN_EDIT || !changedLines().length) return true;
+  ev.preventDefault();
+  if (await saveLinesFirst()) window.location.href = '/invoices/{{ invoice.id }}.xlsx';
+  return false;
+}
+
+window.addEventListener('beforeunload', ev => {
+  if (CAN_EDIT && changedLines().length) { ev.preventDefault(); ev.returnValue = ''; }
+});
+
 async function downloadPdf() {
   if (!CAN_EDIT) { window.location.href = '/invoices/{{ invoice.id }}.pdf'; return; }
   const btn = document.getElementById('pdfbtn');
   btn.disabled = true;
+  if (!await saveLinesFirst()) { btn.disabled = false; return; }
   try {
     const saved = await saveBill();
     window.location.href = '/invoices/{{ invoice.id }}.pdf';
@@ -396,6 +510,7 @@ async function sendInvoice() {
   const btn = document.getElementById('sendbtn');
   const to = document.getElementById('to').value.trim();
   if (!to) { say('Add an email address first.', false); return; }
+  if (!await saveLinesFirst()) return;
   const b = billPayload();
   if (!b.lines.trim()) { say('Write at least one line saying what the bill is for.', false); return; }
   const sub = Math.round(b.amount * 100) / 100;
@@ -489,10 +604,13 @@ async function moveInvoice(btn) {
   const fields = await moveDialog(to);
   if (!fields) return;
   btn.disabled = true;
-  if (CAN_EDIT && to !== 'Void' && JSON.stringify(billPayload()) !== SAVED_BILL) {
+  const linesDirty = CAN_EDIT && to !== 'Void' && changedLines().length > 0;
+  if (linesDirty || (CAN_EDIT && to !== 'Void' && JSON.stringify(billPayload()) !== SAVED_BILL)) {
     let saved;
     try {
-      saved = await saveBill();
+      // lines first: they rewrite the bill's hours, which the bill save then keeps
+      if (linesDirty) saved = await saveLines();
+      if (JSON.stringify(billPayload()) !== SAVED_BILL) saved = await saveBill();
     } catch (e) {
       zAlert('Your edits couldn\'t be saved, so nothing was changed: ' + e.message, {title: 'Not changed'});
       btn.disabled = false;
@@ -527,6 +645,8 @@ async function moveInvoice(btn) {
 }
 
 function copyToSheets() {
+  // the rows below were drawn from the last save; edits on screen aren't in them
+  if (CAN_EDIT && changedLines().length) { say('Save the line edits first.', false); return; }
   if (!SHEET_ROWS.length) { say('Nothing to copy — no line on this invoice was billed.', false); return; }
   if (!copyText(tsv())) {
     say('Could not reach the clipboard — download the Excel file instead.', false);
