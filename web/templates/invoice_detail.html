@@ -61,12 +61,17 @@
     {%- if invoice.status == 'Draft' %}Not yet approved — the accountant can't see it until an admin approves it.{% endif %}
     {%- if invoice.status == 'Approved' %}Waiting for the accountant to send it.{% endif %}
   </div>
-  {% if moves %}
+  {% if moves or is_admin %}
   <div class="sendbox-btns invmoves">
     {% for m in moves %}
     <button type="button" class="btn {{ 'btn-primary' if m.kind == 'primary' }} {{ 'danger' if m.kind == 'danger' }}"
             data-to="{{ m.to }}" onclick="moveInvoice(this)">{{ m.label }}</button>
     {% endfor %}
+    {# any status, admins only — Void keeps a cancelled bill on record, this
+       takes it off every list (into Notion's trash) #}
+    {% if is_admin %}
+    <button type="button" class="btn danger" id="deletebtn" onclick="deleteInvoice()">Delete</button>
+    {% endif %}
   </div>
   {% endif %}
   {% if invoice.history %}
@@ -558,6 +563,33 @@ async function sendInvoice() {
   btn.disabled = false;
 }
 {% endif %}
+
+async function deleteInvoice() {
+  const status = {{ invoice.status|tojson }};
+  const gone = ['Sent', 'Paid'].includes(status);
+  const msg = (gone
+      ? 'This invoice is ' + status.toLowerCase() + ' — the client already has it. '
+        + 'Deleting removes it from the app (its number ' + {{ (invoice.number or '')|tojson }} + ' may be reused); '
+        + 'Void keeps it on record instead.\n\n'
+      : '')
+    + 'It goes to Notion\'s trash, where it can still be restored. The logged hours aren\'t touched.';
+  if (!await zConfirm(msg, {title: 'Delete ' + {{ (invoice.project ~ ' · ' ~ month_label)|tojson }} + '?', ok: 'Delete', danger: true})) return;
+  const btn = document.getElementById('deletebtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/invoice/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({invoice_id: {{ invoice.id|tojson }}})
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (data.ok) { window.location.href = '/invoices'; return; }
+    zAlert(data.error || 'unknown error', {title: 'Not deleted'});
+  } catch (e) {
+    zAlert('Network error — nothing was deleted.', {title: 'Not deleted'});
+  }
+  btn.disabled = false;
+}
 
 /* ---- the lifecycle ------------------------------------------------------
    One dialog for every move: Sent asks when and when it's due, Paid asks when

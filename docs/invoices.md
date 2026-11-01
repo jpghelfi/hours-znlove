@@ -376,6 +376,20 @@ budget alert; the "Ready for accountant" chip is the real queue.
 
 Tests: `tests/test_invoice_flow.py` (18 checks, no Notion).
 
+## Deleting an invoice
+
+An admin can **Delete** an invoice in any status — Draft, Approved, Sent, Paid
+or Void — from its page (`POST /api/invoice/delete` → `ops.delete_invoice`).
+The accountant can't. It archives the Notion page (Notion's trash, restorable
+there by hand), so the row leaves every list; the Time Entries behind it are
+untouched. **Void is the other option** and the one to prefer for a bill the
+client already has: it keeps the cancelled bill on record. The confirm says as
+much for a Sent or Paid invoice, and that its **number may be reused** —
+`next_invoice_number` only sees live rows, so deleting the year's highest
+number frees it. The id comes from the browser, so `get_invoice`'s parent
+check runs under the write lock before the archive. Each delete is logged
+(project, month, status, who).
+
 ## Not in scope
 
 No line-item discounts, no multi-currency conversion, no partial payments

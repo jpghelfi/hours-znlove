@@ -2428,6 +2428,34 @@ class InvoiceStatus(BaseModel):
     note: str = ""
 
 
+class InvoiceDelete(BaseModel):
+    invoice_id: str
+
+
+@app.post("/api/invoice/delete")
+def api_invoice_delete(request: Request, req: InvoiceDelete):
+    """Delete an invoice in any status — admins only, never the accountant.
+    The browser confirms first (and says more when the bill has gone out)."""
+    user = _require_login(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "not logged in"}, status_code=401)
+    if not auth.is_admin(user):
+        return JSONResponse({"ok": False, "error": "admins only"}, status_code=403)
+    if not _same_origin(request):
+        return JSONResponse({"ok": False, "error": "bad origin"}, status_code=403)
+    try:
+        gone = ops.delete_invoice(req.invoice_id)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+    except Exception:
+        logging.exception("Deleting invoice %s failed", req.invoice_id)
+        return JSONResponse({"ok": False, "error": "Notion refused the delete — try again"},
+                            status_code=502)
+    logging.info("Invoice %s (%s %s, %s) deleted by %s", gone["id"], gone["project"],
+                 gone["month"], gone["status"], _actor(user))
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/invoice/status")
 def api_invoice_status(request: Request, req: InvoiceStatus):
     """Move an invoice along its lifecycle: an admin approves it, the
