@@ -27,6 +27,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import alerts
 from . import auth
+from . import dashboard
 from . import gcal
 from . import google_auth
 from . import invoice_pdf
@@ -108,6 +109,7 @@ def _startup() -> None:
     ops.ensure_admin_property()
     ops.ensure_approver_property()
     ops.ensure_accountant_property()
+    ops.ensure_hours_property()
     ops.ensure_absence_properties()
     ops.ensure_task_properties()
     ops.ensure_invoice_properties()
@@ -2489,6 +2491,14 @@ def _day_target() -> float:
     return float(os.environ.get("DAY_TARGET_HOURS", "8"))
 
 
+def _env_float(name: str) -> Optional[float]:
+    """A numeric env var, or None when it's unset, blank or not a number."""
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return None
+
+
 DIRECT_LABEL = "Direct"
 
 
@@ -2701,6 +2711,17 @@ def schedule_page(request: Request, start: Optional[str] = None, by: str = "pers
     rows, hidden_rows = _schedule_rows(allocs, col_isos, by, bucket, people, shown_projects,
                                        focus_people, project, partner_of, partner_names,
                                        focus_partner)
+    # A person row's capacity is their own Hours per day (People db) when set;
+    # `cap` stays the default for everyone else and for project/partner rows.
+    person_by_id = {p["id"]: p for p in people}
+    week_env = _env_float("WEEK_TARGET_HOURS")
+    for r in rows:
+        if by != "person":
+            r["cap"] = cap
+        elif view == "days":
+            r["cap"] = dashboard.day_cap(person_by_id.get(r["id"]), _day_target())
+        else:
+            r["cap"] = dashboard.week_cap(person_by_id.get(r["id"]), _day_target(), week_env)
 
     col_totals = {c: sum(r["days"][c]["total"] for r in rows) for c in col_isos}
     return templates.TemplateResponse(request, "schedule.html", {
@@ -2939,6 +2960,7 @@ def people_page(request: Request):
         # the linked Notion user's own name/email, keyed by bare id
         "members": {_bare_id(m["id"]): m for m in members or []},
         "me": _bare_id(user.get("id")),
+        "default_hours": _day_target(),
     })
 
 
@@ -2995,6 +3017,25 @@ def api_people_rename(request: Request, r: PersonName):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     except Exception:
         logging.exception("Renaming People row %s failed", r.page_id)
+        return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
+
+
+class PersonHours(BaseModel):
+    page_id: str
+    hours: Optional[float] = None   # null clears it back to the default
+
+
+@app.post("/api/people/hours")
+def api_people_hours(request: Request, h: PersonHours):
+    refused = _people_write_guard(request)
+    if refused:
+        return refused
+    try:
+        return JSONResponse(ops.set_person_hours(h.page_id, h.hours))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logging.exception("Saving hours per day on People row %s failed", h.page_id)
         return JSONResponse({"ok": False, "error": "could not save"}, status_code=400)
 
 
@@ -4055,6 +4096,90 @@ def budgets_page(request: Request, start: Optional[str] = None,
         "total_budget": sum(r["budget"]["hours"] for r in budgeted),
         "total_tracked": sum(r["tracked"] for r in rows),
         "alerts_on": mailer.budget_alerts_enabled(),
+    })
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page(request: Request, start: Optional[str] = None):
+    """One month for admins: what needs action, budget burn with a forecast,
+    utilization against each person's own hours/day, missing time, and what's
+    tracked but not invoiced. A handful of reads, nothing per project or person;
+    the arithmetic lives in web/dashboard.py (docs/dashboard.md)."""
+    user = _require_login(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not auth.is_admin(user):
+        return RedirectResponse(url="/", status_code=303)
+
+    rng = _period_range("monthly", _project_anchor("monthly", start))
+    first, last = dt.date.fromisoformat(rng["from"]), dt.date.fromisoformat(rng["to"])
+    today = dt.date.today()
+    all_days = ops.weekdays_between(first, last)
+    elapsed = dashboard.elapsed_weekdays(all_days, today)
+
+    people = ops.list_people()
+    projects = ops.list_projects(active_only=False)
+    entries = ops.entries_between(rng["from"], rng["to"])
+    absences = ops.list_absences(rng["from"], rng["to"]) if ops.absences_enabled() else []
+    invoices = ops.list_invoices(limit=10000) if ops.invoices_enabled() else []
+    pending = []
+    if ops.absences_enabled():
+        try:
+            pending = ops.list_pending_absences()
+        except Exception:
+            logging.exception("Reading the pending-absence queue failed")
+
+    # `tracked` is the whole month (what Budgets and Billing show); the pace
+    # and utilization only count entries on elapsed days, the window their
+    # denominators cover — today's half-logged hours would otherwise inflate both.
+    tracked: dict = {}
+    tracked_to_date: dict = {}
+    hours_by_person: dict = {}
+    logged_by_person: dict = {}
+    for e in entries:
+        h = e["hours"] or 0
+        day = dt.date.fromisoformat(e["date"]) if e.get("date") else None
+        done = day is not None and day < today
+        if e["project_id"]:
+            tracked[e["project_id"]] = tracked.get(e["project_id"], 0.0) + h
+            if done:
+                tracked_to_date[e["project_id"]] = tracked_to_date.get(e["project_id"], 0.0) + h
+        if e["person_id"] and done:
+            hours_by_person[e["person_id"]] = hours_by_person.get(e["person_id"], 0.0) + h
+            if h > 0:
+                logged_by_person.setdefault(e["person_id"], set()).add(day)
+    absent_by_person = {pid: set(days) for pid, days in _absence_days(absences, rng).items()}
+
+    name_map = {p["id"]: p["name"] for p in people}
+    active = [p for p in projects if p.get("active", True)]
+    rows = dashboard.add_forecast(_budget_rows(active, tracked, name_map),
+                                  len(elapsed), len(all_days), tracked_to_date)
+    budgeted = [r for r in rows if r["budget"]]
+    unbudgeted = [r for r in rows if not r["budget"] and r["tracked"]]
+    over = [r for r in budgeted if r["status"] in ("over", "over_cap", "blocked")]
+
+    stages: dict = {}
+    for inv in invoices:
+        s = _invoice_stage(inv, today)
+        stages[s] = stages.get(s, 0) + 1
+
+    pipe = dashboard.pipeline_rows(
+        projects, tracked, {(i["project_id"], i["month"]): i for i in invoices}, rng["from"])
+    for r in pipe:
+        r["money"] = invoice_pdf.money(r["value"], r["currency"]) if r["value"] else ""
+
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "user": user, "is_admin": True, "rng": rng, "today": today,
+        "elapsed_n": len(elapsed), "total_n": len(all_days),
+        "future": first > today,
+        "pending_n": len(pending), "over": over, "stages": stages,
+        "invoices_on": ops.invoices_enabled(), "absences_on": ops.absences_enabled(),
+        "budgeted": budgeted, "unbudgeted": unbudgeted,
+        "util": dashboard.utilization_rows(people, hours_by_person, absent_by_person,
+                                           elapsed, all_days, _day_target()),
+        "missing": dashboard.missing_rows(people, logged_by_person, absent_by_person, elapsed),
+        "pipe": pipe,
+        "util_marks": (dashboard.UTIL_LOW, dashboard.UTIL_FULL, dashboard.UTIL_OVER),
     })
 
 

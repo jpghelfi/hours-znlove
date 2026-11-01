@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Hours Tracker{% endblock %}
+{% block nav_dashboard %}active{% endblock %}
+{% block content %}
+<div class="week-head">
+  <div>
+    <h1>Dashboard</h1>
+    <div class="subtle">
+      {{ rng.label }} ·
+      {% if future %}hasn't started yet
+      {% elif elapsed_n < total_n %}{{ elapsed_n }} of {{ total_n }} weekdays done
+      {% else %}{{ total_n }} weekdays{% endif %}
+    </div>
+  </div>
+  <div class="weeknav arrows">
+    <a class="btn" href="/dashboard?start={{ rng.prev }}" aria-label="Earlier" title="Earlier">←</a>
+    <a class="btn" href="/dashboard?start={{ rng.now }}">{{ rng.now_label }}</a>
+    <a class="btn" href="/dashboard?start={{ rng.next }}" aria-label="Later" title="Later">→</a>
+  </div>
+</div>
+
+<form class="range-form" method="get" action="/dashboard">
+  <label class="period-pick">Month
+    <input type="month" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
+  </label>
+</form>
+
+{# ---- needs action ---------------------------------------------------- #}
+{% set unpaid = (stages.get('Draft', 0) + stages.get('Approved', 0) + stages.get('Sent', 0) + stages.get('Overdue', 0)) if invoices_on else 0 %}
+<div class="statrow">
+  {% if absences_on %}
+  <a class="stat card" href="/absences">
+    <div class="stat-n {{ 'over' if pending_n }}">{{ pending_n }}</div>
+    <div class="stat-l">absence{{ '' if pending_n == 1 else 's' }} to approve</div>
+  </a>
+  {% endif %}
+  <a class="stat card" href="/budgets?start={{ rng.value }}">
+    <div class="stat-n {{ 'over' if over }}">{{ over|length }}</div>
+    <div class="stat-l">over budget</div>
+  </a>
+  {% if invoices_on %}
+  {% for st, label in [('Draft', 'draft'), ('Approved', 'ready to send'), ('Sent', 'awaiting payment'), ('Overdue', 'overdue')] %}
+  <a class="stat card" href="/invoices?status={{ st }}">
+    <div class="stat-n {{ 'over' if st == 'Overdue' and stages.get(st) }}">{{ stages.get(st, 0) }}</div>
+    <div class="stat-l">invoice{{ '' if stages.get(st, 0) == 1 else 's' }} {{ label }}</div>
+  </a>
+  {% endfor %}
+  {% endif %}
+</div>
+{% if not pending_n and not over and not unpaid %}
+<p class="subtle">Nothing needs you right now.</p>
+{% endif %}
+
+{# ---- budget burn ------------------------------------------------------ #}
+<div class="card wide">
+  <h3>Budget burn</h3>
+  {% if budgeted %}
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Project</th>
+        <th>Budget</th>
+        <th>Used</th>
+        <th class="left usedcol">%</th>
+        <th title="Where the month ends at the pace so far (hours ÷ weekdays done × weekdays in the month)">Forecast</th>
+        <th class="left">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in budgeted %}
+      <tr>
+        <td class="left"><a href="/project?project={{ r.id }}&period=monthly&start={{ rng.value }}">{{ r.name }}</a></td>
+        <td>{{ '%g'|format(r.budget.hours) }}</td>
+        <td>{{ '%g'|format(r.tracked) }}</td>
+        <td class="usedcol">
+          <div class="cap {{ 'cap-over' if r.status in ('over','over_cap') else ('cap-full' if r.status in ('warn','blocked') else 'cap-ok') }}">
+            <i style="width: {{ '%.1f'|format(r.bar) }}%"></i>
+          </div>
+          <div class="cap-num">{{ '%.0f'|format(r.pct) }}%</div>
+        </td>
+        <td class="hnum {{ 'over' if r.forecast_over }}">
+          {%- if r.forecast is none %}<span class="subtle">—</span>
+          {%- else %}{{ '%.0f'|format(r.forecast) }}{% if r.forecast_pct is not none %} <span class="subtle">({{ '%.0f'|format(r.forecast_pct) }}%)</span>{% endif %}{% endif %}
+        </td>
+        <td class="left"><span class="chip {{ r.status_chip }}">{{ r.status_label }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="subtle">No budgets set. <a href="/budgets?start={{ rng.value }}">Set some on Budgets</a>.</p>
+  {% endif %}
+  {% if unbudgeted %}
+  <p class="subtle small">Unbudgeted:
+    {% for r in unbudgeted %}{{ r.name }} {{ '%g'|format(r.tracked) }} h{{ ' · ' if not loop.last }}{% endfor %}
+  </p>
+  {% endif %}
+</div>
+
+{# ---- utilization -------------------------------------------------------- #}
+<div class="card wide">
+  <h3>Utilization</h3>
+  {% if future or not elapsed_n %}
+  <p class="subtle">No weekdays done yet this month.</p>
+  {% else %}
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Person</th>
+        <th title="From the People page; blank there means the default">Hours / day</th>
+        <th>Logged</th>
+        <th title="Hours/day × weekdays done, minus approved days off">Capacity to date</th>
+        <th>Days off</th>
+        <th class="left usedcol">Utilization</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in util %}
+      <tr>
+        <td class="left">{{ r.name }}</td>
+        <td>{{ '%g'|format(r.hpd) }}{% if not r.custom %} <span class="subtle small">default</span>{% endif %}</td>
+        <td>{{ '%g'|format(r.used|round(2)) }}</td>
+        <td>{{ '%g'|format(r.cap_to_date) }}{% if r.cap_month != r.cap_to_date %} <span class="subtle small">of {{ '%g'|format(r.cap_month) }}</span>{% endif %}</td>
+        <td>{{ r.absent_month or '' }}</td>
+        <td class="usedcol">
+          {%- if r.pct is none %}<span class="subtle">—</span>
+          {%- else %}
+          <div class="cap {{ 'cap-over' if r.status == 'over' else ('cap-full' if r.status == 'full' else 'cap-ok') }}">
+            <i style="width: {{ [100, r.pct]|min }}%"></i>
+          </div>
+          <div class="cap-num {{ 'subtle' if r.status == 'low' }}">{{ '%.0f'|format(r.pct) }}%</div>
+          {%- endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtle small">Under {{ util_marks[0] }}% reads as low, {{ util_marks[1] }}% or more as full,
+    over {{ util_marks[2] }}% as over. Today isn't counted until it's over.
+    Change someone's hours per day on <a href="/people">People</a>.</p>
+  {% endif %}
+</div>
+
+{# ---- missing time ------------------------------------------------------- #}
+<div class="card wide">
+  <h3>Missing time</h3>
+  {% if future or not elapsed_n %}
+  <p class="subtle">No weekdays done yet this month.</p>
+  {% elif not missing %}
+  <p class="subtle">Everyone has logged every weekday so far.</p>
+  {% else %}
+  <table class="grid flat">
+    <thead>
+      <tr><th class="left">Person</th><th>Days</th><th class="left">Weekdays with nothing logged</th></tr>
+    </thead>
+    <tbody>
+      {% for r in missing %}
+      <tr>
+        <td class="left">{{ r.name }}</td>
+        <td class="hnum">{{ r.n }}</td>
+        <td class="left subtle">{% for d in r.days %}{{ d.strftime('%a %-d') }}{{ ', ' if not loop.last }}{% endfor %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtle small">Approved days off don't count as missing.</p>
+  {% endif %}
+</div>
+
+{# ---- billing pipeline --------------------------------------------------- #}
+{% if invoices_on %}
+<div class="card wide">
+  <h3>Billing — {{ rng.label }}</h3>
+  {% if pipe %}
+  <table class="grid flat">
+    <thead>
+      <tr>
+        <th class="left">Project</th>
+        <th>Hours tracked</th>
+        <th class="left">Invoice</th>
+        <th title="Hours tracked × the project's rate">Est. value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in pipe %}
+      <tr>
+        <td class="left">{{ r.name }}</td>
+        <td>{{ '%g'|format(r.hours|round(2)) }}</td>
+        <td class="left">
+          {%- if r.invoice %}
+          <a href="/invoices/{{ r.invoice.id }}"><span class="chip stage-{{ r.status|lower }}">{{ r.status }}</span></a>
+          {%- else %}
+          <span class="subtle">Not invoiced</span> ·
+          <a href="/project/export?period=monthly&start={{ rng.from }}&project={{ r.id }}">Invoice…</a>
+          {%- endif %}
+        </td>
+        <td>{{ r.money or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not future and elapsed_n < total_n %}<p class="subtle small">Month in progress — hours will still grow.</p>{% endif %}
+  {% else %}
+  <p class="subtle">Nothing tracked this month.</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

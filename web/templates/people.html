@@ -43,6 +43,7 @@
     <tr>
       <th>Name</th>
       <th class="col-user">Notion user</th>
+      <th class="col-flag" title="Capacity on the schedule and the dashboard; blank = {{ '%g'|format(default_hours) }}h">Hours / day</th>
       <th class="col-flag" title="May sign in, and appears on the roster">Active</th>
       <th class="col-flag" title="Team-wide reports, exports and these admin pages">Admin</th>
       <th class="col-flag" title="May approve or decline absence requests">Approves absences</th>
@@ -64,6 +65,14 @@
         {% elif m %}{{ m.name }}{% if m.email %} · {{ m.email }}{% endif %}
         {% else %}<span title="Not a current workspace member">not in the workspace</span>{% endif %}
       </td>
+      {% set hv = r.get('hours_per_day') %}
+      {% set hpd = '%g'|format(hv) if hv is not none else '' %}
+      <td class="col-flag">
+        <input class="bnum people-hours" type="number" min="0.5" max="24" step="0.5" inputmode="decimal"
+               value="{{ hpd }}" data-prev="{{ hpd }}" placeholder="{{ '%g'|format(default_hours) }}"
+               aria-label="Hours per day · {{ r.name }}" onchange="saveHours(this)"
+               onkeydown="if (event.key === 'Enter') this.blur(); if (event.key === 'Escape') { this.value = this.dataset.prev; this.blur(); }">
+      </td>
       {% for field in ['active', 'admin', 'approver', 'accountant'] %}
       <td class="assign-cell col-flag">
         <input type="checkbox" data-field="{{ field }}" {{ 'checked' if r[field] }}
@@ -74,7 +83,7 @@
     </tr>
     {% endfor %}
     {% if not roster %}
-    <tr class="empty"><td colspan="6">Nobody on the roster yet.</td></tr>
+    <tr class="empty"><td colspan="7">Nobody on the roster yet.</td></tr>
     {% endif %}
   </tbody>
 </table>
@@ -133,6 +142,22 @@ async function renamePerson(input) {
   try {
     const data = await postJSON('/api/people/rename', {page_id: input.closest('tr').dataset.row, name});
     input.value = input.dataset.prev = data.name;
+  } catch (e) {
+    input.value = prev; input.classList.add('bad');
+    showPeopleNotice(e.message);
+  } finally {
+    input.disabled = false;
+  }
+}
+
+async function saveHours(input) {
+  const prev = input.dataset.prev, raw = input.value.trim();
+  if (raw === prev) return;
+  input.classList.remove('bad'); input.disabled = true;
+  try {
+    const data = await postJSON('/api/people/hours',
+        {page_id: input.closest('tr').dataset.row, hours: raw === '' ? null : parseFloat(raw)});
+    input.value = input.dataset.prev = data.hours == null ? '' : String(data.hours);
   } catch (e) {
     input.value = prev; input.classList.add('bad');
     showPeopleNotice(e.message);

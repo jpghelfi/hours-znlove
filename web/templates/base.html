@@ -21,7 +21,7 @@
 {% block nav_schedule %}{% endblock %}{% block nav_reports %}{% endblock %}{% block nav_project %}{% endblock %}
 {% block nav_budgets %}{% endblock %}{% block nav_assignments %}{% endblock %}{% block nav_invoices %}{% endblock %}
 {% block nav_plan %}{% endblock %}{% block nav_roles %}{% endblock %}{% block nav_people %}{% endblock %}
-{% block nav_tools %}{% endblock %}
+{% block nav_tools %}{% endblock %}{% block nav_dashboard %}{% endblock %}
 {%- endset -%}
 {#- Which page is on: each page overrides one nav_* block with "active".
     Rendering them here once gives the grouped menus and the phone tab bar a
@@ -33,8 +33,9 @@
   'budgets': self.nav_budgets()|trim, 'assignments': self.nav_assignments()|trim,
   'invoices': self.nav_invoices()|trim, 'plan': self.nav_plan()|trim,
   'roles': self.nav_roles()|trim,
-  'people': self.nav_people()|trim, 'tools': self.nav_tools()|trim } -%}
-{%- set on_reports = nav.reports or nav.project or nav.budgets -%}
+  'people': self.nav_people()|trim, 'tools': self.nav_tools()|trim,
+  'dashboard': self.nav_dashboard()|trim } -%}
+{%- set on_reports = nav.dashboard or nav.reports or nav.project or nav.budgets -%}
 {%- set on_admin = nav.assignments or nav.roles or nav.invoices or nav.plan or nav.people or nav.tools -%}
   <header class="topbar">
     {# The public plan page (/p/<token>) wears the shell without the menu: a
@@ -55,6 +56,7 @@
       <details class="navmenu">
         <summary class="{{ 'active' if on_reports }}">Reports<span class="caret">▾</span></summary>
         <div class="menu-list">
+          <a href="/dashboard" class="{{ nav.dashboard }}"><b>Dashboard</b><small>the month: budgets · utilization · missing time · billing</small></a>
           <a href="/reports" class="{{ nav.reports }}"><b>Reports</b><small>hours by day, project and person</small></a>
           <a href="/project" class="{{ nav.project }}"><b>By project</b><small>one period per project · export · invoice</small></a>
           <a href="/budgets" class="{{ nav.budgets }}"><b>Budgets</b><small>monthly allowance per project</small></a>
@@ -110,7 +112,7 @@
     {% else %}
     <a href="/absences" class="{{ nav.absences }}"><svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/></svg>Absences</a>
     {% endif %}
-    <button type="button" class="{{ 'active' if (is_admin and (nav.absences or nav.project or nav.budgets or on_admin)) }}" onclick="document.getElementById('moreSheet').showModal()"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>More</button>
+    <button type="button" class="{{ 'active' if (is_admin and (nav.absences or nav.dashboard or nav.project or nav.budgets or on_admin)) }}" onclick="document.getElementById('moreSheet').showModal()"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>More</button>
   </nav>
   <dialog class="zdlg sheet" id="moreSheet" aria-label="All pages">
     <div class="sheet-grab" aria-hidden="true"></div>
@@ -125,6 +127,7 @@
     </div>
     {% if is_admin %}
     <div class="sheet-group"><div class="sheet-title">Reports</div>
+      <a href="/dashboard" class="{{ nav.dashboard }}">Dashboard</a>
       <a href="/reports" class="{{ nav.reports }}">Reports</a>
       <a href="/project" class="{{ nav.project }}">By project</a>
       <a href="/budgets" class="{{ nav.budgets }}">Budgets</a>
