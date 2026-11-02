@@ -1790,23 +1790,26 @@ def _invoice_comments(raw_rows: list, logged_desc: dict) -> dict:
     return out
 
 
-def _invoiced_days(rows: list[dict]) -> list[dict]:
-    """Those rows grouped into days, each with its own tracked/billed totals."""
-    days: dict = {}
+def _invoiced_goals(rows: list[dict]) -> list[dict]:
+    """Those rows grouped by goal, each with its own tracked/billed totals.
+
+    Biggest billed goal first; lines with no goal last, whatever their size, so
+    the named work reads before the remainder. Lines stay in date order inside
+    a group — the date is a column on each line, not a section.
+    """
+    groups: dict = {}
     for r in rows:
-        day = days.setdefault(r["date"], {"date": r["date"], "rows": [],
-                                          "tracked": 0.0, "billed": 0.0})
-        day["rows"].append(r)
-        day["tracked"] += r["tracked"]
-        day["billed"] += r["billed"]
-    out = []
-    for day in sorted(days.values(), key=lambda d: d["date"]):
-        day["tracked"] = round(day["tracked"], 2)
-        day["billed"] = round(day["billed"], 2)
-        parsed = _parse_date(day["date"])
-        day["label"] = parsed.strftime("%a %d %b") if parsed else day["date"]
-        out.append(day)
-    return out
+        name = (r.get("goal") or "").strip()
+        g = groups.setdefault(name, {"name": name, "rows": [], "tracked": 0.0, "billed": 0.0})
+        g["rows"].append(r)
+        g["tracked"] += r["tracked"]
+        g["billed"] += r["billed"]
+    for g in groups.values():
+        g["tracked"] = round(g["tracked"], 2)
+        g["billed"] = round(g["billed"], 2)
+        g["label"] = g["name"] or "No goal"
+    return sorted(groups.values(),
+                  key=lambda g: (not g["name"], -g["billed"], g["name"].lower()))
 
 
 _STALE_MONTHS = 4
@@ -2312,7 +2315,7 @@ def invoice_xlsx(request: Request, invoice_id: str):
 
 @app.get("/invoices/{invoice_id}", response_class=HTMLResponse)
 def invoice_detail(request: Request, invoice_id: str):
-    """One invoice, day by day, as it was billed.
+    """One invoice, line by line and grouped by goal, as it was billed.
 
     The hours shown are the *invoiced* ones — what was logged, with the
     adjustments made on the export screen applied back over them. Rows billed
@@ -2330,11 +2333,13 @@ def invoice_detail(request: Request, invoice_id: str):
 
     month = _parse_date(invoice["month"])
     rng = _period_range("monthly", month) if month else None
-    rows, days = [], []
+    rows = []
     if rng and invoice["project_id"]:
         project = {"id": invoice["project_id"], "name": invoice["project"]}
         rows = _invoiced_rows(invoice, _period_entries(project, [project["id"]], rng))
-        days = _invoiced_days(rows)
+        for r in rows:
+            parsed = _parse_date(r["date"])
+            r["day_label"] = parsed.strftime("%a %d %b") if parsed else r["date"]
     now_tracked = round(sum(r["tracked"] for r in rows), 2)
     # what the clipboard button pastes into a sheet: the billed lines only,
     # the same set the workbook holds
@@ -2374,7 +2379,7 @@ def invoice_detail(request: Request, invoice_id: str):
         "today_iso": dt.date.today().isoformat(),
         "default_due": (dt.date.today()
                         + dt.timedelta(days=ops.invoice_due_days())).isoformat(),
-        "invoice": invoice, "days": days, "rng": rng,
+        "invoice": invoice, "lines": rows, "goals": _invoiced_goals(rows), "rng": rng,
         # every line on screen, not just the billed ones the clipboard gets
         "has_goals": any(r.get("goal") for r in rows),
         "month_label": month.strftime("%B %Y") if month else invoice["month"],

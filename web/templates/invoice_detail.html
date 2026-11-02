@@ -176,14 +176,14 @@
   <strong>This invoice predates line-by-line detail.</strong>
   Its total says {{ '%g'|format(invoice.hours_billed) }} h were billed of
   {{ '%g'|format(invoice.hours_tracked) }} h tracked, but which lines were cut wasn't
-  recorded then — so the days below show the hours <em>as logged</em>, and they add up to
+  recorded then — so the lines below show the hours <em>as logged</em>, and they add up to
   the tracked figure rather than the billed one.
   {% if can_edit %}<a href="/project/export?period=monthly&start={{ invoice.month }}&project={{ invoice.project_id }}">Re-invoice</a>
   to record the breakdown.{% endif %}
 </div>
 {% endif %}
 
-{% if not legacy and days and (now_billed - invoice.hours_billed)|abs >= 0.01 %}
+{% if not legacy and lines and (now_billed - invoice.hours_billed)|abs >= 0.01 %}
 {# the total was typed over in the send box: the bill says one number, the
    lines below add up to another — said here, so nobody hunts for the entry
    that explains the difference #}
@@ -200,17 +200,28 @@
 <div class="notebar warn">
   <strong>This month has changed since it was invoiced.</strong>
   It was saved against {{ '%g'|format(invoice.hours_tracked) }} h tracked;
-  {{ '%g'|format(now_tracked) }} h are logged now, and the days below reflect
+  {{ '%g'|format(now_tracked) }} h are logged now, and the lines below reflect
   today's entries.{% if can_edit %} Re-invoice if the bill should follow.{% endif %}
 </div>
 {% endif %}
 
 <div class="card wide">
-  {# has_goals comes from the route: the column shows when this month's entries
-     carry goals — unbilled lines included, since they're on screen too. Same
-     rule as the export screen and the workbook, so an invoice and the file sent
-     for it show the same columns. #}
-  {# a seventh column pushes this past the card on a laptop, so the table
+  {# grouped by goal, biggest first, "No goal" last — each group's header row
+     carries its tracked/billed hours, so this is also the hours-per-goal
+     table. With no goals on the month there's nothing to group by and the
+     lines are one flat list. #}
+  {% if has_goals %}
+  <div class="goalbar">
+    <label for="goalpick" class="subtle small">Goal</label>
+    <select id="goalpick" onchange="pickGoal(this.value)">
+      <option value="">All goals · {{ '%g'|format(now_billed) }} h</option>
+      {% for g in goals %}
+      <option value="{{ loop.index }}">{{ g.label }} · {{ '%g'|format(g.billed) }} h</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  {# a wide table pushes this past the card on a laptop, so the table
      scrolls inside its own box — the same wrapper the export screen uses #}
   <div class="entrylist-scroll">
   <table class="grid flat">
@@ -220,27 +231,28 @@
         <th class="left">Person</th>
         <th>Tracked</th>
         <th>Billed</th>
-        {% if has_goals %}<th class="left">Goal</th>{% endif %}
         <th class="left">Comment</th>
         <th class="left">Ticket</th>
       </tr>
     </thead>
     <tbody>
-      {% for day in days %}
-      <tr class="group-row">
-        <td class="left nowrap">{{ day.label }}</td>
-        <td class="left"></td>
-        <td class="tracked">{{ '%g'|format(day.tracked) }}</td>
-        <td>{{ '%g'|format(day.billed) }}</td>
-        <td class="left" colspan="{{ 3 if has_goals else 2 }}">
-          {%- if day.billed != day.tracked %}
-          <span class="chip chip-under">{{ '%g'|format(day.billed - day.tracked) }} h</span>
+      {% for g in goals %}
+      {% set gi = loop.index %}
+      {% if has_goals %}
+      <tr class="group-row" data-goal="{{ gi }}">
+        <td class="left" colspan="2">{{ g.label }}</td>
+        <td class="tracked">{{ '%g'|format(g.tracked) }}</td>
+        <td>{{ '%g'|format(g.billed) }}</td>
+        <td class="left" colspan="2">
+          {%- if g.billed != g.tracked %}
+          <span class="chip chip-under">{{ '%g'|format(g.billed - g.tracked) }} h</span>
           {%- endif %}
         </td>
       </tr>
-      {% for r in day.rows %}
-      <tr class="{{ 'row-unbilled' if not r.billed else '' }}"{% if can_edit and r.id %} data-line="{{ r.id }}"{% endif %}>
-        <td class="left"></td>
+      {% endif %}
+      {% for r in g.rows %}
+      <tr class="{{ 'row-unbilled' if not r.billed else '' }}" data-goal="{{ gi }}"{% if can_edit and r.id %} data-line="{{ r.id }}"{% endif %}>
+        <td class="left nowrap">{{ r.day_label }}</td>
         <td class="left">{{ r.person }}</td>
         <td class="tracked">{{ '%g'|format(r.tracked) }}</td>
         {% if can_edit and r.id %}
@@ -250,13 +262,12 @@
         <td>
           <input class="bnum line-hours {{ 'adjusted' if r.changed }}" type="number" min="0" max="24" step="0.25"
                  inputmode="decimal" value="{{ '%g'|format(r.billed) }}" data-saved="{{ '%g'|format(r.billed) }}"
-                 aria-label="Billed hours · {{ r.person }} · {{ day.label }}"
+                 aria-label="Billed hours · {{ r.person }} · {{ r.day_label }}"
                  title="Logged: {{ '%g'|format(r.tracked) }} h" oninput="lineEdited()">
         </td>
-        {% if has_goals %}<td class="left">{{ r.goal }}</td>{% endif %}
         <td class="left desc">
           <textarea class="line-desc {{ 'adjusted' if r.reworded }}" rows="1" maxlength="2000"
-                    data-saved="{{ r.description }}" aria-label="Comment · {{ r.person }} · {{ day.label }}"
+                    data-saved="{{ r.description }}" aria-label="Comment · {{ r.person }} · {{ r.day_label }}"
                     title="{{ 'Logged as: ' ~ r.logged_description if r.reworded else 'As logged' }}"
                     oninput="lineEdited()">{{ r.description }}</textarea>
         </td>
@@ -265,7 +276,6 @@
           {%- if r.changed %}<strong class="adjusted">{{ '%g'|format(r.billed) }}</strong>
           {%- else %}{{ '%g'|format(r.billed) }}{% endif %}
         </td>
-        {% if has_goals %}<td class="left">{{ r.goal }}</td>{% endif %}
         <td class="left desc">{{ r.description }}</td>
         {% endif %}
         <td class="left">
@@ -275,26 +285,26 @@
       </tr>
       {% endfor %}
       {% else %}
-      <tr class="empty"><td colspan="{{ 7 if has_goals else 6 }}">
+      <tr class="empty"><td colspan="6">
         Nothing is logged against {{ invoice.project }} for {{ month_label }} any more —
         the entries behind this invoice have been removed or moved.
       </td></tr>
       {% endfor %}
     </tbody>
-    {% if days %}
+    {% if lines %}
     <tfoot>
       <tr class="total-row">
         <td class="left"><strong>Total</strong></td>
         <td class="left"></td>
         <td class="tracked">{{ '%g'|format(now_tracked) }}</td>
         <td><strong>{{ '%g'|format(now_billed) }}</strong></td>
-        <td class="left" colspan="{{ 3 if has_goals else 2 }}"></td>
+        <td class="left" colspan="2"></td>
       </tr>
     </tfoot>
     {% endif %}
   </table>
   </div>
-  {% if can_edit and days %}
+  {% if can_edit and lines %}
   <div class="sendbox-btns linebar">
     <button type="button" class="btn btn-primary" id="linesbtn" onclick="saveLinesAndReload()" disabled>Save line edits</button>
     <span class="subtle small" id="linesnote">Edit any line's billed hours or wording — saved on this invoice only, the logged entries don't change. The bill's total hours move with any line whose hours you change.</span>
@@ -399,6 +409,15 @@ async function saveBill() {
 }
 
 const CAN_EDIT = {{ can_edit|tojson }};
+
+/* Goal filter: show one goal's lines (its header row included) or all of
+   them. Hidden lines keep their inputs, so an edit made under one filter is
+   still saved by Save line edits under another. */
+function pickGoal(v) {
+  document.querySelectorAll('tr[data-goal]').forEach(tr => {
+    tr.hidden = !!v && tr.dataset.goal !== v;
+  });
+}
 
 /* ---- per-line edits ----------------------------------------------------
    Each line's billed hours and wording. Only the lines that changed since

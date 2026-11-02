@@ -79,10 +79,16 @@ claim was tracked. Billed is a human decision, tracked is a fact.
 Both the month (must be the 1st) and the project are re-validated server-side —
 the button that was rendered is not evidence of anything.
 
-## Opening an invoice: the days as they were billed
+## Opening an invoice: the lines as they were billed
 
-Clicking an invoice opens `/invoices/{id}` — the month day by day, showing
-**Tracked** next to **Billed** for every entry, with a subtotal per day. A line
+Clicking an invoice opens `/invoices/{id}` — every entry of the month, showing
+**Tracked** next to **Billed**, **grouped by goal** (`_invoiced_goals`): each
+goal's header row carries its own tracked/billed subtotal, biggest goal first
+and *No goal* last, with the lines in date order inside (the date is a column,
+not a section — the old per-day subtotals were dropped). A **Goal** select above
+the table shows one goal's lines at a time; it only hides rows, so an edit made
+under one filter is still saved by *Save line edits* under another. A month with
+no goals at all is one flat list with no select. A line
 billed at less than it was logged is marked; a line billed at nothing is struck
 through, because "not on this bill" is a different statement from "small".
 
