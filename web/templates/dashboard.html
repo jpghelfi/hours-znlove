@@ -2,6 +2,7 @@
 {% block title %}Dashboard · Hours Tracker{% endblock %}
 {% block nav_dashboard %}active{% endblock %}
 {% block content %}
+<div class="dashboard">
 <div class="week-head">
   <div>
     <h1>Dashboard</h1>
@@ -10,16 +11,23 @@
       {% if future %}hasn't started yet
       {% elif elapsed_n < total_n %}{{ elapsed_n }} of {{ total_n }} weekdays done
       {% else %}{{ total_n }} weekdays{% endif %}
+      {% if rng.now[:7] != rng.value %}<span class="mob-only">· <a href="/dashboard?start={{ rng.now }}">{{ rng.now_label }}</a></span>{% endif %}
     </div>
   </div>
   <div class="weeknav arrows">
     <a class="btn" href="/dashboard?start={{ rng.prev }}" aria-label="Earlier" title="Earlier">←</a>
-    <a class="btn" href="/dashboard?start={{ rng.now }}">{{ rng.now_label }}</a>
+    <a class="btn desk-only" href="/dashboard?start={{ rng.now }}">{{ rng.now_label }}</a>
+    {# phone: the month picker sits between the arrows instead of on a row of its own #}
+    <form class="range-form mob-only" method="get" action="/dashboard">
+      <label class="period-pick"><span class="sr-only">Month</span>
+        <input type="month" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
+      </label>
+    </form>
     <a class="btn" href="/dashboard?start={{ rng.next }}" aria-label="Later" title="Later">→</a>
   </div>
 </div>
 
-<form class="range-form" method="get" action="/dashboard">
+<form class="range-form desk-only" method="get" action="/dashboard">
   <label class="period-pick">Month
     <input type="month" name="start" value="{{ rng.value }}" onchange="navStart(); this.form.submit()">
   </label>
@@ -55,7 +63,7 @@
 <div class="card wide">
   <h3>Budget burn</h3>
   {% if budgeted %}
-  <table class="grid flat">
+  <table class="grid flat dash-table burn-table">
     <thead>
       <tr>
         <th class="left">Project</th>
@@ -69,20 +77,20 @@
     <tbody>
       {% for r in budgeted %}
       <tr>
-        <td class="left"><a href="/project?project={{ r.id }}&period=monthly&start={{ rng.value }}">{{ r.name }}</a></td>
-        <td>{{ '%g'|format(r.budget.hours) }}</td>
-        <td>{{ '%g'|format(r.tracked) }}</td>
-        <td class="usedcol">
+        <td class="left dt-name"><a href="/project?project={{ r.id }}&period=monthly&start={{ rng.value }}">{{ r.name }}</a></td>
+        <td data-label="Budget">{{ '%g'|format(r.budget.hours) }}</td>
+        <td data-label="Used">{{ '%g'|format(r.tracked) }}</td>
+        <td class="usedcol dt-wide">
           <div class="cap {{ 'cap-over' if r.status in ('over','over_cap') else ('cap-full' if r.status in ('warn','blocked') else 'cap-ok') }}">
             <i style="width: {{ '%.1f'|format(r.bar) }}%"></i>
           </div>
           <div class="cap-num">{{ '%.0f'|format(r.pct) }}%</div>
         </td>
-        <td class="hnum {{ 'over' if r.forecast_over }}">
+        <td class="hnum {{ 'over' if r.forecast_over }}" data-label="Forecast">
           {%- if r.forecast is none %}<span class="subtle">—</span>
           {%- else %}{{ '%.0f'|format(r.forecast) }}{% if r.forecast_pct is not none %} <span class="subtle">({{ '%.0f'|format(r.forecast_pct) }}%)</span>{% endif %}{% endif %}
         </td>
-        <td class="left"><span class="chip {{ r.status_chip }}">{{ r.status_label }}</span></td>
+        <td class="left dt-tag"><span class="chip {{ r.status_chip }}">{{ r.status_label }}</span></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -98,12 +106,12 @@
 </div>
 
 {# ---- utilization -------------------------------------------------------- #}
-<div class="card wide">
+<div class="card wide {{ 'is-empty' if future or not elapsed_n }}">
   <h3>Utilization</h3>
   {% if future or not elapsed_n %}
   <p class="subtle">No weekdays done yet this month.</p>
   {% else %}
-  <table class="grid flat">
+  <table class="grid flat dash-table util-table">
     <thead>
       <tr>
         <th class="left">Person</th>
@@ -117,12 +125,12 @@
     <tbody>
       {% for r in util %}
       <tr>
-        <td class="left">{{ r.name }}</td>
-        <td>{{ '%g'|format(r.hpd) }}{% if not r.custom %} <span class="subtle small">default</span>{% endif %}</td>
-        <td>{{ '%g'|format(r.used|round(2)) }}</td>
-        <td>{{ '%g'|format(r.cap_to_date) }}{% if r.cap_month != r.cap_to_date %} <span class="subtle small">of {{ '%g'|format(r.cap_month) }}</span>{% endif %}</td>
-        <td>{{ r.absent_month or '' }}</td>
-        <td class="usedcol">
+        <td class="left dt-name">{{ r.name }}</td>
+        <td data-label="H / day">{{ '%g'|format(r.hpd) }}{% if not r.custom %} <span class="subtle small">default</span>{% endif %}</td>
+        <td data-label="Logged">{{ '%g'|format(r.used|round(2)) }}</td>
+        <td data-label="Capacity">{{ '%g'|format(r.cap_to_date) }}{% if r.cap_month != r.cap_to_date %} <span class="subtle small">of {{ '%g'|format(r.cap_month) }}</span>{% endif %}</td>
+        <td data-label="Days off">{{ r.absent_month or '' }}</td>
+        <td class="usedcol dt-wide">
           {%- if r.pct is none %}<span class="subtle">—</span>
           {%- else %}
           <div class="cap {{ 'cap-over' if r.status == 'over' else ('cap-full' if r.status == 'full' else 'cap-ok') }}">
@@ -143,23 +151,23 @@
 </div>
 
 {# ---- missing time ------------------------------------------------------- #}
-<div class="card wide">
+<div class="card wide {{ 'is-empty' if future or not elapsed_n or not missing }}">
   <h3>Missing time</h3>
   {% if future or not elapsed_n %}
   <p class="subtle">No weekdays done yet this month.</p>
   {% elif not missing %}
   <p class="subtle">Everyone has logged every weekday so far.</p>
   {% else %}
-  <table class="grid flat">
+  <table class="grid flat dash-table miss-table">
     <thead>
       <tr><th class="left">Person</th><th>Days</th><th class="left">Weekdays with nothing logged</th></tr>
     </thead>
     <tbody>
       {% for r in missing %}
       <tr>
-        <td class="left">{{ r.name }}</td>
-        <td class="hnum">{{ r.n }}</td>
-        <td class="left subtle">{% for d in r.days %}{{ d.strftime('%a %-d') }}{{ ', ' if not loop.last }}{% endfor %}</td>
+        <td class="left dt-name">{{ r.name }}</td>
+        <td class="hnum dt-tag"><span class="mob-only chip chip-none">{{ r.n }} day{{ '' if r.n == 1 else 's' }}</span><span class="desk-only">{{ r.n }}</span></td>
+        <td class="left subtle dt-wide">{% for d in r.days %}{{ d.strftime('%a %-d') }}{{ ', ' if not loop.last }}{% endfor %}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -170,10 +178,10 @@
 
 {# ---- billing pipeline --------------------------------------------------- #}
 {% if invoices_on %}
-<div class="card wide">
+<div class="card wide {{ 'is-empty' if not pipe }}">
   <h3>Billing — {{ rng.label }}</h3>
   {% if pipe %}
-  <table class="grid flat">
+  <table class="grid flat dash-table bill-table">
     <thead>
       <tr>
         <th class="left">Project</th>
@@ -185,9 +193,9 @@
     <tbody>
       {% for r in pipe %}
       <tr>
-        <td class="left">{{ r.name }}</td>
-        <td>{{ '%g'|format(r.hours|round(2)) }}</td>
-        <td class="left">
+        <td class="left dt-name">{{ r.name }}</td>
+        <td data-label="Hours">{{ '%g'|format(r.hours|round(2)) }}</td>
+        <td class="left" data-label="Invoice">
           {%- if r.invoice %}
           <a href="/invoices/{{ r.invoice.id }}"><span class="chip stage-{{ r.status|lower }}">{{ r.status }}</span></a>
           {%- else %}
@@ -195,7 +203,7 @@
           <a href="/project/export?period=monthly&start={{ rng.from }}&project={{ r.id }}">Invoice…</a>
           {%- endif %}
         </td>
-        <td>{{ r.money or '—' }}</td>
+        <td class="dt-tag" data-label="Est. value">{{ r.money or '—' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -206,4 +214,5 @@
   {% endif %}
 </div>
 {% endif %}
+</div>
 {% endblock %}

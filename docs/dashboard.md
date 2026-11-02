@@ -72,3 +72,14 @@ skipped when their databases aren't configured.
   both sections the day it shipped. Nothing else reads it.
 - "Today" is the server's date (UTC on Render), like every other page.
 - No planned-vs-tracked section: deliberately left out.
+
+## On a phone
+
+Below 560px the four tables stop being tables (`.dash-table` in `style.css`):
+each row stacks as name + status chip, the bar full width, then labelled
+numbers. `table.grid`'s 520px floor used to push the whole page sideways
+with Forecast and Status off-screen. The month picker sits between the
+arrows (a phone-only copy of the form; desktop keeps its own row), the tiles
+are two even columns with the number beside its label, and an empty section
+(`is-empty`) collapses to one line. The tiles also lost `.card`'s
+`margin: 0 auto`, which had shrunk each one to its text — on desktop too.
