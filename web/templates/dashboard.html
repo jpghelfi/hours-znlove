@@ -11,7 +11,7 @@
       {% if future %}hasn't started yet
       {% elif elapsed_n < total_n %}{{ elapsed_n }} of {{ total_n }} weekdays done
       {% else %}{{ total_n }} weekdays{% endif %}
-      {% if rng.now[:7] != rng.value %}<a class="mob-only" href="/dashboard?start={{ rng.now }}">· {{ rng.now_label }}</a>{% endif %}
+      {% if rng.now[:7] != rng.value %}<span class="mob-only">· <a href="/dashboard?start={{ rng.now }}">{{ rng.now_label }}</a></span>{% endif %}
     </div>
   </div>
   <div class="weeknav arrows">
@@ -35,7 +35,7 @@
 
 {# ---- needs action ---------------------------------------------------- #}
 {% set unpaid = (stages.get('Draft', 0) + stages.get('Approved', 0) + stages.get('Sent', 0) + stages.get('Overdue', 0)) if invoices_on else 0 %}
-<div class="statrow dash-stats">
+<div class="statrow">
   {% if absences_on %}
   <a class="stat card" href="/absences">
     <div class="stat-n {{ 'over' if pending_n }}">{{ pending_n }}</div>
@@ -203,7 +203,7 @@
           <a href="/project/export?period=monthly&start={{ rng.from }}&project={{ r.id }}">Invoice…</a>
           {%- endif %}
         </td>
-        <td data-label="Est. value">{{ r.money or '—' }}</td>
+        <td class="dt-tag" data-label="Est. value">{{ r.money or '—' }}</td>
       </tr>
       {% endfor %}
     </tbody>

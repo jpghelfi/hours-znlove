@@ -1680,7 +1680,8 @@ button.holder:hover { border-color: var(--over); background: var(--err); }
   .dashboard .weeknav.arrows { grid-template-columns: 48px minmax(0, 1fr) 48px; align-items: stretch; }
   .dashboard .weeknav .range-form { display: block; margin: 0; min-width: 0; }
   .dashboard .weeknav .period-pick { display: block; width: 100%; }
-  .dashboard .weeknav input[type=month] { width: 100%; min-height: 44px; text-align: center; font-weight: 600; }
+  .dashboard .weeknav input[type=month] { -webkit-appearance: none; appearance: none; width: 100%; min-height: 44px; text-align: center; font-weight: 600; }
+  .dashboard .weeknav input[type=month]::-webkit-date-and-time-value { text-align: center; }
 
   /* tiles: number beside its label, two even columns */
   .dashboard .statrow, .dashboard .statrow:has(> :nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -1714,7 +1715,8 @@ button.holder:hover { border-color: var(--over); background: var(--err); }
   .dashboard .dash-table .dt-tag { grid-column: 3; order: -2; justify-self: end; align-self: start; }
   .dashboard .dash-table .dt-wide { grid-column: 1 / -1; order: -1; }
   /* no tag cell: the name has the whole row */
-  .dashboard .util-table .dt-name, .dashboard .bill-table .dt-name { grid-column: 1 / -1; }
+  .dashboard .util-table .dt-name { grid-column: 1 / -1; }
+  .dashboard .bill-table .dt-tag { text-align: right; }
   .dashboard .util-table tbody tr { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .dashboard .bill-table td[data-label="Invoice"] { grid-column: span 2; }
   .dashboard .dash-table .usedcol { display: flex; align-items: center; gap: 10px; }
