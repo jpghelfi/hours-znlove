@@ -1735,3 +1735,5 @@ button.holder:hover { border-color: var(--over); background: var(--err); }
   .dashboard .card.wide.is-empty h3 { margin-bottom: 4px; }
   .dashboard .card.wide.is-empty > p { margin: 0; }
 }
+.goalbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.goalbar select { width: auto; max-width: 100%; }
