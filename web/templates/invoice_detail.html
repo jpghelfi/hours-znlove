@@ -229,6 +229,7 @@
       <tr>
         <th class="left">Day</th>
         <th class="left">Person</th>
+        {% if has_goals %}<th class="left">Goal</th>{% endif %}
         <th>Tracked</th>
         <th>Billed</th>
         <th class="left">Comment</th>
@@ -240,7 +241,7 @@
       {% set gi = loop.index %}
       {% if has_goals %}
       <tr class="group-row" data-goal="{{ gi }}">
-        <td class="left" colspan="2">{{ g.label }}</td>
+        <td class="left" colspan="3">{{ g.label }}</td>
         <td class="tracked">{{ '%g'|format(g.tracked) }}</td>
         <td>{{ '%g'|format(g.billed) }}</td>
         <td class="left" colspan="2">
@@ -254,6 +255,22 @@
       <tr class="{{ 'row-unbilled' if not r.billed else '' }}" data-goal="{{ gi }}"{% if can_edit and r.id %} data-line="{{ r.id }}"{% endif %}>
         <td class="left nowrap">{{ r.day_label }}</td>
         <td class="left">{{ r.person }}</td>
+        {% if has_goals %}
+        <td class="left">
+          {%- if can_file_goal and r.id %}
+          {# files the logged entry under a goal — the one thing on this page
+             that writes to a Time Entry, through the same endpoint the goals
+             block on /project uses #}
+          <select class="line-goal" data-entry="{{ r.id }}" data-saved="{{ r.goal_key }}"
+                  aria-label="Goal · {{ r.person }} · {{ r.day_label }}" onchange="fileGoal(this)">
+            <option value="">— No goal</option>
+            {% for pg in project_goals %}
+            <option value="{{ pg.id }}"{% if pg.key == r.goal_key %} selected{% endif %}>{{ pg.name }}{% if pg.done %} (done){% endif %}</option>
+            {% endfor %}
+          </select>
+          {%- else %}{{ r.goal }}{% endif %}
+        </td>
+        {% endif %}
         <td class="tracked">{{ '%g'|format(r.tracked) }}</td>
         {% if can_edit and r.id %}
         {# each line is editable until the bill goes out: what it bills and how
@@ -285,7 +302,7 @@
       </tr>
       {% endfor %}
       {% else %}
-      <tr class="empty"><td colspan="6">
+      <tr class="empty"><td colspan="{{ 7 if has_goals else 6 }}">
         Nothing is logged against {{ invoice.project }} for {{ month_label }} any more —
         the entries behind this invoice have been removed or moved.
       </td></tr>
@@ -296,6 +313,7 @@
       <tr class="total-row">
         <td class="left"><strong>Total</strong></td>
         <td class="left"></td>
+        {% if has_goals %}<td class="left"></td>{% endif %}
         <td class="tracked">{{ '%g'|format(now_tracked) }}</td>
         <td><strong>{{ '%g'|format(now_billed) }}</strong></td>
         <td class="left" colspan="2"></td>
@@ -413,6 +431,49 @@ const CAN_EDIT = {{ can_edit|tojson }};
 /* Goal filter: show one goal's lines (its header row included) or all of
    them. Hidden lines keep their inputs, so an edit made under one filter is
    still saved by Save line edits under another. */
+/* File one line's logged entry under a goal, then reload so it moves into
+   that goal's group and the subtotals follow. Refused while line edits are
+   unsaved — the reload would throw them away. */
+async function fileGoal(sel) {
+  if (changedLines().length) {
+    sel.value = sel.dataset.savedId || '';
+    zAlert('Save line edits first — changing a goal reloads the page.');
+    return;
+  }
+  sel.disabled = true;
+  try {
+    const res = await fetch('/api/entry/goal', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entry_ids: [sel.dataset.entry], goal_id: sel.value || null,
+                            project_id: {{ invoice.project_id|tojson }},
+                            period: 'monthly', start: {{ invoice.month|tojson }}})
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'unknown error');
+    const pick = document.getElementById('goalpick');
+    sessionStorage.setItem('invGoalPick', pick ? pick.selectedOptions[0].text.split(' · ')[0] : '');
+    location.reload();
+  } catch (e) {
+    sel.disabled = false;
+    sel.value = sel.dataset.savedId || '';
+    zAlert('Could not file that line under the goal: ' + e.message);
+  }
+}
+
+// remember each picker's starting value, and restore the goal filter a
+// fileGoal() reload was showing (matched by name: group numbers shift)
+document.querySelectorAll('select.line-goal').forEach(s => { s.dataset.savedId = s.value; });
+(function () {
+  const want = sessionStorage.getItem('invGoalPick');
+  sessionStorage.removeItem('invGoalPick');
+  const pick = document.getElementById('goalpick');
+  if (!want || !pick) return;
+  for (const o of pick.options) {
+    if (o.value && o.text.split(' · ')[0] === want) { pick.value = o.value; pickGoal(o.value); break; }
+  }
+})();
+
 function pickGoal(v) {
   document.querySelectorAll('tr[data-goal]').forEach(tr => {
     tr.hidden = !!v && tr.dataset.goal !== v;

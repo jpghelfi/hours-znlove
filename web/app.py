@@ -2340,6 +2340,16 @@ def invoice_detail(request: Request, invoice_id: str):
         for r in rows:
             parsed = _parse_date(r["date"])
             r["day_label"] = parsed.strftime("%a %d %b") if parsed else r["date"]
+            r["goal_key"] = ops._bare(r.get("goal_id") or "")
+    # the project's goals, for the per-line Goal picker: hours can only be
+    # summed per goal once the entries are filed under one, and this is where
+    # the month gets looked at line by line
+    project_goals = []
+    if invoice["project_id"] and ops.goals_enabled():
+        project_goals = sorted(({"id": g["id"], "key": ops._bare(g["id"]), "name": g["name"],
+                                 "done": g.get("status") != "Open"}
+                                for g in ops.list_goals(invoice["project_id"])),
+                               key=lambda g: (g["done"], g["name"].lower()))
     now_tracked = round(sum(r["tracked"] for r in rows), 2)
     # what the clipboard button pastes into a sheet: the billed lines only,
     # the same set the workbook holds
@@ -2381,7 +2391,9 @@ def invoice_detail(request: Request, invoice_id: str):
                         + dt.timedelta(days=ops.invoice_due_days())).isoformat(),
         "invoice": invoice, "lines": rows, "goals": _invoiced_goals(rows), "rng": rng,
         # every line on screen, not just the billed ones the clipboard gets
-        "has_goals": any(r.get("goal") for r in rows),
+        "has_goals": any(r.get("goal") for r in rows) or bool(project_goals),
+        "project_goals": project_goals,
+        "can_file_goal": auth.is_admin(user) and bool(project_goals),
         "month_label": month.strftime("%B %Y") if month else invoice["month"],
         "now_tracked": now_tracked,
         "now_billed": round(sum(r["billed"] for r in rows), 2),

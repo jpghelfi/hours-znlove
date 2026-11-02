@@ -88,7 +88,15 @@ and *No goal* last, with the lines in date order inside (the date is a column,
 not a section — the old per-day subtotals were dropped). A **Goal** select above
 the table shows one goal's lines at a time; it only hides rows, so an edit made
 under one filter is still saved by *Save line edits* under another. A month with
-no goals at all is one flat list with no select. A line
+no goals at all is one flat list with no select. **Admins can file a line
+under a goal right there**: when the project has goals, each line gets a Goal
+picker that posts to the same `POST /api/entry/goal` the goals block on
+`/project` uses (validated against the invoice's project and month) and reloads
+so the line moves into its group — the one control on this page that writes to
+a Time Entry, since a goal is a fact about the work, not about the bill. It
+refuses while line edits are unsaved (the reload would drop them), and the goal
+filter survives that reload. Shown whenever the project has goals, even before
+any line is filed, so the first month's "everything is No goal" is fixable here. A line
 billed at less than it was logged is marked; a line billed at nothing is struck
 through, because "not on this bill" is a different statement from "small".
 

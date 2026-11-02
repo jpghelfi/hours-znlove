@@ -86,6 +86,34 @@ def _():
     assert "Thu 01 Oct" in html and html.count('data-line="e') == 4
 
 
+@check("no line filed yet but the project has goals: picker, filter and No goal sum show")
+def _():
+    bare = [dict(e, goal="", goal_id=None) for e in ENTRIES]
+    old = (ops.get_invoice, webapp._period_entries, ops.access_ids, ops.project_billing,
+           ops.goals_enabled, ops.list_goals)
+    ops.get_invoice = lambda i: invoice()
+    webapp._period_entries = lambda *a, **k: [dict(e) for e in bare]
+    ops.access_ids = lambda: {"allowed": {"u-admin"}, "admins": {"u-admin"},
+                              "approvers": set(), "accountants": set()}
+    ops.project_billing = lambda pid: {}
+    ops.goals_enabled = lambda: True
+    ops.list_goals = lambda pid=None, open_only=False: [
+        {"id": "g-1", "name": "Science", "status": "Open"},
+        {"id": "g-2", "name": "Old thing", "status": "Done"}]
+    try:
+        from fastapi.testclient import TestClient
+        r = TestClient(webapp.app).get("/invoices/inv1")
+    finally:
+        (ops.get_invoice, webapp._period_entries, ops.access_ids, ops.project_billing,
+         ops.goals_enabled, ops.list_goals) = old
+    assert r.status_code == 200, r.text[:500]
+    html = r.text
+    Path(os.environ.get("RENDER_OUT2", "/dev/null")).write_text(html)
+    assert 'id="goalpick"' in html and "No goal · 15 h" in html
+    assert html.count('class="line-goal"') == 4
+    assert html.index(">Science<") < html.index(">Old thing (done)<")
+
+
 if __name__ == "__main__":
     if _FAILS:
         print(f"\n{len(_FAILS)} failed")
