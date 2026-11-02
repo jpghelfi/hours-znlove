@@ -1692,37 +1692,41 @@ button.holder:hover { border-color: var(--over); background: var(--err); }
   .dashboard .stat-n { font-size: 22px; flex: none; min-width: 1.4em; }
   .dashboard .stat-l { font-size: 11px; line-height: 1.3; letter-spacing: .03em; }
 
-  .dashboard table.grid.dash-table { display: block; min-width: 0; }
-  .dashboard .dash-table thead {
+  table.grid.dash-table { display: block; min-width: 0; }
+  .grid.dash-table thead {
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
   }
-  .dashboard .dash-table tbody { display: block; }
-  .dashboard .dash-table tbody tr {
+  .grid.dash-table tbody { display: block; }
+  .grid.dash-table tbody tr {
     display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px;
     padding: 10px 0; border-bottom: 1px solid var(--line);
   }
-  .dashboard .dash-table tbody tr:last-child { border-bottom: 0; }
-  .dashboard .dash-table tbody td {
+  .grid.dash-table tbody tr:last-child { border-bottom: 0; }
+  .grid.dash-table tbody td {
     display: block; padding: 0; border: 0; text-align: left; min-width: 0;
     font-size: 14px; overflow-wrap: anywhere;
   }
-  .dashboard .dash-table td[data-label]::before {
+  .grid.dash-table td[data-label]::before {
     content: attr(data-label); display: block;
     color: var(--muted); font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: .04em;
   }
-  .dashboard .dash-table .dt-name { grid-column: 1 / 3; order: -3; font-weight: 600; font-size: 15px; }
-  .dashboard .dash-table .dt-tag { grid-column: 3; order: -2; justify-self: end; align-self: start; }
-  .dashboard .dash-table .dt-wide { grid-column: 1 / -1; order: -1; }
+  .grid.dash-table .dt-name { grid-column: 1 / 3; order: -3; font-weight: 600; font-size: 15px; }
+  .grid.dash-table .dt-tag { grid-column: 3; order: -2; justify-self: end; align-self: start; }
+  .grid.dash-table .dt-wide { grid-column: 1 / -1; order: -1; }
   /* no tag cell: the name has the whole row */
   .dashboard .util-table .dt-name { grid-column: 1 / -1; }
   .dashboard .bill-table .dt-tag { text-align: right; }
   .dashboard .util-table tbody tr { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .dashboard .bill-table td[data-label="Invoice"] { grid-column: span 2; }
-  .dashboard .dash-table .usedcol { display: flex; align-items: center; gap: 10px; }
-  .dashboard .dash-table .usedcol .cap { flex: 1; height: 6px; }
-  .dashboard .dash-table .usedcol .cap-num { margin: 0; min-width: 3em; text-align: right; }
+  .grid.dash-table .usedcol { display: flex; align-items: center; gap: 10px; }
+  .grid.dash-table .usedcol .cap { flex: 1; height: 6px; }
+  .grid.dash-table .usedcol .cap-num { margin: 0; min-width: 3em; text-align: right; }
   .dashboard .miss-table .dt-wide { font-size: 13px; line-height: 1.5; }
+  .grid.dash-table .dt-span2 { grid-column: span 2; }
+  .grid.dash-table .dt-full { grid-column: 1 / -1; }
+  .grid.dash-table .decide-cell { display: flex; justify-content: flex-start; padding-top: 4px; }
+  .grid.dash-table .decide-cell .btn { flex: 1; min-height: 40px; }
 
   /* an empty section is one line of text, not a tall card */
   .dashboard .card.wide.is-empty { padding: 12px 16px; margin-bottom: 10px; }
