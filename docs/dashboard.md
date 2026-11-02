@@ -75,7 +75,7 @@ skipped when their databases aren't configured.
 
 ## On a phone
 
-Below 560px the four tables stop being tables (`.dash-table` in `style.css`):
+Below 560px the four tables stop being tables (`.dash-table` in `style.css`, also used by /absences; helpers `dt-name`/`dt-tag`/`dt-wide`/`dt-span2`/`dt-full`):
 each row stacks as name + status chip, the bar full width, then labelled
 numbers. `table.grid`'s 520px floor used to push the whole page sideways
 with Forecast and Status off-screen. The month picker sits between the

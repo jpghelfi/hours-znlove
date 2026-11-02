@@ -116,3 +116,10 @@ The board above the list is a server-rendered aggregate, so a successful delete 
 - **No allowance or balance.** It doesn't know how many days you get — approval is a judgement, not a subtraction.
 - **No escalation, reminder or second approver.** One approver's word settles it, and nothing chases them; the queue sitting there is the whole mechanism.
 - **No effect on the schedule or reports.** `/schedule` will still let you book someone who's away — approved or not — and absent days don't appear in capacity math. Wiring the two together is the obvious next step, and is a separate decision from recording the days.
+
+## On a phone
+
+Below 560px the "Awaiting approval" and "Absences in …" tables stack each row
+(person + status chip, labelled dates/days, reason, then full-width buttons)
+using the same `.dash-table` classes as the dashboard (`docs/dashboard.md`) —
+their action buttons used to push the whole page sideways.

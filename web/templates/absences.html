@@ -49,7 +49,7 @@
 <div class="card wide">
   <h3 class="card-title">Awaiting approval · {{ pending|length }}</h3>
   {% if pending %}
-  <table class="grid flat">
+  <table class="grid flat dash-table">
     <thead>
       <tr>
         <th class="left">Person</th>
@@ -62,11 +62,11 @@
     <tbody>
       {% for r in pending %}
       <tr data-id="{{ r.id }}">
-        <td class="left">{{ r.person }}</td>
-        <td class="left nowrap">{{ r.label }}</td>
-        <td>{{ r.days }}</td>
-        <td class="left desc">{{ r.reason }}</td>
-        <td class="nowrap decide-cell">
+        <td class="left dt-name dt-full">{{ r.person }}</td>
+        <td class="left nowrap dt-span2" data-label="Dates">{{ r.label }}</td>
+        <td data-label="Days">{{ r.days }}</td>
+        <td class="left desc dt-full" data-label="Reason">{{ r.reason }}</td>
+        <td class="nowrap decide-cell dt-full">
           <button type="button" class="btn btn-sm" data-busy="Saving…"
                   onclick="decideAbsence(this, '{{ r.id }}', 'approved')">Approve</button>
           <button type="button" class="btn btn-sm btn-danger" data-busy="Saving…"
@@ -190,7 +190,7 @@
 
 <div class="card wide">
   <h3 class="card-title">Absences in {{ rng.label }}</h3>
-  <table class="grid flat">
+  <table class="grid flat dash-table">
     <thead>
       <tr>
         <th class="left">Person</th>
@@ -204,19 +204,19 @@
     <tbody>
       {% for r in rows %}
       <tr data-id="{{ r.id }}">
-        <td class="left">{{ r.person }}</td>
-        <td class="left nowrap">{{ r.label }}</td>
-        <td>{{ r.days }}</td>
-        <td class="left desc">{{ r.reason }}
+        <td class="left dt-name">{{ r.person }}</td>
+        <td class="left nowrap dt-span2" data-label="Dates">{{ r.label }}</td>
+        <td data-label="Days">{{ r.days }}</td>
+        <td class="left desc dt-full" data-label="Reason">{{ r.reason }}
           {%- if r.status == 'declined' and r.note %}
           <div class="subtle">{{ r.note }}</div>
           {%- endif %}</td>
-        <td class="left">
+        <td class="left dt-tag">
           <span class="status-chip is-{{ r.status }}"
                 {% if r.decided_by_name %}title="by {{ r.decided_by_name }}{% if r.decided_at %} · {{ r.decided_at }}{% endif %}"{% endif %}>
             {{ r.status }}</span>
         </td>
-        <td class="nowrap decide-cell">
+        <td class="nowrap decide-cell dt-full">
           {% if is_approver %}
             {# decisions are correctable, so the button offered is always the
                other answer — an approved row can still be declined #}
