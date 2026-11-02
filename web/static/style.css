@@ -1727,6 +1727,8 @@ button.holder:hover { border-color: var(--over); background: var(--err); }
   .grid.dash-table .dt-full { grid-column: 1 / -1; }
   .grid.dash-table .decide-cell { display: flex; justify-content: flex-start; padding-top: 4px; }
   .grid.dash-table .decide-cell .btn { flex: 1; min-height: 40px; }
+  .grid.dash-table tr.empty td { grid-column: 1 / -1; padding: 14px 0; }
+  .grid.dash-table .dt-name.dt-full { grid-column: 1 / -1; }
 
   /* an empty section is one line of text, not a tall card */
   .dashboard .card.wide.is-empty { padding: 12px 16px; margin-bottom: 10px; }

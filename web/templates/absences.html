@@ -62,7 +62,7 @@
     <tbody>
       {% for r in pending %}
       <tr data-id="{{ r.id }}">
-        <td class="left dt-name">{{ r.person }}</td>
+        <td class="left dt-name dt-full">{{ r.person }}</td>
         <td class="left nowrap dt-span2" data-label="Dates">{{ r.label }}</td>
         <td data-label="Days">{{ r.days }}</td>
         <td class="left desc dt-full" data-label="Reason">{{ r.reason }}</td>
