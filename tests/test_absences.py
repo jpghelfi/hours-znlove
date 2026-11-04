@@ -401,6 +401,94 @@ def _():
             os.environ["ABSENCE_APPROVER_TO"] = old
 
 
+# ---- filing: no second copy of the same days ---------------------------
+
+class fake_filing:
+    """Serve `existing` as the overlapping rows and record what gets created."""
+
+    def __init__(self, *existing):
+        self.existing, self.created, self.asked = list(existing), None, None
+
+    def __enter__(self):
+        outer = self
+
+        class _N:
+            class pages:
+                @staticmethod
+                def create(**kw):
+                    outer.created = kw
+                    return page(start="2026-11-03", end="2026-11-03", status="Pending")
+
+        def list_absences(date_from, date_to, person_id=None):
+            outer.asked = (date_from, date_to, person_id)
+            return outer.existing
+
+        self._saved = (ops._notion, ops._person_name_map, ops.list_absences, ops.ABSENCES_DS)
+        ops._notion, ops._person_name_map = _N, lambda: PEOPLE
+        ops.list_absences, ops.ABSENCES_DS = list_absences, ops.ABSENCES_DS or "abs-ds"
+        return self
+
+    def __exit__(self, *exc):
+        ops._notion, ops._person_name_map, ops.list_absences, ops.ABSENCES_DS = self._saved
+
+
+def on(status, start="2026-11-03", end="2026-11-03"):
+    return row(status=status, start=start, end=end)
+
+
+def refused(*existing, **kw):
+    """File 3 Nov against `existing`; return (the refusal or None, the fake)."""
+    args = dict(person_id="u1", person_name="Ana", start="2026-11-03", end="2026-11-03", reason="exam")
+    args.update(kw)
+    with fake_filing(*existing) as f:
+        try:
+            ops.add_absence(**args)
+            return None, f
+        except ValueError as e:
+            return str(e), f
+
+
+@check("filing the same day twice is refused while pending or approved, and writes nothing")
+def _():
+    for status in ("Pending", "Approved"):
+        msg, f = refused(on(status))
+        assert f.created is None, status
+        assert "03 Nov 2026" in msg and status.lower() in msg, msg
+    assert f.asked == ("2026-11-03", "2026-11-03", "u1")
+
+
+@check("a legacy row with no Status counts as approved, so it blocks too")
+def _():
+    msg, f = refused(on(None))
+    assert f.created is None and "approved" in msg
+
+
+@check("a declined row doesn't block asking again")
+def _():
+    msg, f = refused(on("Declined"))
+    assert msg is None and f.created is not None
+
+
+@check("a range overlapping an absence is refused and names that absence's dates")
+def _():
+    msg, f = refused(on("Approved", "2026-11-02", "2026-11-04"), start="2026-11-03", end="2026-11-06")
+    assert f.created is None and "02 Nov – 04 Nov 2026" in msg, msg
+
+
+@check("no overlap files as before; a declined row doesn't hide a live one behind it")
+def _():
+    msg, f = refused()
+    assert msg is None and f.created is not None
+    msg, f = refused(on("Declined"), on("Pending"))
+    assert f.created is None and "pending" in msg
+
+
+@check("an absence with no person skips the check instead of matching everyone's rows")
+def _():
+    msg, f = refused(on("Approved"), person_id=None)
+    assert msg is None and f.created is not None and f.asked is None
+
+
 if __name__ == "__main__":
     print(f"\n{len(_FAILS)} failed\n" if _FAILS else "\nall passed\n")
     for f in _FAILS:

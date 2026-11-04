@@ -8,7 +8,9 @@ The form asks for a first day, an optional last day, and a reason. It never asks
 
 Every absence is filed **Pending** and waits for one approver's OK — including an approver's own, and including an admin's. The form says so, and the flash after a save reads "Sent for approval".
 
-`POST /absences` is a plain form post that redirects back to the view it was filed from (`period` + `anchor` + any people picks ride along as hidden inputs), with `ok=` or `err=` carrying the outcome. Everything it refuses — a backwards range, a blank reason, a range longer than a year — comes back as a sentence above the form rather than a 400.
+`POST /absences` is a plain form post that redirects back to the view it was filed from (`period` + `anchor` + any people picks ride along as hidden inputs), with `ok=` or `err=` carrying the outcome. Everything it refuses — a backwards range, a blank reason, a range longer than a year, days that overlap your own pending or approved absence — comes back as a sentence above the form rather than a 400.
+
+**The overlap refusal exists because a second copy looks like an unanswered request.** Filing already-approved days again put them back in the approvers' queue, and an approver who had said yes saw the question again (November 2026: two of Lautaro's exam days). `ops._refuse_absence_overlap` checks inside `_write_lock`, so a double-tapped Send can't pass twice. A declined row doesn't block, since asking again after a no is legitimate. To change an absence, remove it and file the new dates; to extend one, file only the extra days.
 
 ## What a row is
 

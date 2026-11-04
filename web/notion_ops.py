@@ -2782,9 +2782,33 @@ def list_absences(date_from: str, date_to: str, person_id: str | None = None) ->
     return out
 
 
+def _refuse_absence_overlap(person_id: str | None, start: str, end: str) -> None:
+    """Raise if this person already has these days pending or approved.
+
+    A second copy of an approved day lands in the approvers' queue looking like
+    a request nobody has answered. A declined row doesn't count: asking again
+    after a no is legitimate. With no person there's nobody to compare against,
+    and list_absences would return everyone's rows.
+    """
+    if not person_id:
+        return
+    for row in list_absences(start, end, person_id):
+        if row["status"] == STATUS_DECLINED.lower():
+            continue
+        first = dt.date.fromisoformat(row["start"])
+        last = dt.date.fromisoformat(row["end"])
+        label = (f"{first:%d %b %Y}" if first == last
+                 else f"{first:%d %b} – {last:%d %b %Y}")
+        raise ValueError(f"You already filed {label} ({row['status']}), which overlaps "
+                         "these dates, so nothing new was filed.")
+
+
 def add_absence(person_id: str | None, person_name: str, start: str, end: str,
                 reason: str = "") -> dict:
-    """File one absence, Pending. `end` may equal `start` for a single day."""
+    """File one absence, Pending. `end` may equal `start` for a single day.
+
+    Refused when it overlaps one of this person's pending or approved absences.
+    """
     if not ABSENCES_DS:
         raise ValueError("The Absences database isn't set up yet.")
     first, last = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
@@ -2808,7 +2832,9 @@ def add_absence(person_id: str | None, person_name: str, start: str, end: str,
     }
     if person_id:
         props["Person"] = {"people": [{"id": person_id}]}
+    # inside the lock, so a double-tapped Send can't pass the check twice
     with _write_lock:
+        _refuse_absence_overlap(person_id, start, end)
         page = _notion.pages.create(
             parent={"type": "data_source_id", "data_source_id": ABSENCES_DS},
             properties=props)
